@@ -16,6 +16,18 @@
 - 修正里程碑依赖图，使 M6 明确依赖 M2 后的 DTO 边界，并与 M7 汇合。
 - 未执行产品代码、依赖安装或外部状态变更。
 
+## M0 开发（2026-10-01）
+
+- 使用 Tauri 2 + Vite + React + TypeScript 脚手架建立根工程，固定 stable Windows MSVC 工具链声明和 pnpm/Cargo 锁文件。
+- 将 Tauri Rust crate 锁定到 2.12.1 版本链；记录本机 Rust 1.98.1、Tauri CLI 2.12.1 和 Windows 10 build 19045 x64。
+- 新建 `src-tauri/src/deployment.rs`，通过 `windows` crate 激活 `PackageManager`，返回当前用户/全用户能力状态；全用户明确保持 `RequiresElevation`。
+- 新建 `src-tauri/src/broker.rs`，只接受绝对路径和 MSIX/AppX 包扩展，拒绝 `.msixvc`、Xbox、`.exe` 和 `.msi`；未实现任意命令或 shell 执行。
+- 新建 `docs/support-matrix.md`，记录包格式、权限证据和 M0 停止条件。
+- 新建 `src-tauri/tests/m0_contract.rs`；已观察到契约测试先失败，再通过 4/4；测试目标明确限定 Windows。
+- 真实包安装/卸载和签名 broker/UAC IPC 尚未验证，需批准的测试包载荷与独立 Spike 后再进入 M5。
+- M0 基线/探针验证完成：`cargo fmt --check`、`cargo check`、`cargo test`（4/4）、`pnpm build`、`pnpm exec tauri build --debug --no-bundle`、`pnpm exec tauri info` 均通过；`pnpm exec tauri dev` 已启动本地 Vite/WebView2 桌面壳并在冒烟后手动终止。
+- 根据 M0 退出条件，真实当前用户安装/卸载与签名 broker/UAC IPC 仍开放；因此本次交付标记为“基线与部署 API 探针完成”，不标记为“部署验收完成”。
+
 ## 阻塞项与风险
 
 | Item | Status | Handling |
