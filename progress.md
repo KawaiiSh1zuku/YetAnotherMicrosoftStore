@@ -32,7 +32,6 @@
 
 | Item | Status | Handling |
 |---|---|---|
-| 项目没有 Git 仓库 | 已知 | 先写文档不提交；只有在用户明确批准项目流程后才初始化/版本化 |
 | `storelib_rs` 非 Microsoft 官方库且协议端点不稳定 | 已知 | 通过 provider trait 隔离、固定 revision、加入 fixture 和替换路径 |
 | 全用户部署需要提权/预配语义 | 开放 | 实现前先做原生 Rust/WinRT Spike |
 | msixvc 是 Xbox 专用包族 | 已知 | 第一阶段只识别；专门能力验证前不下载、安装或更新 |
