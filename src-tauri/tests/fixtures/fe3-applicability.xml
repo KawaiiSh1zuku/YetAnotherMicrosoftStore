@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<root>
+  <NewUpdates>
+    <UpdateInfo>
+      <ID>42</ID>
+      <Xml>
+        <UpdateIdentity UpdateID="resource-update" RevisionNumber="1"/>
+        <Properties><SecuredFragment/></Properties>
+        <Metadata>
+          <AppxPackageMetadata>
+            <AppxFamilyMetadata Name="Contoso.Notes" Publisher="CN=Contoso"/>
+            <AppxMetadata PackageMoniker="Contoso.Notes_2.4.6.8_x64_zh-cn_abc" PackageType="AppX" IsAppxBundle="false">{"blob.version":1,"content.isMain":false,"content.packageId":"content-123","content.targetPlatforms":[{"platform.minVersion":2814751015239680,"platform.target":0}]}</AppxMetadata>
+          </AppxPackageMetadata>
+        </Metadata>
+      </Xml>
+    </UpdateInfo>
+  </NewUpdates>
+  <ExtendedUpdateInfo>
+    <Updates>
+      <Update>
+        <ID>42</ID>
+        <Xml>
+          <ExtendedProperties Handler="appx" IsAppxFramework="false" PackageContentId="content-123" PackageIdentityName="Contoso.Notes" DefaultPropertiesLanguage="zh-CN"/>
+          <Files>
+            <File FileName="resource.msix" InstallerSpecificIdentifier="Contoso.Notes_2.4.6.8_x64_zh-cn_abc" Size="4096"/>
+          </Files>
+          <HandlerSpecificData type="appx:AppxInstaller">
+            <AppxPackageInstallData MainPackage="false" PackageFileName="resource.msix"/>
+          </HandlerSpecificData>
+        </Xml>
+      </Update>
+    </Updates>
+  </ExtendedUpdateInfo>
+</root>

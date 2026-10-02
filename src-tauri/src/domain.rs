@@ -1,4 +1,88 @@
-use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
+
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PackageVersion([u16; 4]);
+
+impl PackageVersion {
+    pub const fn new(major: u16, minor: u16, build: u16, revision: u16) -> Self {
+        Self([major, minor, build, revision])
+    }
+
+    pub const fn components(self) -> [u16; 4] {
+        self.0
+    }
+
+    pub const fn from_packed(value: u64) -> Self {
+        Self([
+            (value >> 48) as u16,
+            (value >> 32) as u16,
+            (value >> 16) as u16,
+            value as u16,
+        ])
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackageVersionParseError;
+
+impl fmt::Display for PackageVersionParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("package version must contain four unsigned 16-bit components")
+    }
+}
+
+impl std::error::Error for PackageVersionParseError {}
+
+impl FromStr for PackageVersion {
+    type Err = PackageVersionParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut components = value.split('.');
+        let mut parsed = [0_u16; 4];
+        for component in &mut parsed {
+            *component = components
+                .next()
+                .ok_or(PackageVersionParseError)?
+                .parse()
+                .map_err(|_| PackageVersionParseError)?;
+        }
+        if components.next().is_some() {
+            return Err(PackageVersionParseError);
+        }
+        Ok(Self(parsed))
+    }
+}
+
+impl fmt::Display for PackageVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}.{}.{}.{}",
+            self.0[0], self.0[1], self.0[2], self.0[3]
+        )
+    }
+}
+
+impl Serialize for PackageVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(de::Error::custom)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +102,17 @@ pub enum PackageFormat {
     AppxBundle,
     Eappx,
     EappxBundle,
+    Msixvc,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageKind {
+    Main,
+    Framework,
+    Resource,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,11 +132,17 @@ pub struct PackageRecord {
     pub package_family_name: Option<String>,
     pub package_moniker: String,
     pub identity_name: Option<String>,
-    pub version: String,
+    pub publisher: Option<String>,
+    pub resource_id: Option<String>,
+    pub package_kind: PackageKind,
+    pub version: PackageVersion,
     pub architecture: Architecture,
     pub language: Option<String>,
     pub market: String,
     pub format: PackageFormat,
+    pub minimum_os_version: Option<PackageVersion>,
+    pub is_neutral: Option<bool>,
+    pub content_id: Option<String>,
     pub file_size: Option<u64>,
     pub sha256: Option<String>,
     pub install_source: InstallSource,

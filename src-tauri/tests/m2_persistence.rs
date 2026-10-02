@@ -8,7 +8,8 @@ use yet_another_microsoft_store_lib::{
     domain::{
         AppSettings, Architecture, CacheEntry, CacheState, DependencyKind, DiagnosticEvent,
         DiagnosticOperation, InstallObservation, InstallSource, PackageDependency, PackageFormat,
-        PackageRecord, ProductRecord, ProxyCredentialPolicy, ProxyMode,
+        PackageKind, PackageRecord, PackageVersion, ProductRecord, ProxyCredentialPolicy,
+        ProxyMode,
     },
     error::ErrorCode,
     jobs::{Job, JobKind, JobStage, RecoveryAction},
@@ -59,11 +60,17 @@ fn package() -> PackageRecord {
         package_family_name: Some("Example.App_123".to_owned()),
         package_moniker: "example-main".to_owned(),
         identity_name: Some("Example.App".to_owned()),
-        version: "1.2.3.4".to_owned(),
+        publisher: Some("CN=Example".to_owned()),
+        resource_id: None,
+        package_kind: PackageKind::Main,
+        version: PackageVersion::new(1, 2, 3, 4),
         architecture: Architecture::X64,
         language: Some("zh-CN".to_owned()),
         market: "CN".to_owned(),
         format: PackageFormat::MsixBundle,
+        minimum_os_version: Some(PackageVersion::new(10, 0, 19045, 0)),
+        is_neutral: Some(true),
+        content_id: Some("content-main".to_owned()),
         file_size: Some(4096),
         sha256: Some("abcdef".to_owned()),
         install_source: InstallSource::MicrosoftStore,
@@ -99,11 +106,11 @@ fn schema_migration_is_replayable() {
     let database = TestDatabase::new("migration-replay");
 
     let first = Persistence::open(database.path()).expect("first migration should succeed");
-    assert_eq!(first.schema_version().expect("schema version"), 1);
+    assert_eq!(first.schema_version().expect("schema version"), 2);
     drop(first);
 
     let reopened = Persistence::open(database.path()).expect("migration replay should succeed");
-    assert_eq!(reopened.schema_version().expect("schema version"), 1);
+    assert_eq!(reopened.schema_version().expect("schema version"), 2);
 }
 
 #[test]

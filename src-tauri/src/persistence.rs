@@ -11,14 +11,18 @@ use crate::{
     deployment::DeploymentScope,
     domain::{
         AppSettings, Architecture, CacheEntry, CacheState, DiagnosticEvent, InstallObservation,
-        InstallSource, PackageDependency, PackageFormat, PackageRecord, ProductRecord,
+        InstallSource, PackageDependency, PackageFormat, PackageKind, PackageRecord,
+        PackageVersion, ProductRecord,
     },
     error::{AppErrorDto, ErrorCode},
     jobs::{Job, JobKind, JobStage, RecoveryAction},
 };
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_m2.sql"))];
+const CURRENT_SCHEMA_VERSION: i64 = 2;
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_m2.sql")),
+    (2, include_str!("../migrations/0002_m3_applicability.sql")),
+];
 
 #[derive(Debug)]
 pub enum PersistenceError {
@@ -166,18 +170,29 @@ impl Persistence {
         self.connection.execute(
             "INSERT INTO package_versions (
                 update_id, product_id, package_family_name, package_moniker, identity_name,
-                version, architecture, language, market, format, file_size, sha256, install_source
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                publisher, resource_id, package_kind, version, architecture, language, market,
+                format, minimum_os_version, is_neutral, content_id, file_size, sha256,
+                install_source
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                ?15, ?16, ?17, ?18, ?19
+             )
              ON CONFLICT(update_id) DO UPDATE SET
                 product_id = excluded.product_id,
                 package_family_name = excluded.package_family_name,
                 package_moniker = excluded.package_moniker,
                 identity_name = excluded.identity_name,
+                publisher = excluded.publisher,
+                resource_id = excluded.resource_id,
+                package_kind = excluded.package_kind,
                 version = excluded.version,
                 architecture = excluded.architecture,
                 language = excluded.language,
                 market = excluded.market,
                 format = excluded.format,
+                minimum_os_version = excluded.minimum_os_version,
+                is_neutral = excluded.is_neutral,
+                content_id = excluded.content_id,
                 file_size = excluded.file_size,
                 sha256 = excluded.sha256,
                 install_source = excluded.install_source",
@@ -187,11 +202,19 @@ impl Persistence {
                 package.package_family_name,
                 package.package_moniker,
                 package.identity_name,
-                package.version,
+                package.publisher,
+                package.resource_id,
+                enum_text(package.package_kind)?,
+                package.version.to_string(),
                 enum_text(package.architecture)?,
                 package.language,
                 package.market,
                 enum_text(package.format)?,
+                package
+                    .minimum_os_version
+                    .map(|version| version.to_string()),
+                package.is_neutral.map(i64::from),
+                package.content_id,
                 package
                     .file_size
                     .map(|value| to_i64(value, "file_size"))
@@ -208,8 +231,9 @@ impl Persistence {
             .connection
             .query_row(
                 "SELECT update_id, product_id, package_family_name, package_moniker,
-                        identity_name, version, architecture, language, market, format,
-                        file_size, sha256, install_source
+                        identity_name, publisher, resource_id, package_kind, version,
+                        architecture, language, market, format, minimum_os_version,
+                        is_neutral, content_id, file_size, sha256, install_source
                  FROM package_versions WHERE update_id = ?1",
                 [update_id],
                 read_package_row,
@@ -597,11 +621,17 @@ struct PackageRow {
     package_family_name: Option<String>,
     package_moniker: String,
     identity_name: Option<String>,
+    publisher: Option<String>,
+    resource_id: Option<String>,
+    package_kind: String,
     version: String,
     architecture: String,
     language: Option<String>,
     market: String,
     format: String,
+    minimum_os_version: Option<String>,
+    is_neutral: Option<i64>,
+    content_id: Option<String>,
     file_size: Option<i64>,
     sha256: Option<String>,
     install_source: String,
@@ -614,14 +644,20 @@ fn read_package_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
         package_family_name: row.get(2)?,
         package_moniker: row.get(3)?,
         identity_name: row.get(4)?,
-        version: row.get(5)?,
-        architecture: row.get(6)?,
-        language: row.get(7)?,
-        market: row.get(8)?,
-        format: row.get(9)?,
-        file_size: row.get(10)?,
-        sha256: row.get(11)?,
-        install_source: row.get(12)?,
+        publisher: row.get(5)?,
+        resource_id: row.get(6)?,
+        package_kind: row.get(7)?,
+        version: row.get(8)?,
+        architecture: row.get(9)?,
+        language: row.get(10)?,
+        market: row.get(11)?,
+        format: row.get(12)?,
+        minimum_os_version: row.get(13)?,
+        is_neutral: row.get(14)?,
+        content_id: row.get(15)?,
+        file_size: row.get(16)?,
+        sha256: row.get(17)?,
+        install_source: row.get(18)?,
     })
 }
 
@@ -635,11 +671,34 @@ impl TryFrom<PackageRow> for PackageRecord {
             package_family_name: row.package_family_name,
             package_moniker: row.package_moniker,
             identity_name: row.identity_name,
-            version: row.version,
+            publisher: row.publisher,
+            resource_id: row.resource_id,
+            package_kind: parse_enum::<PackageKind>(&row.package_kind, "package.package_kind")?,
+            version: row
+                .version
+                .parse::<PackageVersion>()
+                .map_err(|_| PersistenceError::InvalidStoredValue("package.version"))?,
             architecture: parse_enum::<Architecture>(&row.architecture, "package.architecture")?,
             language: row.language,
             market: row.market,
             format: parse_enum::<PackageFormat>(&row.format, "package.format")?,
+            minimum_os_version: row
+                .minimum_os_version
+                .map(|value| {
+                    value.parse::<PackageVersion>().map_err(|_| {
+                        PersistenceError::InvalidStoredValue("package.minimum_os_version")
+                    })
+                })
+                .transpose()?,
+            is_neutral: row
+                .is_neutral
+                .map(|value| match value {
+                    0 => Ok(false),
+                    1 => Ok(true),
+                    _ => Err(PersistenceError::InvalidStoredValue("package.is_neutral")),
+                })
+                .transpose()?,
+            content_id: row.content_id,
             file_size: row
                 .file_size
                 .map(|value| from_i64(value, "package.file_size"))

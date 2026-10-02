@@ -59,6 +59,7 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+pub mod applicability;
 pub mod broker;
 pub mod broker_launcher;
 pub mod broker_protocol;

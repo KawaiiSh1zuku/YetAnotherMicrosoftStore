@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端实现计划
 
-> 状态：已完成 M0-M2 对照审查。M0 为受控 Windows E2 完成，M1/M2 为自动化 E1 完成；M3 尚未开始。实时 Store/FE3、下载、资源选择、跨渠道更新和发布能力仍按后续里程碑门控。
+> 状态：已完成 M0-M3 对照审查。M0 为受控 Windows E2 完成，M1-M3 为自动化 E1 完成；M4 尚未开始。实时 Store/FE3、下载、部署编排、跨渠道更新和发布能力仍按后续里程碑门控。
 
 ## 1. 执行范围
 
@@ -62,7 +62,7 @@ src-tauri/
     broker_protocol.rs         # M0
     broker_launcher.rs         # M0
     package_validation.rs      # M0
-    applicability.rs           # M3 计划
+    applicability.rs           # M3
     download.rs                # M4 计划
     verification.rs            # M4/M5 计划
     settings.rs                # M4 计划
@@ -70,7 +70,7 @@ src-tauri/
   broker/                      # M0 独立 requireAdministrator binary
   migrations/
     0001_m2.sql
-    0002_m3_applicability.sql   # M3 计划；不得改写 0001
+    0002_m3_applicability.sql   # M3；不得改写 0001
   tests/fixtures/
 src/
   main.tsx
@@ -97,7 +97,7 @@ docs/
 | M0 基线与部署 Spike | 完成（E2） | 建立 Tauri/Rust 基线、当前用户部署、一次性 UAC Broker 和双层清单 | Windows 10 build 19045 x64 上以既有自签 MSIX 完成 CurrentUser/AllUsers 回环、后置清单和证书清理；自动化协议/校验测试通过 | 其他 Windows 构建、ARM64/x86 主机、bundle/eAppx 真实载荷未验收 |
 | M1 Store 协议适配 | 完成（E1） | 固定并隔离 `storelib_rs`，规范化 DCAT/FE3 | `storelib_rs 0.1.11`、`roxmltree 0.20.0` 精确固定；5 项 fixture/adapter 契约测试通过 | 未执行实时 Store/FE3、授权、地区或 CDN URL 验收 |
 | M2 领域模型与持久化 | 完成（E1） | 建立包/产品/任务/设置/缓存模型、schema v1 和重启恢复 | 13 项 M2 测试覆盖错误序列化、迁移重放/回滚、repository 往返、请求上下文和恢复语义 | M3 适用性字段与封闭错误详情尚未补齐 |
-| M3 适用性与资源选择 | 未开始 | 补齐 schema v2/领域字段，实现 OS、架构、市场、语言、资源和依赖选择 | x64/ARM64/x86、neutral、多个市场/语言、资源包、依赖状态、最低 OS 和防降级表驱动测试通过；选择结果可解释 | 不访问实时下载，不执行部署 |
+| M3 适用性与资源选择 | 完成（E1） | 补齐 schema v2/领域字段，实现 OS、架构、市场、语言、资源和依赖选择 | 23 项 M3 测试覆盖强类型版本、封闭错误、v1→v2、旧错误任务兼容、x64/ARM64/x86/neutral、市场/语言、资源分组、依赖环/传递依赖、最低 OS、格式门和防降级；选择结果可解释 | 只验证本地逻辑和脱敏 fixture；不访问实时下载，不执行部署 |
 | M4 下载、缓存与代理 | 未开始 | 实现受控实时协议 smoke、可续传下载、缓存和四种代理模式 | host allowlist、Range、URL 过期重解析、缓存淘汰、disabled/system/HTTP(S)/SOCKS5、日志脱敏通过；记录线上测试时间/市场 | system PAC/WPAD 范围须单独确认；不宣称跨渠道更新 |
 | M5 安装/更新编排与身份关联 | 未开始 | 复用 M0 部署原语接入适用包图、版本差异和 Store 产品关联 | 包图安装/更新、清单重扫、严格更新、防降级、PFN/Product ID 关联和稳定错误映射通过 | 不重复实现 Broker；官方 Store 接管仍待 M7 |
 | M6 Tauri API 与前端主流程 | 未开始 | 冻结安全命令/事件 DTO，完成搜索、详情、队列、已安装和设置 UI | 移除脚手架接口；UI 完成主流程、进度/取消/恢复、键盘/焦点/窄窗口检查 | 静态 mock 不能代替 M5 后端集成 |
@@ -159,21 +159,23 @@ M8 ──> M9（新范围审批后）
 
 ### M3A：模型加固与 schema v2
 
-- 在 `PackageRecord`/resolver 映射中补齐 publisher、resource ID、package kind、最低 Windows build、资源限定/neutral 信息和可用的内容标识。
-- 新增 `0002_m3_applicability.sql`，验证从 schema v1 升级、重复执行、失败回滚和旧数据默认语义。
-- 将 `SafeErrorDetail` 改为封闭 enum/typed detail；建立允许字段与错误码的映射测试。
-- 为版本建立可比较的四段值或强类型，避免用任意字符串执行更新比较。
+- [x] 在 `PackageRecord`/resolver 映射中补齐 publisher、resource ID、package kind、最低 Windows build、资源限定/neutral 信息和可用的内容标识。
+- [x] 新增 `0002_m3_applicability.sql`，验证从 schema v1 升级、重复执行、失败回滚和旧数据默认语义。
+- [x] 将 `SafeErrorDetail` 改为封闭 enum/typed detail；建立允许字段与错误码的映射测试。
+- [x] 为版本建立可比较的四段强类型，避免用任意字符串执行更新比较。
 
 退出条件：旧 M2 数据库可无损升级；DTO/错误快照稳定；没有 URL、令牌、响应正文或凭据可进入前端/SQLite 安全字段。
 
 ### M3B：适用性与资源选择
 
-- 新建 `applicability.rs`，输入主机能力、用户偏好、已安装清单和 `PackageGraph`，输出选定包图与逐项解释。
-- 实现 OS build、x64/ARM64/x86/neutral、市场、BCP-47 语言回退、资源包、框架依赖、bundle 和格式门控。
-- 明确 ARM64 主机对 x64/x86 的兼容策略；不得仅凭 CPU 架构硬编码选择。
-- 实现严格更新与防降级；“修复”请求必须是单独策略而不是更新默认路径。
+- [x] 新建 `applicability.rs`，输入主机能力、用户偏好、已安装清单和 `PackageGraph`，输出选定包图与逐项解释。
+- [x] 实现 OS build、x64/ARM64/x86/neutral、市场、BCP-47 语言回退、资源包、框架依赖、bundle 和格式门控。
+- [x] ARM64 主机对 x64/x86 的兼容性由显式主机能力列表提供，不凭 CPU 架构硬编码。
+- [x] 实现严格更新与防降级；“修复”请求使用独立策略，不进入更新默认路径。
 
 退出条件：表驱动/属性测试覆盖架构、市场、语言、资源包、依赖已安装/缺失、最低 OS、版本领先和不支持格式；选择结果可序列化供 UI 解释。
+
+审查结论：M3A/M3B 达到本地自动化 E1。`PackageVersion`、schema v2、封闭错误详情、FE3 适用性映射和纯选择器已有测试；没有实时 Store、下载、bundle/eAppx 部署或跨渠道证据。
 
 ### M4：实时解析、下载、缓存与代理
 
@@ -226,13 +228,14 @@ M8 ──> M9（新范围审批后）
 - 单独记录 Xbox/MSIXVC API、服务、许可、磁盘和流式安装要求。
 - 未获得新的范围批准前，不修改第一阶段支持矩阵，也不实现下载、安装或更新。
 
-## 7. M0-M2 进度与计划匹配审查
+## 7. M0-M3 进度与计划匹配审查
 
 | 里程碑 | 原计划核心要求 | 当前实际证据 | 偏差与处置 | 结论 |
 |---|---|---|---|---|
 | M0 | 工程基线、当前用户部署、全用户 UAC/预配、双层清单、支持矩阵 | 提交 `157c23c`；M0 专项 Task 1-7；E1 测试；Windows 10 19045 x64 的 CurrentUser/AllUsers E2 回环与证书清理记录 | 总计划曾把 Broker/机器清单重复放到 M5；已把 M5 改为复用 M0。专项规格陈旧“待审阅”状态已修正 | 匹配，完成（E2） |
 | M1 | `storelib_rs` 隔离、DCAT/FE3 规范化、fixture 契约 | `catalog.rs`、`resolver.rs`、5 项 `m1_protocol` 测试，依赖精确固定 | 原计划把 Windows `PackageIdentity`/安装清单混入 M1；已归回 M0/M2。没有实时端点证据，明确留到 M4 | 匹配，完成（E1，离线） |
 | M2 | 领域 DTO、稳定错误码、任务状态机、SQLite schema/repository、迁移与恢复 | `domain.rs`、`error.rs`、`jobs.rs`、`persistence.rs`、`0001_m2.sql`；13 项 M2 测试 | publisher/resource ID/package kind/min OS 和封闭 error detail 尚缺；不属于原 M2 最低退出条件，已提升为 M3A 强制入口任务 | 匹配，完成（E1，本地） |
+| M3 | schema v2、适用性字段、强类型版本、封闭错误详情和可解释选择器 | `0002_m3_applicability.sql`、`applicability.rs`、resolver 映射；23 项 M3 测试和 1 项扩展 M1 fixture 测试 | production adapter 尚未实时验收；bundle/eAppx 只做本地选择，不等于下载或部署支持 | 匹配，完成（E1，本地） |
 
 本轮可复现验证命令：
 
@@ -244,7 +247,7 @@ cargo check --manifest-path src-tauri/broker/Cargo.toml
 pnpm build
 ```
 
-当前结果：38 项 Rust 测试通过，3 项需要签名包/环境变量的 M0 真实部署测试 ignored；格式、默认特性严格 Clippy、Broker check 和前端构建通过。ignored 测试不替代历史 E2 验收，也不构成实时 Store/FE3 或跨渠道证据。
+当前结果：62 项 Rust 测试通过，3 项需要签名包/环境变量的 M0 真实部署测试 ignored；格式、默认特性严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建均通过。ignored 测试不替代历史 E2 验收，也不构成实时 Store/FE3、下载、部署或跨渠道证据。
 
 ## 8. 风险、回滚与停止条件
 
@@ -273,4 +276,4 @@ pnpm build
 
 ## 10. 当前执行点
 
-中文规格和本实现计划已获批准，M0-M2 的进度/代码/测试/证据与计划已完成对照审查。下一步进入 M3A：新增 schema v2、补齐适用性字段、强类型版本和封闭安全错误详情；M3A 通过后再实现 M3B 选择器。实时 Display Catalog/FE3、真实下载、跨渠道更新、NSIS 发布和 MSIXVC 仍未验收，不得从 fixture、SQLite 或本地构建结果推断支持。
+中文规格和本实现计划已获批准，M0-M3 的进度/代码/测试/证据与计划已完成对照审查。下一步进入 M4：先在显式开关下取得受控 production adapter smoke，再实现代理、续传下载、缓存恢复、host/redirect allowlist 和流式校验。实时下载、包图部署、跨渠道更新、NSIS 发布和 MSIXVC 仍未验收，不得从 fixture、SQLite 或本地构建结果推断支持。

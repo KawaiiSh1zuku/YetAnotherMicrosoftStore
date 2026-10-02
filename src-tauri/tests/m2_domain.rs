@@ -4,7 +4,7 @@ use yet_another_microsoft_store_lib::{
     deployment::DeploymentScope,
     domain::{
         Architecture, DiagnosticEvent, DiagnosticOperation, InstallSource, PackageFormat,
-        PackageRecord,
+        PackageKind, PackageRecord, PackageVersion,
     },
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     jobs::{Job, JobKind, JobStage, RecoveryAction},
@@ -42,11 +42,17 @@ fn package_domain_serializes_identity_selection_and_source_fields() {
         package_family_name: Some("Example.App_123".to_owned()),
         package_moniker: "example-main".to_owned(),
         identity_name: Some("Example.App".to_owned()),
-        version: "1.2.3.4".to_owned(),
+        publisher: Some("CN=Example".to_owned()),
+        resource_id: None,
+        package_kind: PackageKind::Main,
+        version: PackageVersion::new(1, 2, 3, 4),
         architecture: Architecture::X64,
         language: Some("zh-CN".to_owned()),
         market: "CN".to_owned(),
         format: PackageFormat::MsixBundle,
+        minimum_os_version: Some(PackageVersion::new(10, 0, 19045, 0)),
+        is_neutral: Some(true),
+        content_id: Some("content-main".to_owned()),
         file_size: Some(4096),
         sha256: Some("abcdef".to_owned()),
         install_source: InstallSource::MicrosoftStore,
@@ -60,11 +66,17 @@ fn package_domain_serializes_identity_selection_and_source_fields() {
             "packageFamilyName": "Example.App_123",
             "packageMoniker": "example-main",
             "identityName": "Example.App",
+            "publisher": "CN=Example",
+            "resourceId": null,
+            "packageKind": "main",
             "version": "1.2.3.4",
             "architecture": "x64",
             "language": "zh-CN",
             "market": "CN",
             "format": "msix_bundle",
+            "minimumOsVersion": "10.0.19045.0",
+            "isNeutral": true,
+            "contentId": "content-main",
             "fileSize": 4096,
             "sha256": "abcdef",
             "installSource": "microsoft_store"
@@ -86,7 +98,7 @@ fn frontend_error_serialization_is_stable_and_does_not_expose_protocol_details()
             "code": "catalog_unavailable",
             "messageKey": "errors.catalogUnavailable",
             "retry": "re_resolve",
-            "details": [{"key": "field", "value": "packageUri"}]
+            "details": [{"kind": "field", "field": "package_uri"}]
         })
     );
 }
@@ -148,6 +160,7 @@ fn documented_error_code_set_is_stable() {
         ErrorCode::VersionAheadOfCatalog,
         ErrorCode::MsixvcCapabilityUnavailable,
         ErrorCode::UnsupportedPackageType,
+        ErrorCode::PackageNotInstalled,
     ];
 
     assert_eq!(
@@ -172,7 +185,8 @@ fn documented_error_code_set_is_stable() {
             "source_identity_mismatch",
             "version_ahead_of_catalog",
             "msixvc_capability_unavailable",
-            "unsupported_package_type"
+            "unsupported_package_type",
+            "package_not_installed"
         ])
     );
 }

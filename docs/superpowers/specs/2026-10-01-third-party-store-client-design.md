@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端设计规格
 
-> 状态：架构已批准并完成 M0-M2 对照审查。M0 原生部署基础达到受控 Windows 实机证据，M1 离线协议适配和 M2 领域持久化达到自动化测试证据；M3 及后续能力仍须逐级验收。实时 Store/FE3、下载、资源选择和跨渠道互操作不能由 fixture、SQLite 测试或构建结果推断为已支持。
+> 状态：架构已批准并完成 M0-M3 对照审查。M0 原生部署基础达到受控 Windows 实机证据，M1 离线协议适配、M2 领域持久化和 M3 适用性选择达到自动化测试证据；M4 及后续能力仍须逐级验收。实时 Store/FE3、下载、部署编排和跨渠道互操作不能由 fixture、SQLite 测试或构建结果推断为已支持。
 
 ## 关键边界
 
@@ -38,7 +38,7 @@
 | E2 受控 Windows 实测 | 在记录的 Windows/载荷/权限环境完成回环 | 指定环境下的真实 Windows 行为 | 其他 OS 构建、架构、产品或市场普遍兼容 |
 | E3 在线/跨渠道实测 | 对 Microsoft 实时服务和官方 Store 完成受控测试 | 指定产品、市场、账户和时间点的互操作 | 对所有产品和授权的永久保证 |
 
-当前基线：M0 为 E2（Windows 10 build 19045 x64、自签测试 MSIX）；M1 为 E1（脱敏 DCAT/FE3 fixture）；M2 为 E1（领域、SQLite 与恢复测试）。M3-M9 尚未达到退出证据。
+当前基线：M0 为 E2（Windows 10 build 19045 x64、自签测试 MSIX）；M1 为 E1（脱敏 DCAT/FE3 fixture）；M2 为 E1（领域、SQLite 与恢复测试）；M3 为 E1（schema v2、强类型版本、封闭错误详情和纯适用性选择器）。M4-M9 尚未达到退出证据。
 
 ## 技术选型
 
@@ -132,7 +132,7 @@ flowchart LR
   DIFF --> API
 ~~~
 
-图表示目标逻辑关系，不表示所有节点当前均已实现。M0 已覆盖 `DEPLOY`、`BROKER`、`CURRENT`、`MACHINE` 和基础 `INV`；M1 已覆盖 `CAT`/`RES` 的离线适配；M2 已覆盖 `DB`、领域状态和恢复语义。`SEL`、`DL`、完整 `VERIFY`、`DIFF`、稳定 `API` 与产品 UI 属于 M3-M7。
+图表示目标逻辑关系，不表示所有节点当前均已实现。M0 已覆盖 `DEPLOY`、`BROKER`、`CURRENT`、`MACHINE` 和基础 `INV`；M1 已覆盖 `CAT`/`RES` 的离线适配；M2 已覆盖 `DB`、领域状态和恢复语义；M3 已覆盖纯函数 `SEL` 和其解释 DTO。`DL`、完整 `VERIFY`、`DIFF`、稳定 `API` 与产品 UI 属于 M4-M7。
 
 ### Rust 模块职责边界
 
@@ -283,10 +283,10 @@ M0 已在 Windows 10 build 19045 x64 上，以既有自签测试 MSIX 完成当�
 
 ## 领域模型与持久化
 
-M2 使用项目自有领域模型和 SQLite schema v1，持久化以下数据：
+M2 使用项目自有领域模型和 SQLite schema v1 建立持久化基线；M3 通过不可改写历史的 `0002_m3_applicability.sql` 升级为 schema v2。当前持久化以下数据：
 
 - 产品及其市场、本地化语言和目录更新时间。
-- 包版本、包族、moniker、架构、语言、格式、大小、哈希和观测来源。
+- 包的强类型四段版本、包族、moniker、publisher、resource ID、package kind、架构、语言、格式、最低 OS、neutral/content ID、大小、哈希和观测来源。
 - 前置依赖与 bundle 更新边。
 - 安装/更新任务的请求上下文、阶段、进度、选择结果和安全错误 DTO。
 - 缓存条目、应用设置、安装来源观测和脱敏诊断索引。
@@ -298,9 +298,9 @@ M2 使用项目自有领域模型和 SQLite schema v1，持久化以下数据：
 - 已完成或已取消任务不得在重启后自行恢复执行。
 - 原始请求市场、架构、语言和部署范围属于任务快照，不受后续全局设置变更影响。
 
-普通 SQLite 设置不得保存代理用户名、密码、令牌或 Store 临时 URL。诊断只保存封闭 operation、稳定错误码、阶段、可选 OS 错误码和时间；进入实时网络能力前，`SafeErrorDetail` 还必须从任意键值字符串收紧为封闭字段集合。
+普通 SQLite 设置不得保存代理用户名、密码、令牌或 Store 临时 URL。诊断只保存封闭 operation、稳定错误码、阶段、可选 OS 错误码和时间；`SafeErrorDetail` 已收紧为封闭字段枚举，未知协议字段不会进入前端详情。
 
-M3 进入任务必须通过新 migration 补齐 publisher、resource ID、package kind、最低 Windows build 和资源限定字段，才能实现确定性的适用性选择。不得直接修改已发布的 schema v1 内容来伪装迁移历史。
+M3 已通过新 migration 补齐 publisher、resource ID、package kind、最低 Windows build 和资源限定字段，并验证 schema v1→v2 与失败回滚。旧 schema 中任意键值错误详情只在白名单字段上兼容读取，其余值脱敏。选择器只消费项目自有 `PackageGraph`、主机能力、用户偏好和已安装清单；安装身份同时检查 identity、publisher 和 architecture，依赖环显式拒绝，语言资源按 identity 与 BCP-47 script 层级选择。ARM64 对 x64/x86 的兼容性由主机能力显式提供，不在选择器硬编码。已发布的 schema v1 保持不变。
 
 ## 代理配置
 
@@ -416,6 +416,7 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 - version_ahead_of_catalog
 - msixvc_capability_unavailable
 - unsupported_package_type
+- package_not_installed
 
 每个错误都有稳定代码、本地化用户消息、安全诊断详情和重试策略。未经重新解析，重试不得重复无效包选择或哈希验证失败的操作。Broker/M0 内部错误必须在 Tauri API 边界映射到本表中的稳定代码；原始 HRESULT 只允许进入脱敏诊断，不直接成为用户消息。
 
@@ -463,7 +464,7 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 1. M0 基线与部署 Spike：已完成。建立 Tauri/Rust 基线、当前用户部署、一次性 UAC Broker、双层清单和受控 Windows 实测。
 2. M1 Store 协议适配：已完成 E1。固定并隔离 `storelib_rs`，建立 DCAT/FE3 fixture 契约；不代表线上端点验收。
 3. M2 领域模型与持久化：已完成 E1。建立 schema v1、repository、安全错误模型和重启恢复；不代表下载或更新已实现。
-4. M3 适用性与资源选择：先补 schema v2 字段和错误详情封闭化，再实现架构、语言、市场、OS、资源包和依赖选择。
+4. M3 适用性与资源选择：已完成 E1。schema v2、强类型版本、封闭错误详情，以及架构、语言、市场、OS、资源包、依赖、格式和防降级选择已有本地自动化证据。
 5. M4 下载、缓存与代理：实现受控实时协议 smoke、四种代理模式、续传、缓存、URL 过期重解析和完整下载验证。
 6. M5 安装/更新编排与身份关联：复用 M0 部署基础，接入包图、版本差异、Store 产品关联和来源无关更新，不重复实现 Broker。
 7. M6 Tauri API 与前端主流程：冻结安全 DTO 和命令/事件，完成搜索、详情、队列、已安装和设置 UI。
@@ -482,4 +483,4 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 
 ## 当前执行门
 
-M0-M2 已通过本规格规定的对应证据门。本轮细化完成后，下一实施工作是 M3：先完成 schema v2/领域字段补齐和 `SafeErrorDetail` 封闭化，再实现适用性选择。实时 Store、下载、跨渠道更新、NSIS 发布和 MSIXVC 仍分别受 M4、M7、M8、M9 门控。
+M0-M3 已通过本规格规定的对应证据门。下一实施工作是 M4：受控 production adapter smoke、代理边界、续传下载、缓存恢复、host/redirect allowlist 和流式校验。实时下载、包图部署、跨渠道更新、NSIS 发布和 MSIXVC 仍分别受 M4/M5、M7、M8、M9 门控。

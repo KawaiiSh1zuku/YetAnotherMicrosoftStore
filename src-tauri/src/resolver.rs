@@ -4,6 +4,8 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use storelib_rs::{DisplayCatalogHandler, FE3Handler, IdentifierType, PackageType};
 
+use crate::domain::{Architecture, PackageFormat, PackageKind, PackageVersion};
+
 pub type ResolverFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,12 +31,25 @@ pub struct ResolvedPackage {
     pub file_size: Option<u64>,
     pub digest: Option<String>,
     pub update_id: String,
+    pub identity_name: Option<String>,
+    pub publisher: Option<String>,
+    pub version: PackageVersion,
+    pub architecture: Architecture,
+    pub resource_id: Option<String>,
+    pub package_kind: PackageKind,
+    pub minimum_os_version: Option<PackageVersion>,
+    pub language: Option<String>,
+    pub is_neutral: Option<bool>,
+    pub content_id: Option<String>,
+    pub format: PackageFormat,
     pub prerequisites: Vec<String>,
     pub bundled_updates: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PackageGraph {
+    pub product_id: Option<String>,
+    pub market: Option<String>,
     pub packages: Vec<ResolvedPackage>,
     pub dependencies: Vec<DependencyEdge>,
 }
@@ -44,6 +59,9 @@ pub enum ResolverError {
     MalformedFixture(String),
     MissingField(&'static str),
     InvalidPackageSize,
+    InvalidPackageMoniker,
+    UnsupportedPackageFormat,
+    InvalidMinimumOsVersion,
     StoreLib,
 }
 
@@ -55,6 +73,13 @@ impl std::fmt::Display for ResolverError {
             }
             Self::MissingField(field) => write!(formatter, "FE3 field is missing: {field}"),
             Self::InvalidPackageSize => formatter.write_str("FE3 package size is invalid"),
+            Self::InvalidPackageMoniker => formatter.write_str("FE3 package moniker is invalid"),
+            Self::UnsupportedPackageFormat => {
+                formatter.write_str("FE3 package format is unsupported")
+            }
+            Self::InvalidMinimumOsVersion => {
+                formatter.write_str("FE3 minimum OS version is invalid")
+            }
             Self::StoreLib => formatter.write_str("store protocol request failed"),
         }
     }
@@ -122,7 +147,10 @@ impl PackageResolver for StoreLibResolverAdapter {
                 .get_packages_for_product(None)
                 .await
                 .map_err(|_| ResolverError::StoreLib)?;
-            normalize_instances(instances)
+            let mut graph = normalize_instances(instances)?;
+            graph.product_id = Some(product_id.to_owned());
+            graph.market = Some(self.handler.selected_locale.market.as_str().to_owned());
+            Ok(graph)
         })
     }
 }
@@ -143,6 +171,48 @@ fn normalize_instances(
             .file_size
             .map(|size| u64::try_from(size).map_err(|_| ResolverError::InvalidPackageSize))
             .transpose()?;
+        let moniker = parse_package_moniker(&instance.package_moniker)?;
+        let identity_name = instance
+            .package_identity_name
+            .clone()
+            .or_else(|| Some(moniker.identity_name.to_owned()));
+        let publisher = instance
+            .family_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.publisher.clone());
+        let language = instance.default_properties_language.clone();
+        let is_framework = instance.is_appx_framework == Some(true)
+            || instance
+                .update_properties
+                .as_ref()
+                .and_then(|properties| properties.is_appx_framework)
+                == Some(true);
+        let is_resource = instance.main_package == Some(false)
+            || instance
+                .applicability_blob
+                .as_ref()
+                .and_then(|blob| blob.content_is_main)
+                == Some(false);
+        let package_kind = if is_framework {
+            PackageKind::Framework
+        } else if is_resource {
+            PackageKind::Resource
+        } else {
+            PackageKind::Main
+        };
+        let minimum_os_version = minimum_os_version(&instance)?;
+        let content_id = instance.package_content_id.clone().or_else(|| {
+            instance
+                .applicability_blob
+                .as_ref()
+                .and_then(|blob| blob.content_package_id.clone())
+        });
+        let format = package_format(
+            instance.file_name.as_deref(),
+            &instance.package_type,
+            instance.is_appx_bundle,
+        )?;
+        let is_neutral = Some(moniker.resource_id.is_none() && language.is_none());
         for target in &instance.prerequisites {
             graph.dependencies.push(DependencyEdge {
                 source_update_id: instance.update_id.clone(),
@@ -160,12 +230,23 @@ fn normalize_instances(
 
         graph.packages.push(ResolvedPackage {
             package_moniker: instance.package_moniker,
-            package_type: package_type_name(instance.package_type),
+            package_type: package_type_name(&instance.package_type),
             package_uri: instance.package_uri,
             file_name: instance.file_name.or(instance.package_file_name),
             file_size,
             digest: instance.digest,
             update_id: instance.update_id,
+            identity_name,
+            publisher,
+            version: moniker.version,
+            architecture: moniker.architecture,
+            resource_id: moniker.resource_id,
+            package_kind,
+            minimum_os_version,
+            language,
+            is_neutral,
+            content_id,
+            format,
             prerequisites: instance.prerequisites,
             bundled_updates: instance.bundled_updates,
         });
@@ -173,7 +254,90 @@ fn normalize_instances(
     Ok(graph)
 }
 
-fn package_type_name(package_type: PackageType) -> String {
+struct MonikerMetadata {
+    identity_name: String,
+    version: PackageVersion,
+    architecture: Architecture,
+    resource_id: Option<String>,
+}
+
+fn parse_package_moniker(value: &str) -> Result<MonikerMetadata, ResolverError> {
+    let mut parts = value.rsplitn(5, '_');
+    let _publisher_id = parts.next().ok_or(ResolverError::InvalidPackageMoniker)?;
+    let resource_id = parts.next().ok_or(ResolverError::InvalidPackageMoniker)?;
+    let architecture = match parts.next() {
+        Some("x64" | "amd64") => Architecture::X64,
+        Some("arm64") => Architecture::Arm64,
+        Some("x86") => Architecture::X86,
+        Some("neutral") => Architecture::Neutral,
+        _ => return Err(ResolverError::InvalidPackageMoniker),
+    };
+    let version = parts
+        .next()
+        .ok_or(ResolverError::InvalidPackageMoniker)?
+        .parse()
+        .map_err(|_| ResolverError::InvalidPackageMoniker)?;
+    let identity_name = parts
+        .next()
+        .filter(|identity| !identity.is_empty())
+        .ok_or(ResolverError::InvalidPackageMoniker)?;
+
+    Ok(MonikerMetadata {
+        identity_name: identity_name.to_owned(),
+        version,
+        architecture,
+        resource_id: (!resource_id.is_empty()).then(|| resource_id.to_owned()),
+    })
+}
+
+fn minimum_os_version(
+    instance: &storelib_rs::PackageInstance,
+) -> Result<Option<PackageVersion>, ResolverError> {
+    let mut minimum = None;
+    for value in instance
+        .applicability_blob
+        .as_ref()
+        .and_then(|blob| blob.content_target_platforms.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|platform| platform.platform_min_version)
+    {
+        let packed = u64::try_from(value).map_err(|_| ResolverError::InvalidMinimumOsVersion)?;
+        let version = PackageVersion::from_packed(packed);
+        minimum = Some(minimum.map_or(version, |current: PackageVersion| current.max(version)));
+    }
+    Ok(minimum)
+}
+
+fn package_format(
+    file_name: Option<&str>,
+    package_type: &PackageType,
+    is_bundle: Option<bool>,
+) -> Result<PackageFormat, ResolverError> {
+    let extension = file_name
+        .and_then(|name| name.rsplit_once('.').map(|(_, extension)| extension))
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("msix") => Ok(PackageFormat::Msix),
+        Some("appx") => Ok(PackageFormat::Appx),
+        Some("msixbundle") => Ok(PackageFormat::MsixBundle),
+        Some("appxbundle") => Ok(PackageFormat::AppxBundle),
+        Some("eappx" | "emsix") => Ok(PackageFormat::Eappx),
+        Some("eappxbundle" | "emsixbundle") => Ok(PackageFormat::EappxBundle),
+        Some("msixvc") => Ok(PackageFormat::Msixvc),
+        Some(_) => Err(ResolverError::UnsupportedPackageFormat),
+        None if matches!(package_type, PackageType::AppX | PackageType::Uap) => {
+            if is_bundle == Some(true) {
+                Ok(PackageFormat::AppxBundle)
+            } else {
+                Ok(PackageFormat::Appx)
+            }
+        }
+        None => Ok(PackageFormat::Unknown),
+    }
+}
+
+fn package_type_name(package_type: &PackageType) -> String {
     match package_type {
         PackageType::AppX => "appx".to_owned(),
         PackageType::Uap => "uap".to_owned(),

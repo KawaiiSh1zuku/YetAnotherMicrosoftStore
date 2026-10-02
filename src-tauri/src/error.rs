@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{catalog::CatalogError, resolver::ResolverError};
+use crate::{applicability::ApplicabilityError, catalog::CatalogError, resolver::ResolverError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +25,7 @@ pub enum ErrorCode {
     VersionAheadOfCatalog,
     MsixvcCapabilityUnavailable,
     UnsupportedPackageType,
+    PackageNotInstalled,
 }
 
 impl ErrorCode {
@@ -50,6 +51,7 @@ impl ErrorCode {
             Self::VersionAheadOfCatalog => "errors.versionAheadOfCatalog",
             Self::MsixvcCapabilityUnavailable => "errors.msixvcCapabilityUnavailable",
             Self::UnsupportedPackageType => "errors.unsupportedPackageType",
+            Self::PackageNotInstalled => "errors.packageNotInstalled",
         }
     }
 }
@@ -64,11 +66,62 @@ pub enum RetryAdvice {
     ReconcileInventory,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SafeErrorDetail {
-    pub key: String,
-    pub value: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SafeField {
+    Product,
+    ProductId,
+    PackageUri,
+    PackageMoniker,
+    UpdateId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SafeErrorDetail {
+    Field { field: SafeField },
+    Redacted,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CurrentSafeErrorDetail {
+    Field { field: SafeField },
+    Redacted,
+}
+
+#[derive(Deserialize)]
+struct LegacySafeErrorDetail {
+    key: String,
+    value: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SafeErrorDetailWire {
+    Current(CurrentSafeErrorDetail),
+    Legacy(LegacySafeErrorDetail),
+}
+
+impl<'de> Deserialize<'de> for SafeErrorDetail {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match SafeErrorDetailWire::deserialize(deserializer)? {
+            SafeErrorDetailWire::Current(CurrentSafeErrorDetail::Field { field }) => {
+                Self::Field { field }
+            }
+            SafeErrorDetailWire::Current(CurrentSafeErrorDetail::Redacted) => Self::Redacted,
+            SafeErrorDetailWire::Legacy(detail) => {
+                if detail.key == "field" {
+                    safe_field(&detail.value).map_or(Self::Redacted, |field| Self::Field { field })
+                } else {
+                    Self::Redacted
+                }
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,12 +146,20 @@ impl AppErrorDto {
         }
     }
 
-    pub fn with_safe_detail(mut self, key: &str, value: &str) -> Self {
-        self.details.push(SafeErrorDetail {
-            key: key.to_owned(),
-            value: value.to_owned(),
-        });
+    pub fn with_safe_detail(mut self, detail: SafeErrorDetail) -> Self {
+        self.details.push(detail);
         self
+    }
+}
+
+fn safe_field(value: &str) -> Option<SafeField> {
+    match value {
+        "product" => Some(SafeField::Product),
+        "productId" => Some(SafeField::ProductId),
+        "packageUri" => Some(SafeField::PackageUri),
+        "packageMoniker" => Some(SafeField::PackageMoniker),
+        "updateId" => Some(SafeField::UpdateId),
+        _ => None,
     }
 }
 
@@ -106,8 +167,10 @@ impl From<&CatalogError> for AppErrorDto {
     fn from(error: &CatalogError) -> Self {
         match error {
             CatalogError::InvalidUrl { field } => {
-                Self::new(ErrorCode::CatalogUnavailable, RetryAdvice::ReResolve)
-                    .with_safe_detail("field", field)
+                let error = Self::new(ErrorCode::CatalogUnavailable, RetryAdvice::ReResolve);
+                safe_field(field).map_or(error.clone(), |field| {
+                    error.with_safe_detail(SafeErrorDetail::Field { field })
+                })
             }
             CatalogError::MalformedFixture(_)
             | CatalogError::MissingField(_)
@@ -123,12 +186,44 @@ impl From<&ResolverError> for AppErrorDto {
         match error {
             ResolverError::StoreLib => Self::new(ErrorCode::CatalogUnavailable, RetryAdvice::Retry),
             ResolverError::MissingField(field) => {
-                Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve)
-                    .with_safe_detail("field", field)
+                let error = Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve);
+                safe_field(field).map_or(error.clone(), |field| {
+                    error.with_safe_detail(SafeErrorDetail::Field { field })
+                })
             }
-            ResolverError::MalformedFixture(_) | ResolverError::InvalidPackageSize => {
+            ResolverError::MalformedFixture(_)
+            | ResolverError::InvalidPackageSize
+            | ResolverError::InvalidPackageMoniker
+            | ResolverError::UnsupportedPackageFormat
+            | ResolverError::InvalidMinimumOsVersion => {
                 Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve)
             }
+        }
+    }
+}
+
+impl From<&ApplicabilityError> for AppErrorDto {
+    fn from(error: &ApplicabilityError) -> Self {
+        match error {
+            ApplicabilityError::MarketMismatch => {
+                Self::new(ErrorCode::MarketUnavailable, RetryAdvice::Never)
+            }
+            ApplicabilityError::NoCompatiblePackage => {
+                Self::new(ErrorCode::NoCompatiblePackage, RetryAdvice::Never)
+            }
+            ApplicabilityError::DependencyUnresolved { .. } => {
+                Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve)
+            }
+            ApplicabilityError::DependencyCycle { .. } => {
+                Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve)
+            }
+            ApplicabilityError::VersionAheadOfCatalog { .. } => {
+                Self::new(ErrorCode::VersionAheadOfCatalog, RetryAdvice::Never)
+            }
+            ApplicabilityError::PackageNotInstalled { .. } => Self::new(
+                ErrorCode::PackageNotInstalled,
+                RetryAdvice::ReconcileInventory,
+            ),
         }
     }
 }

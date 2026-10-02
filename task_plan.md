@@ -14,8 +14,9 @@
 - M0：当前用户与全用户部署验收完成；双层清单、一次性 UAC Broker 和证书清理已验证
 - M1：Store 协议 adapter、规范化 DTO、DCAT/FE3 脱敏 fixtures 和契约测试完成；未宣称线上 Store/FE3 实时验收
 - M2：领域 DTO、安全错误契约、可恢复任务状态机、SQLite schema v1 和 repository 已完成
-- M0-M2 计划匹配审查：已完成；M0 为受控 Windows E2，M1/M2 为自动化 E1
-- 产品代码：Tauri/Rust/React 基线、M1 协议边界和 M2 持久化边界已建立，M3A 尚未开始
+- M3：schema v2、强类型版本、封闭错误详情、适用性与资源选择器已完成
+- M0-M3 计划匹配审查：已完成；M0 为受控 Windows E2，M1-M3 为自动化 E1
+- 产品代码：Tauri/Rust/React 基线、M1 协议边界、M2 持久化边界和 M3 选择边界已建立，M4 尚未开始
 
 ## 已确认决策
 
@@ -34,10 +35,10 @@
 
 ## 下一步门槛
 
-1. M3A：新增 schema v2 migration，扩展 publisher、resource ID、package kind、最低 OS/build 和资源限定字段。
-2. M3A：把版本改为可比较强类型，并将 `SafeErrorDetail` 收紧为封闭类型。
-3. M3B：实现架构、市场、语言、资源包、依赖、最低 OS 和防降级选择器及解释 DTO。
-4. M3 完成前不进入实时下载或 Store 互操作验收。
+1. M4：在显式开关下执行受控 production adapter smoke，并记录产品、市场、语言和时间。
+2. M4：实现 disabled/system/HTTP(S)/SOCKS5 代理边界，以及可续传下载、取消和 URL 过期重解析。
+3. M4：实现 host/redirect allowlist、大小/SHA-256 校验和 verified/partial 缓存恢复。
+4. M4 完成前不进入包图部署编排或 Store 互操作验收。
 
 ## 当前代码验证（2026-10-02）
 
@@ -48,6 +49,8 @@
 - M2 新增测试使默认特性全量结果达到 38 项通过、3 项 M0 真实包测试 ignored；严格 Clippy、Cargo check、Broker check、前端构建和 Tauri debug 非 bundle 构建通过。
 - `cargo clippy --all-targets --all-features` 仍会触发 M0 `broker-dependency` 与桌面 binary 的既有 feature 组合错误；本轮未把该 M0 构建边界修复混入 M2。
 - 本轮重新验证格式、38 项通过/3 项 ignored 的全目标测试、默认特性严格 Clippy、Broker check 和前端构建；没有重复执行会改变包/证书状态的 M0 验收脚本。
+- M3 新增 23 项测试并扩展 1 项 M1 fixture 契约；当前全目标结果为 62 项通过、3 项 M0 真实包测试 ignored，默认特性严格 Clippy 通过。
+- M3 证据只覆盖 schema v1→v2、本地 DTO/选择算法和脱敏 FE3 fixture；没有执行实时 Store、下载或部署。
 
 ## 约束
 

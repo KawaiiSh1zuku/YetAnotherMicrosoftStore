@@ -127,3 +127,19 @@
 - M3 入口前仍需扩展包 publisher、resource ID、package kind、最低 OS/build 和资源限定字段；这些不是把 M2 降为未完成的理由，但必须成为 M3 的前置子任务和 schema v2/migration 决策。
 - `SafeErrorDetail { key, value }` 仍允许任意字符串。进入实时目录/下载前应改为封闭 detail 枚举或按错误码限定字段，避免 URL、令牌和服务原文进入前端 DTO/持久诊断。
 - 当前 M0 Tauri 命令 `scan_installed_packages`、`install_package`、`uninstall_package` 仍以 `Result<_, String>` 暴露错误，且脚手架 `greet`/`probe_deployment` 仍注册；这属于 M0 调试接口，不满足总规格的稳定 `AppErrorDto` 契约。M6 前必须移除/隔离调试命令并把部署错误映射到封闭前端 DTO。
+
+## M3 领域加固与选择器发现（2026-10-02）
+
+- `storelib_rs 0.1.11::PackageInstance` 已提供 `family_metadata.publisher`、`package_identity_name`、`package_content_id`、`main_package`、`is_appx_framework`、`default_properties_language` 和 applicability target platform；项目 adapter 可复用这些 typed fields，无需解析任意 extra attribute。
+- FE3 package moniker 的右侧段可提供四段版本、架构和 resource ID；项目从右向左拆分并把版本收紧为四个 `u16`。最低 OS 的 packed `u64` 同样转换为四段版本，比较不再依赖字符串顺序。
+- schema v1 旧记录没有可信 publisher/resource/package-kind/minimum-OS/neutral/content-ID，migration 使用 `unknown`/`NULL` 保持“未知”，不伪造 neutral 或 main 语义。
+- 安全错误详情现为 `SafeErrorDetail::Field { SafeField }`；只有显式允许的协议字段可进入 DTO，未知字段被丢弃，URL、令牌和响应正文没有自由字符串入口。
+- 架构兼容矩阵属于主机能力，而不是选择器常量。这样 ARM64 对 x64/x86 的实际支持可由后续 Windows 探针提供，算法本身只消费明确能力。
+- BCP-47 选择先匹配完整 tag，再匹配主语言；无语言的 scale 等资源包不应被语言过滤器删除，neutral 资源与最佳语言资源可以同时进入 bundle 包图。
+- 缺失 prerequisite 或 bundled update 均是 `dependency_unresolved`，不能静默丢边；已安装同身份且版本不低于要求的框架可满足 prerequisite。
+- M3 只证明本地选择契约。`PackageFormat::Msixvc` 可被识别并由支持格式列表拒绝，但这不证明 MSIXVC 下载或部署；bundle/eAppx 同样没有真实载荷验收。
+- M3 复审确认 schema v1 中已持久化的开放错误详情不能直接按新封闭枚举读取；当前兼容层只恢复白名单 `field`，其余旧详情统一变为 `redacted`，避免迁移丢任务或继续暴露任意值。
+- 依赖遍历必须区分 visiting/completed：selected 去重本身不能终止环，也不能替代 bundle 子项的传递依赖遍历。当前环返回稳定依赖错误，所有实际选中节点都继续解析其边。
+- 已安装依赖匹配至少需要 identity、publisher 和 architecture；只比较 identity 会把 ARM64/x86 framework 误当成 x64 依赖。Update 还必须先匹配已安装对象，缺失时不得退化为 Install。
+- BCP-47 回退应按 exact → 较短同 script → 较长同 script → 同 primary language 排序，并按资源 identity 分组选择；全局只保留一个语言资源会漏掉独立资源组。
+- 当前失败路径返回稳定 `ApplicabilityError`，但不会携带此前累计的逐包拒绝解释；M3 尚未把选择器暴露为 Tauri 命令，M6 设计安全 API/UI 投影时必须补失败解释 DTO，不能直接序列化含 `package_uri` 的内部 `SelectionResult`。

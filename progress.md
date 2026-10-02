@@ -83,6 +83,18 @@
 - 已将 M0 专项规格状态从“待用户审阅”修正为“已批准并完成”，同时保留验证环境和未覆盖载荷边界。
 - 最终 `git diff --check`、陈旧状态词扫描和文档链接目标检查通过；本轮只修改 6 个 Markdown 规划/规格文件，没有修改产品代码或加入生成物。
 
+## M3 适用性与资源选择（2026-10-02）
+
+- M3A 按 TDD 完成：四段 `PackageVersion`、publisher/resource ID/package kind/minimum OS/neutral/content ID 字段和封闭 `SafeErrorDetail` 测试先失败，随后实现通过。
+- 新增不可改写历史的 `0002_m3_applicability.sql`；测试覆盖 schema v1→v2 无损升级、旧数据 unknown/null 默认语义、重复打开和在部分 DDL 后失败的事务回滚。
+- 扩展 `resolver.rs` 的项目 DTO 映射，从 `storelib_rs 0.1.11` 已有 typed fields 和 package moniker 提取身份、publisher、版本、架构、资源、包种类、最低 OS、语言、content ID 与格式；第三方类型未越过 adapter。
+- M3B 新增无 I/O 的 `applicability.rs`，输入 `PackageGraph`、主机能力、用户偏好和已安装清单，输出选定 `ResolvedPackage` 列表与封闭逐包解释。
+- 选择器测试覆盖 x64/x86/ARM64/neutral、显式兼容架构、市场、BCP-47 精确/主语言回退、neutral/scale 资源、框架已安装/依赖缺失、最低 OS、MSIXVC 格式门、严格更新、防降级和显式 repair。
+- ARM64 对 x64/x86 的兼容性不硬编码，由主机 `compatible_architectures` 明确提供；相同版本按用户架构偏好选择，bundle 在相同版本/偏好下优先。
+- 只读复审后补齐 7 个回归边界：v1 任务错误 JSON 白名单兼容、依赖环拒绝、bundle 成员传递依赖、publisher/architecture 安装身份匹配、BCP-47 script 回退、多资源身份分组和 Update 必须存在已安装对象。
+- M3 新增 23 项测试并扩展 1 项 M1 fixture 契约；当前全目标为 62 项通过、3 项既有 M0 环境测试 ignored，默认特性严格 Clippy 通过。
+- 未执行实时 Display Catalog/FE3、下载、缓存、代理或 Windows 部署；M3 状态限定为本地自动化 E1。
+
 ## 阻塞项与风险
 
 | Item | Status | Handling |

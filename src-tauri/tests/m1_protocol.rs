@@ -3,6 +3,9 @@
 use yet_another_microsoft_store_lib::catalog::{
     CatalogError, CatalogProvider, DeviceFamily, StoreLibCatalogAdapter,
 };
+use yet_another_microsoft_store_lib::domain::{
+    Architecture, PackageFormat, PackageKind, PackageVersion,
+};
 use yet_another_microsoft_store_lib::resolver::{
     DependencyKind, ResolverError, StoreLibResolverAdapter,
 };
@@ -99,4 +102,28 @@ async fn fe3_parser_rejects_malformed_or_missing_package_fields() {
         missing,
         Err(ResolverError::MissingField("packageMoniker"))
     ));
+}
+
+#[tokio::test]
+async fn fe3_fixture_maps_applicability_fields_without_leaking_vendor_types() {
+    let graph =
+        StoreLibResolverAdapter::parse_fixture(include_str!("fixtures/fe3-applicability.xml"))
+            .await
+            .expect("M3 FE3 fixture should parse");
+    let package = graph.packages.first().expect("fixture package");
+
+    assert_eq!(package.identity_name.as_deref(), Some("Contoso.Notes"));
+    assert_eq!(package.publisher.as_deref(), Some("CN=Contoso"));
+    assert_eq!(package.version, PackageVersion::new(2, 4, 6, 8));
+    assert_eq!(package.architecture, Architecture::X64);
+    assert_eq!(package.resource_id.as_deref(), Some("zh-cn"));
+    assert_eq!(package.package_kind, PackageKind::Resource);
+    assert_eq!(
+        package.minimum_os_version,
+        Some(PackageVersion::new(10, 0, 19045, 0))
+    );
+    assert_eq!(package.language.as_deref(), Some("zh-CN"));
+    assert_eq!(package.is_neutral, Some(false));
+    assert_eq!(package.content_id.as_deref(), Some("content-123"));
+    assert_eq!(package.format, PackageFormat::Msix);
 }
