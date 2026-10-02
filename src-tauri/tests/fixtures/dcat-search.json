@@ -1,0 +1,22 @@
+{
+  "TotalResultCount": 1,
+  "Results": [
+    {
+      "ProductFamilyName": "Apps",
+      "Products": [
+        {
+          "ProductId": "9WZDNCRFJ3TJ",
+          "LocalizedProperties": [
+            {
+              "ProductTitle": "Contoso Notes",
+              "PublisherName": "Contoso Labs"
+            }
+          ],
+          "Properties": {
+            "PackageFamilyName": "Contoso.Notes_abc"
+          }
+        }
+      ]
+    }
+  ]
+}

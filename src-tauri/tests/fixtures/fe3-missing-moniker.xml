@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<root>
+  <UpdateInfo>
+    <ID>1</ID>
+    <Xml>
+      <UpdateIdentity UpdateID="app-update" RevisionNumber="1"/>
+      <ApplicabilityRules>
+        <Metadata>
+          <AppxPackageMetadata>
+            <AppxMetadata PackageType="AppX" IsAppxBundle="false">{}</AppxMetadata>
+          </AppxPackageMetadata>
+        </Metadata>
+      </ApplicabilityRules>
+    </Xml>
+  </UpdateInfo>
+</root>

@@ -1,0 +1,41 @@
+{
+  "Products": [
+    {
+      "ProductId": "9WZDNCRFJ3TJ",
+      "LocalizedProperties": [
+        {
+          "ProductTitle": "Contoso Notes",
+          "PublisherName": "Contoso Labs"
+        }
+      ],
+      "Properties": {
+        "PackageFamilyName": "Contoso.Notes_abc"
+      },
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "Packages": [
+                {
+                  "PackageFormat": "MSIX",
+                  "PackageUri": "https://download.invalid/contoso-notes.msix",
+                  "PackageFullName": "Contoso.Notes_1.0.0.0_x64__abc",
+                  "FrameworkDependencies": [
+                    {
+                      "PackageIdentity": "Microsoft.VCLibs.140.00"
+                    }
+                  ]
+                },
+                {
+                  "PackageFormat": "AppX",
+                  "PackageUri": "https://download.invalid/contoso-notes.appx",
+                  "PackageFullName": "Contoso.Notes_1.0.0.0_neutral__abc"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

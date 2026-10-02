@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<root>
+  <UpdateInfo>
+    <ID>1</ID>
+    <Xml>
+      <UpdateIdentity UpdateID="app-update" RevisionNumber="1"/>
+      <Properties><SecuredFragment/></Properties>
+      <Relationships>
+        <Prerequisites>
+          <AtLeastOne IsCategory="true">
+            <UpdateIdentity UpdateID="framework-category"/>
+          </AtLeastOne>
+        </Prerequisites>
+        <BundledUpdates>
+          <UpdateIdentity UpdateID="resource-update" RevisionNumber="2"/>
+        </BundledUpdates>
+      </Relationships>
+      <ApplicabilityRules>
+        <Metadata>
+          <AppxPackageMetadata>
+            <AppxMetadata PackageMoniker="Contoso.Notes_1.0.0.0_x64__abc" PackageType="AppX" IsAppxBundle="false">{}</AppxMetadata>
+          </AppxPackageMetadata>
+        </Metadata>
+      </ApplicabilityRules>
+    </Xml>
+  </UpdateInfo>
+  <UpdateInfo>
+    <ID>2</ID>
+    <Xml>
+      <UpdateIdentity UpdateID="resource-update" RevisionNumber="2"/>
+      <Properties><SecuredFragment/></Properties>
+      <ApplicabilityRules>
+        <Metadata>
+          <AppxPackageMetadata>
+            <AppxMetadata PackageMoniker="Contoso.Notes_1.0.0.0_neutral__abc" PackageType="AppX" IsAppxBundle="false">{}</AppxMetadata>
+          </AppxPackageMetadata>
+        </Metadata>
+      </ApplicabilityRules>
+    </Xml>
+  </UpdateInfo>
+</root>

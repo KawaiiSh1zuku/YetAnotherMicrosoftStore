@@ -1,0 +1,24 @@
+{
+  "Products": [
+    {
+      "ProductId": "9WZDNCRFJ3TJ",
+      "Properties": {
+        "PackageFamilyName": "Contoso.Notes_abc"
+      },
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "Packages": [
+                {
+                  "PackageFormat": "MSIX",
+                  "PackageUri": "file:///C:/not-a-store-download.msix"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -28,6 +28,16 @@
 - M0 基线/探针验证完成：`cargo fmt --check`、`cargo check`、`cargo test`（4/4）、`pnpm build`、`pnpm exec tauri build --debug --no-bundle`、`pnpm exec tauri info` 均通过；`pnpm exec tauri dev` 已启动本地 Vite/WebView2 桌面壳并在冒烟后手动终止。
 - 根据 M0 退出条件，真实当前用户安装/卸载与签名 broker/UAC IPC 仍开放；因此本次交付标记为“基线与部署 API 探针完成”，不标记为“部署验收完成”。
 
+## M1 Store 协议适配（2026-10-02）
+
+- 固定 `storelib_rs = 0.1.11` 和 `roxmltree = 0.20.0`；第三方协议类型只在 `catalog`/`resolver` adapter 内部使用。
+- 新增项目自有 `CatalogProvider`、`PackageResolver`、`CatalogProduct`、`PackageGraph`、`ResolvedPackage` 和依赖边 DTO，供后续 M2/M6 使用。
+- DCAT adapter 支持搜索结果和产品 fixture，规范化 Product ID、Package Family Name、标题、发布者、包格式和框架依赖，并拒绝非 HTTPS 包 URL。
+- FE3 resolver 复用 `storelib_rs` 的包/关系解析，按 package moniker 补齐 update ID，输出包记录、前置依赖和捆绑更新边。
+- 新增脱敏合成 JSON/XML fixtures，覆盖正常解析、缺失字段、失效 URL、坏 XML 和依赖边。
+- TDD 契约测试先在模块未实现时失败，随后 `m1_protocol` 5/5 通过；`cargo test --all-targets`（M0 4/4、M1 5/5）、`cargo check --all-targets`、`cargo fmt --all -- --check` 和 `pnpm build` 均通过。
+- 未执行实时 Display Catalog/FE3 请求、真实下载或包安装；因此 M1 的退出证据限定为 fixture/adapter 契约，不扩展为线上服务或部署验收。
+
 ## 阻塞项与风险
 
 | Item | Status | Handling |

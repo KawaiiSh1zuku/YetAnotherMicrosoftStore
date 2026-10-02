@@ -18,6 +18,8 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 pub mod broker;
+pub mod catalog;
 pub mod deployment;
+pub mod resolver;
 
 use deployment::DeploymentProbe;
