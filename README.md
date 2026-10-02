@@ -1,13 +1,22 @@
 # Yet Another Microsoft Store
 
-Windows desktop client baseline for direct Microsoft Store package delivery. The repository is currently at M0: the Tauri/Rust/React shell and the native deployment capability probe are in place.
+Windows desktop client baseline for direct Microsoft Store package delivery. M0 native deployment acceptance and M1 offline Store protocol adapters are complete; M2 domain persistence has not started.
 
-## M0 development
+## Current development state
+
+- M0: CurrentUser and AllUsers deployment paths have passed the recorded Windows 10 19045 x64 acceptance loop, including one-shot UAC Broker, machine inventory postconditions, and exact certificate cleanup.
+- M1: DCAT/FE3 adapters, project-owned DTOs, redacted fixtures, and contract tests are complete. This does not claim live Store/FE3 endpoint, authorization, download, or cross-channel update acceptance.
+- M2: Domain model and persistence are the next gate; review the M1 DTO/error boundary before implementation.
+
+## Development checks
 
 ```powershell
 pnpm install
 pnpm build
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+cargo check --manifest-path src-tauri/broker/Cargo.toml
+pnpm exec tauri build --debug --no-bundle
 pnpm tauri dev
 ```
 

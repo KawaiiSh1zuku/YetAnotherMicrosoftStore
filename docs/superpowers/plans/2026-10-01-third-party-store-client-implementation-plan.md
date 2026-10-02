@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端实现计划
 
-> 状态：已批准执行 M0；M1 及后续里程碑仍按退出验收条件推进。
+> 状态：M0 当前用户/全用户部署验收已完成；M1 离线 Store 协议适配已完成；M2 及后续里程碑仍按退出验收条件推进。
 
 ## 1. 执行范围
 
@@ -75,8 +75,8 @@ docs/
 
 | 里程碑 | 目标 | 主要产物 | 进入条件 | 退出验收 |
 |---|---|---|---|---|
-| M0 基线与部署 Spike | 建立 Tauri 工程并验证 Windows 原生部署边界 | 工程骨架、Rust/前端最小启动、broker 原型、支持矩阵记录 | 规格批准；明确最低 Windows 构建版本 | 能在测试机启动 Tauri；不创建 PowerShell/winget 子进程；证明当前用户部署；验证或明确全用户 UAC/预配可行性 |
-| M1 Store 协议适配 | 固定并隔离 `storelib_rs`，解析 DCAT/FE3 | `catalog`/`resolver` trait、适配器、脱敏 JSON/XML fixtures | M0 完成；选定 crate 版本或 Git revision | fixture 解析、搜索、Product ID/PFN 关联、FE3 包记录和依赖边测试通过 |
+| M0 基线与部署 Spike | 建立 Tauri 工程并验证 Windows 原生部署边界 | 工程骨架、Rust/前端最小启动、一次性 UAC Broker、双层清单和支持矩阵 | 已完成；Windows 10 build 19045 x64 验证 | 当前用户与全用户真实回环、UAC、机器清单后置条件和精确证书清理均已记录；不创建 PowerShell/winget 子进程 |
+| M1 Store 协议适配 | 固定并隔离 `storelib_rs`，解析 DCAT/FE3 | `catalog`/`resolver` adapter、项目 DTO、脱敏 JSON/XML fixtures | M0 完成；`storelib_rs = 0.1.11`、`roxmltree = 0.20.0` 已固定 | fixture 解析、搜索、Product ID/PFN 关联、FE3 包记录和依赖边测试通过；不宣称实时 Store/FE3 验收 |
 | M2 领域模型与持久化 | 建立包、身份、任务、设置和缓存元数据模型 | Rust DTO、SQLite schema/migrations、错误码、状态机 | M1 的 DTO 边界稳定 | 重启后任务可恢复；包身份、版本、架构、语言、市场和来源字段可持久化；迁移可回滚/重放 |
 | M3 适用性与资源选择 | 支持架构、市场、语言、资源包和依赖选择 | `applicability`、选择解释、包矩阵 | M1/M2 完成 | x64/ARM64/x86、多个市场/语言、资源包、依赖缺失/已安装和 OS 版本筛选测试通过 |
 | M4 下载、缓存与代理 | 实现可续传下载、缓存策略和四种代理模式 | `download`、`ProxyProvider`、缓存索引、哈希验证 | M2/M3 完成；网络 host allowlist 确认 | Range 续传、URL 过期重解析、缓存淘汰、直连/系统/HTTP(S)/SOCKS5 测试通过；日志不泄露 URL/凭据 |
@@ -118,15 +118,20 @@ M9 仅在 M8 后单独评估
 
 验证：启动 smoke test、依赖锁文件检查、当前用户安装/卸载测试、broker 安全边界审查。
 
-### M1-M2：协议适配与领域基础
+### M1：协议适配（已完成）
 
 - 定义 `CatalogProvider`、`PackageResolver`、`PackageGraph`、`PackageIdentity` 和 `InstalledPackage`。
 - 将 `storelib_rs` 固定在单一 adapter 中，禁止 UI 直接依赖其类型。
 - 保存脱敏 DCAT/FE3 fixture，并覆盖失效 URL、缺失字段和依赖错误。
-- 建立 SQLite migrations：产品、包版本、依赖、任务、缓存、设置、安装来源和诊断索引。
-- 定义稳定错误码和前端安全 DTO。
 
-验证：解析 fixture、schema migration round-trip、错误序列化快照、重启恢复测试。
+验证：解析 fixture、错误序列化边界和 adapter 契约测试已通过；schema migration round-trip 与重启恢复属于 M2，尚未开始。
+
+### M2：领域模型与持久化（未开始）
+
+- 在评审 M1 DTO 和错误码边界后，建立 SQLite migrations：产品、包版本、依赖、任务、缓存、设置、安装来源和诊断索引。
+- 定义可恢复任务状态机与前端安全 DTO 的持久化映射。
+
+验证：schema migration round-trip、错误序列化快照和重启恢复测试通过后，才可标记 M2 完成。
 
 ### M3-M5：解析、下载与部署闭环
 
@@ -180,6 +185,6 @@ M9 仅在 M8 后单独评估
 4. 规格、实现和支持矩阵没有相互矛盾的承诺。
 5. 未把条件性互操作能力描述成普遍保证。
 
-## 9. 当前审批点
+## 9. 当前执行点
 
-在用户批准中文规格和本实现计划前，保持“仅规划”状态。批准后先执行 M0；M0 的部署 Spike 结果将决定全用户安装 broker 的具体 API 和最低 Windows 版本。
+中文规格和本实现计划已获批准并已执行 M0/M1。下一步是评审 M1 DTO/错误码边界后进入 M2；实时 Display Catalog/FE3 请求、真实下载、跨渠道更新和 MSIXVC 仍未验收，不得从 fixture 或本地构建结果推断支持。

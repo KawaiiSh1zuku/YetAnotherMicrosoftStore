@@ -33,6 +33,13 @@
 
 1. 进入 M2 领域模型与持久化前，先评审 M1 DTO 边界和错误码。
 
+## 当前代码验证（2026-10-02）
+
+- 工作区扫描基线为 `master` / `157c23c`；本轮文档修改前工作区干净，未发现未跟踪的证书、私钥、Broker 二进制或临时验收证据。
+- 实际代码边界包括 `catalog.rs`/`resolver.rs` 的 M1 adapter，以及 `deployment.rs`、`broker_protocol.rs`、`broker_launcher.rs`、`deployment_coordinator.rs`、`inventory.rs` 和 `package_validation.rs` 的 M0 部署路径。
+- 本轮重跑 `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`、`cargo test --manifest-path src-tauri/Cargo.toml --all-targets`（25 项通过，3 项需要签名包/环境变量的真实集成测试保持 ignored）、`cargo check --manifest-path src-tauri/broker/Cargo.toml`、`pnpm build` 和 `pnpm exec tauri build --debug --no-bundle` 均通过。
+- 真实 UAC/包/证书回环证据仍以 `progress.md`、`findings.md` 和 `docs/evidence/m0/README.md` 中已记录的验收为准；本轮没有重新执行会改变 Windows 包或证书状态的脚本。
+
 ## 约束
 
 - 将获取、选择、下载、验证和部署放在相互独立的 Rust 接口之后。

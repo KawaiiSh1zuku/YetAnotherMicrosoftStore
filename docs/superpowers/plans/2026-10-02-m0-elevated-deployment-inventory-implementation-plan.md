@@ -1,5 +1,7 @@
 # M0 提权部署与双层包清单实现计划
 
+> 状态：Task 1–7 已完成并合并到提交 `157c23c`；本计划中的任务按一次最终提交交付，未按 Task 拆分提交。真实 Windows 验收使用既有自签 `.msix`，实时 Store/FE3、下载和 MSIXVC 仍不在本计划证据范围内。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
 **Goal:** 在不提权 Tauri 主进程中完成当前用户部署，并通过一次性 UAC Broker 完成全用户部署、全用户卸载和双层包清单枚举；使用既有自签测试证书完成 Windows 验收，并在测试结束后按指纹清理证书存储。
@@ -36,12 +38,12 @@
 
 **Interfaces:** BROKER_PROTOCOL_VERSION: u16 = 1；BrokerOperation::{InstallAllUsers, UninstallAllUsers, ScanAllUsers}；BrokerRequest/BrokerResponse；BrokerErrorCode；PackageFileRequest { path, sha256_hex, expected_identity }；AllUsersRemovalRequest { package_family_name, package_full_names }；PackageIdentity { name, publisher, version: [u16;4], architecture, resource_id }。
 
-- [ ] Write failing tests for CurrentUser/AllUsers serialization, version/operation allowlist, request ID/nonce requirements and unsupported package formats.
-- [ ] Run cargo test --manifest-path src-tauri/Cargo.toml --test m0_contract; expected FAIL because the versioned protocol does not exist.
-- [ ] Implement serde DTOs, bounded JSON frame payloads and stable deployment error mapping. Remove only the old all-users hard rejection; execution still requires Broker.
-- [ ] Add exact Windows features needed later: ApplicationModel, System, Win32_Foundation, Win32_Security, Win32_Security_Authorization, Win32_Storage_FileSystem, Win32_System_IO, Win32_System_Pipes, Win32_System_Threading, Win32_System_WindowsProgramming and Win32_UI_Shell.
-- [ ] Run cargo fmt --manifest-path src-tauri/Cargo.toml and cargo test --manifest-path src-tauri/Cargo.toml --all-targets; expected M0/M1 tests pass.
-- [ ] Commit: feat: define elevated deployment protocol.
+- [x] Write failing tests for CurrentUser/AllUsers serialization, version/operation allowlist, request ID/nonce requirements and unsupported package formats.
+- [x] Run cargo test --manifest-path src-tauri/Cargo.toml --test m0_contract; expected FAIL because the versioned protocol does not exist.
+- [x] Implement serde DTOs, bounded JSON frame payloads and stable deployment error mapping. Remove only the old all-users hard rejection; execution still requires Broker.
+- [x] Add exact Windows features needed later: ApplicationModel, System, Win32_Foundation, Win32_Security, Win32_Security_Authorization, Win32_Storage_FileSystem, Win32_System_IO, Win32_System_Pipes, Win32_System_Threading, Win32_System_WindowsProgramming and Win32_UI_Shell.
+- [x] Run cargo fmt --manifest-path src-tauri/Cargo.toml and cargo test --manifest-path src-tauri/Cargo.toml --all-targets; expected M0/M1 tests pass.
+- [x] 已在最终提交 `157c23c` 中交付；未按 Task 拆分提交。
 
 ### Task 2: 实现当前用户与机器范围双层清单
 
@@ -49,12 +51,12 @@
 
 **Interfaces:** InventorySource::{CurrentUser, AllUsersElevated}；InventorySnapshot { source, captured_at, os_build, complete, records, warnings }；PackageInventoryRecord with identity, PFN/full name, version, architecture, resource ID, package kind, signature/status, current-user flag, user count, other-user flag and provisioned flag；WindowsInventory::scan_current_user()；WindowsInventory::scan_all_users()。
 
-- [ ] Write failing DTO tests for four-part versions, package kind, empty resource ID, counts, provisioned state and complete=false.
-- [ ] Run cargo test --manifest-path src-tauri/Cargo.toml --test m0_inventory; expected FAIL because the module is absent.
-- [ ] Implement current-user scan using PackageManager::FindPackagesByUserSecurityId(&HSTRING::new()); never convert API failure to an empty success snapshot.
-- [ ] Implement elevated scan using FindPackages, FindProvisionedPackages and FindUsers; merge a current-user full-name set to populate installed_for_current_user, count only installed user states, and return counts/flags rather than raw SIDs.
-- [ ] Add a Windows test that a non-elevated machine scan returns InventoryAccessDenied.
-- [ ] Run all inventory and full Rust tests; commit feat: add current and machine package inventory.
+- [x] Write failing DTO tests for four-part versions, package kind, empty resource ID, counts, provisioned state and complete=false.
+- [x] Run cargo test --manifest-path src-tauri/Cargo.toml --test m0_inventory; expected FAIL because the module is absent.
+- [x] Implement current-user scan using PackageManager::FindPackagesByUserSecurityId(&HSTRING::new()); never convert API failure to an empty success snapshot.
+- [x] Implement elevated scan using FindPackages, FindProvisionedPackages and FindUsers; merge a current-user full-name set to populate installed_for_current_user, count only installed user states, and return counts/flags rather than raw SIDs.
+- [x] Add a Windows test that a non-elevated machine scan returns InventoryAccessDenied.
+- [x] 已在最终提交 `157c23c` 中交付；未按 Task 拆分提交。
 
 ### Task 3: 完成当前用户与全用户原生部署操作
 
@@ -62,13 +64,13 @@
 
 **Interfaces:** VerifiedPackageSet；WindowsDeploymentBackend::install_current_user(&VerifiedPackageSet)；remove_current_user(full_name)；stage_and_provision_all_users(&VerifiedPackageSet, protected_root)；deprovision_and_remove_all_users(pfn, full_names)；copy_and_verify_to_protected_root(source, root)。
 
-- [ ] Write failing tests for absolute paths, supported extensions, UNC/device paths, reparse points, hash/identity mismatch, protected-root escape and all-users uninstall postconditions.
-- [ ] Run cargo test --manifest-path src-tauri/Cargo.toml --test m0_validation; expected FAIL.
-- [ ] Implement handle-based source hashing and copy to a Broker-owned protected directory; hash and inspect the copy again before creating WinRT URIs.
-- [ ] Keep AddPackageAsync/RemovePackageAsync for CurrentUser and require a complete inventory postcondition.
-- [ ] Implement all-users stage, single-argument ProvisionPackageForAllUsersAsync, deprovision and RemovePackageWithOptionsAsync with RemovalOptions::RemoveForAllUsers; do not delete shared dependencies.
-- [ ] Run the existing signed-package ignored current-user round trip with M0_PACKAGE_PATH and M0_PACKAGE_FULL_NAME; pass only after install, inventory, uninstall and absence recheck.
-- [ ] Commit feat: implement current and all-user package deployment.
+- [x] Write failing tests for absolute paths, supported extensions, UNC/device paths, reparse points, hash/identity mismatch, protected-root escape and all-users uninstall postconditions.
+- [x] Run cargo test --manifest-path src-tauri/Cargo.toml --test m0_validation; expected FAIL.
+- [x] Implement handle-based source hashing and copy to a Broker-owned protected directory; hash and inspect the copy again before creating WinRT URIs.
+- [x] Keep AddPackageAsync/RemovePackageAsync for CurrentUser and require a complete inventory postcondition.
+- [x] Implement all-users stage, single-argument ProvisionPackageForAllUsersAsync, deprovision and RemovePackageWithOptionsAsync with RemovalOptions::RemoveForAllUsers; do not delete shared dependencies.
+- [x] Run the existing signed-package ignored current-user round trip with M0_PACKAGE_PATH and M0_PACKAGE_FULL_NAME; pass only after install, inventory, uninstall and absence recheck.
+- [x] 已在最终提交 `157c23c` 中交付；未按 Task 拆分提交。
 
 ### Task 4: 建立 UAC Broker、受限 IPC 和 manifest
 
@@ -76,12 +78,12 @@
 
 **Interfaces:** BrokerLauncher::install_all_users(request)；uninstall_all_users(request)；scan_all_users(request)；Broker accepts one validated request and exits；manifest uses requireAdministrator；main app uses asInvoker。
 
-- [ ] Write failing tests for length-prefixed frames, size limits, version/nonce mismatch, parent PID mismatch, UAC cancellation and exit mapping.
-- [ ] Run the focused broker test; expected FAIL.
-- [ ] Implement named-pipe DACL for current user/Administrators/SYSTEM, random 128-bit nonce, bounded timeouts and ShellExecuteExW with runas; no automatic UAC retry.
-- [ ] Implement Broker high-integrity check, caller/session/signature validation and protected-copy deployment calls.
-- [ ] Embed the isolated manifest and assert Broker requireAdministrator and main asInvoker in build tests.
-- [ ] Run cargo test --manifest-path src-tauri/Cargo.toml --all-targets and cargo build --manifest-path src-tauri/broker/Cargo.toml --target x86_64-pc-windows-msvc; commit feat: add one-shot elevated deployment broker.
+- [x] Write failing tests for length-prefixed frames, size limits, version/nonce mismatch, parent PID mismatch, UAC cancellation and exit mapping.
+- [x] Run the focused broker test; expected FAIL.
+- [x] Implement named-pipe DACL for current user/Administrators/SYSTEM, random 128-bit nonce, bounded timeouts and ShellExecuteExW with runas; no automatic UAC retry.
+- [x] Implement Broker high-integrity check, caller/session/signature validation and protected-copy deployment calls.
+- [x] Embed the isolated manifest and assert Broker requireAdministrator and main asInvoker in build tests.
+- [x] Run cargo test --manifest-path src-tauri/Cargo.toml --all-targets and cargo build --manifest-path src-tauri/broker/Cargo.toml --target x86_64-pc-windows-msvc; 已在最终提交 `157c23c` 中交付，未按 Task 拆分提交。
 
 ### Task 5: 接入 Tauri 命令、事件和打包产物
 
@@ -89,11 +91,11 @@
 
 **Interfaces:** DeploymentCoordinator::scan(scope)；install(scope, package_set)；uninstall(scope, target)；Tauri commands scan_installed_packages, install_package, uninstall_package。
 
-- [ ] Write failing route tests: CurrentUser never launches Broker; AllUsers always uses Broker; UAC cancel/incomplete snapshot/postcondition failures map to stable DTOs.
-- [ ] Implement scope routing and complete postcondition scan before reporting success.
-- [ ] Add external Broker binary to tauri.conf.json and ignore generated target-triple binaries.
-- [ ] Run cargo test --manifest-path src-tauri/Cargo.toml --all-targets, pnpm build and pnpm exec tauri build --debug --no-bundle; verify main is asInvoker and Broker is present.
-- [ ] Commit feat: route deployment scopes through Tauri coordinator.
+- [x] Write failing route tests: CurrentUser never launches Broker; AllUsers always uses Broker; UAC cancel/incomplete snapshot/postcondition failures map to stable DTOs.
+- [x] Implement scope routing and complete postcondition scan before reporting success.
+- [x] Add external Broker binary to tauri.conf.json and ignore generated target-triple binaries.
+- [x] Run cargo test --manifest-path src-tauri/Cargo.toml --all-targets, pnpm build and pnpm exec tauri build --debug --no-bundle; verify main is asInvoker and Broker is present.
+- [x] 已在最终提交 `157c23c` 中交付；未按 Task 拆分提交。
 
 ### Task 6: 既有自签证书的双范围验收与存储清理
 
@@ -101,23 +103,23 @@
 
 **Interfaces:** Inputs M0_PACKAGE_PATH, M0_PACKAGE_FULL_NAME, M0_PACKAGE_FAMILY_NAME, M0_CERT_THUMBPRINT and M0_CERT_STORE_LOCATIONS；redacted JSON evidence output。
 
-- [ ] Split ignored tests into CurrentUser round trip, AllUsers round trip, UAC cancellation and inventory postcondition cases; missing inputs are failures, not skipped passes.
-- [ ] Add -WhatIf preflight; it must not generate/import/delete certificates or packages.
-- [ ] Require the existing certificate; never call New-SelfSignedCertificate. Verify exact thumbprint, validity, code-signing usage and package signature match; import only an explicitly supplied existing CER/PFX if needed.
-- [ ] Run CurrentUser install, current-user scan, uninstall and absence check under a non-elevated process.
-- [ ] Run AllUsers install with manual UAC confirmation, stage/provision/machine scan, then deprovision/remove-for-all-users/current-machine-provisioned scans. Run a UAC-cancel case and assert no state change.
-- [ ] In PowerShell try/finally, clean the package first, then remove only the exact thumbprint from explicit stores. Prohibit broad certificate-store deletion; after finally query all stores and fail if any exact match remains.
-- [ ] Run the full script and archive evidence without private key, full SID, URL, token or full certificate blob; commit test: verify M0 deployment scopes and certificate cleanup.
+- [x] Split ignored tests into CurrentUser round trip, AllUsers round trip, UAC cancellation and inventory postcondition cases; missing inputs are failures, not skipped passes.
+- [x] Add -WhatIf preflight; it must not generate/import/delete certificates or packages.
+- [x] Require the existing certificate; never call New-SelfSignedCertificate. Verify exact thumbprint, validity, code-signing usage and package signature match; import only an explicitly supplied existing CER/PFX if needed.
+- [x] Run CurrentUser install, current-user scan, uninstall and absence check under a non-elevated process.
+- [x] Run AllUsers install with manual UAC confirmation, stage/provision/machine scan, then deprovision/remove-for-all-users/current-machine-provisioned scans. Run a UAC-cancel case and assert no state change.
+- [x] In PowerShell try/finally, clean the package first, then remove only the exact thumbprint from explicit stores. Prohibit broad certificate-store deletion; after finally query all stores and fail if any exact match remains.
+- [x] Run the full script and archive evidence without private key, full SID, URL, token or full certificate blob; verify M0 deployment scopes and certificate cleanup.
 
 ### Task 7: 文档同步与最终回归
 
 **Files:** Modify docs/support-matrix.md, task_plan.md, progress.md, findings.md and the existing implementation plan; include docs/evidence/m0/README.md.
 
-- [ ] Record only fresh evidence for CurrentUser, AllUsers, UAC cancel, inventory completeness, HRESULTs and certificate-store cleanup.
-- [ ] Update M0/M5 boundaries so Broker implementation and real acceptance are not conflated.
-- [ ] Run cargo fmt --manifest-path src-tauri/Cargo.toml --all, cargo test --manifest-path src-tauri/Cargo.toml --all-targets, cargo check --manifest-path src-tauri/broker/Cargo.toml, pnpm build, pnpm exec tauri build --debug --no-bundle and git diff --check.
-- [ ] Verify git status --short: unrelated edits remain, no certificate/private key is tracked, and evidence matches actual output.
-- [ ] Commit docs: record M0 deployment acceptance.
+- [x] Record only fresh evidence for CurrentUser, AllUsers, UAC cancel, inventory completeness, HRESULTs and certificate-store cleanup.
+- [x] Update M0/M5 boundaries so Broker implementation and real acceptance are not conflated.
+- [x] Run cargo fmt --manifest-path src-tauri/Cargo.toml --all, cargo test --manifest-path src-tauri/Cargo.toml --all-targets, cargo check --manifest-path src-tauri/broker/Cargo.toml, pnpm build, pnpm exec tauri build --debug --no-bundle and git diff --check.
+- [x] Verify git status --short: unrelated edits remain, no certificate/private key is tracked, and evidence matches actual output.
+- [x] 已在最终提交 `157c23c` 中交付；未按 Task 拆分提交。
 
 ## Dependencies and Execution Order
 

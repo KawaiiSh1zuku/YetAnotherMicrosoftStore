@@ -48,6 +48,14 @@
 - 新增 `scripts/m0-deployment-acceptance.ps1` 与 `docs/evidence/m0/README.md`。完整脚本在 Windows 10 build 19045 x64 上通过：CurrentUser 安装/卸载 1/1、AllUsers UAC stage/provision/deprovision/remove 1/1、`-WhatIf` 预检通过；脚本 finally 先清包，再按显式指纹清理 `CurrentUser\Root`、`CurrentUser\TrustedPeople`、`LocalMachine\Root`，复核三处匹配数均为 0。
 - 真实验收包为既有自签 `.msix`，签名指纹仅用于本次测试，不生成新证书；未把包、PFX/CER、私钥、Broker 生成二进制或临时证据加入 Git。
 
+## 代码扫描与文档同步（2026-10-02）
+
+- 以 `master` / `157c23c52f1e8d08dc389c63e3d1b3d77a8c64c4` 为扫描基线；文档修改前工作区干净，构建生成的 Broker 和前端产物均未改变 Git 状态。
+- 代码现状确认：M0 部署路径由 `deployment.rs`、`package_validation.rs`、`inventory.rs`、`broker_protocol.rs`、`broker_launcher.rs` 和 `deployment_coordinator.rs` 组成；M1 由 `catalog.rs`、`resolver.rs`、项目 DTO 和 fixture 契约测试组成；M2 持久化模块尚未创建。
+- 本轮重跑 `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`、`cargo test --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo check --manifest-path src-tauri/broker/Cargo.toml`、`pnpm build` 和 `pnpm exec tauri build --debug --no-bundle` 均成功。Rust 集成测试报告为 25 项通过、3 项 ignored；ignored 项需要签名测试包和 M0 环境变量，不能等同于本轮重跑的真实包验收。
+- 发现并同步三处陈旧叙述：设计规格、README 和 2026-10-01 总实施计划仍停留在“进入/批准 M0”；现已改为 M0 验收完成、M1 离线协议适配完成、M2 待开始，并保留实时 Store/FE3、下载、跨渠道更新和 MSIXVC 的未验收边界。
+- M0 实施计划原有 Task 1–7 复选框未反映底部完成记录；现已全部勾选，并注明实际以单次最终提交 `157c23c` 交付，未按 Task 拆分提交。
+
 ## 阻塞项与风险
 
 | Item | Status | Handling |

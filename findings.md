@@ -76,3 +76,10 @@
 - Broker 默认进程栈约 1 MiB；包校验使用 1 MiB 栈数组会触发 `0xc00000fd`。已改为堆分配缓冲区，并通过真实 UAC 全用户回环验证。
 - 命名管道采用字节模式加长度前缀，而不是依赖消息边界；这样 `read_exact` 可稳定处理请求/响应帧。
 - 全用户验收的真实后置条件不是 Broker 返回码，而是机器范围清单完整、目标 PFN/full name 不残留；脚本 finally 还必须证明精确证书指纹在所有显式 stores 中不存在。
+
+## 当前代码状态扫描（2026-10-02）
+
+- Git 基线为 `master` / `157c23c52f1e8d08dc389c63e3d1b3d77a8c64c4`。扫描到的 M0 实现集中在部署、包校验、清单、Broker 协议/启动和协调模块；M1 实现集中在 DCAT/FE3 adapter、项目 DTO 和脱敏 fixture；没有发现 M2 持久化代码。
+- 现有 Rust 测试覆盖 M0 Broker 协议、部署契约、清单、协调和校验，以及 M1 协议 fixture。当前 `cargo test --all-targets` 结果是 25 项通过、3 项 ignored；ignored 测试要求签名包和 M0 环境变量，不能作为本轮真实包验收结果。
+- 当前构建证据为 Rust 格式检查、Broker `cargo check`、前端 `pnpm build` 和 Tauri debug 非 bundle 构建均成功；构建过程复制了 Broker 到 `src-tauri/broker/deployment-broker-x86_64-pc-windows-msvc.exe`，该生成文件保持被忽略。
+- 文档一致性检查发现设计规格、README 和总实施计划滞后于代码/验收记录，已统一更新为 M0 完成、M1 离线适配完成、M2 待开始；仍明确不承诺实时 Store/FE3、下载、跨渠道更新或 MSIXVC。
