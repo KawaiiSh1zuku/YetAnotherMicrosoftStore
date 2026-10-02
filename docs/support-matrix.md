@@ -1,8 +1,8 @@
 # M0 支持矩阵与部署 Spike 记录
 
-> 记录日期：2026-10-01
+> 记录日期：2026-10-02
 >
-> 本文件只记录 M0 基线和已执行的部署 API 探针，不把未执行的真实包安装写成已支持。
+> 本文件记录 M0 基线、原生部署路径和已执行的双范围验收证据；不把 fixture/协议测试扩展为线上 Store 或 MSIXVC 能力。
 
 ## 构建基线
 
@@ -20,8 +20,8 @@
 
 | 格式 | M0 行为 | 当前结论 |
 |---|---|---|
-| `.msix` / `.appx` | broker 请求校验接受 | 仅证明请求边界，未执行真实安装 |
-| `.msixbundle` / `.appxbundle` | broker 请求校验接受 | 仅证明请求边界，未执行真实安装 |
+| `.msix` / `.appx` | 当前用户直接部署；全用户经 Broker stage/provision | 既有自签 `.msix` 已完成双范围真实回环 |
+| `.msixbundle` / `.appxbundle` | 请求校验和 Broker 路径接受 | 真实 bundle 载荷未在本次 M0 验收 |
 | `.eappx` / `.eappxbundle` | broker 请求校验接受 | 授权和部署 API 仍待后续里程碑验证 |
 | `.msixvc` / Xbox 包 | broker 请求校验拒绝 | 保持 M9 能力门，不下载、不安装、不更新 |
 | `.exe` / `.msi` | broker 请求校验拒绝 | 第一阶段不执行供应商安装器 |
@@ -31,16 +31,16 @@
 | 能力 | 状态 | 证据 |
 |---|---|---|
 | Windows `PackageManager` 激活 | 已验证 | `WindowsDeploymentBackend::probe()` 在 Windows 测试中通过 |
-| 当前用户部署路径 | API 可用，真实安装未验证 | 探针返回 `Available`；当前没有批准的测试包载荷 |
-| 全用户部署/预配 | `RequiresElevation` | 探针明确返回提权门；broker 目前只有拒绝 `AllUsers` 的惰性请求形状原型 |
+| 当前用户部署路径 | 已验收 | 非提权 Rust 测试完成安装、清单后置校验、卸载和缺失复核 |
+| 全用户部署/预配 | 已验收 | 一次性 `runas` Broker 完成 UAC、管理员暂存、stage/provision、机器清单、deprovision 和 `RemoveForAllUsers` |
 | PowerShell / winget 子进程 | 未使用 | M0 Rust 代码和 Tauri 配置没有 shell 调用 |
-| UAC broker 实际启动 | 未验证 | 需要独立签名 broker、IPC 和授权测试，留到 M5 前置验证 |
+| UAC broker 实际启动 | 已验收 | Broker manifest `requireAdministrator`、命名管道 ACL/帧协议、父 PID/session/nonce/镜像路径校验和 UAC 回环通过；Release Broker 额外执行 Authenticode 校验，Debug 验收允许未签名测试宿主 |
 
 测试和桌面构建目标限定为 Windows；其他平台不属于产品支持范围。
 
 ## M0 停止条件
 
-- 没有测试包载荷时，不运行真实安装/卸载，不伪造安装成功证据。
-- 全用户安装在 broker/UAC Spike 通过前保持条件性状态。
+- 真实验收只使用既有自签证书；脚本结束后按显式指纹清理证书存储并复核为零匹配。
+- 全用户安装必须通过 Broker，主进程不得永久提权。
 - 任何 `.msixvc`、Xbox、`.exe` 或 `.msi` 流程都必须停在能力门。
-- broker 的 M0 `validate()` 只校验请求形状，不能作为提权授权；IPC/UAC 前必须补可信暂存目录、重解析点防护、身份/签名/哈希验证和安全文件打开。
+- broker 的 M0 `validate()` 只校验请求形状，不能作为提权授权；实际 IPC/UAC 路径已补可信暂存目录、重解析点防护、身份/签名/哈希验证和安全文件打开。发布构建不得用 Debug Broker 替代 Release Broker。

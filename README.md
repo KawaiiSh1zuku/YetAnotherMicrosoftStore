@@ -11,7 +11,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 pnpm tauri dev
 ```
 
-The deployment probe only activates `Windows.Management.Deployment.PackageManager`. It does not install a package, launch PowerShell/winget, or claim that the all-users broker is ready. See [docs/support-matrix.md](docs/support-matrix.md) for the evidence boundary.
+The deployment path keeps the Tauri main process at the Windows default `asInvoker` level. Current-user operations call `PackageManager` directly; all-users install, uninstall, and machine inventory use a one-shot `runas` Broker with a protected staging copy and bounded named-pipe protocol. It never launches PowerShell/winget. See [docs/support-matrix.md](docs/support-matrix.md) for the evidence boundary.
 
 ## Recommended IDE Setup
 

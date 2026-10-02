@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
+  <Identity
+    Name="YetAnotherMicrosoftStore.M0Acceptance"
+    Publisher="CN=YetAnotherMicrosoftStore M0 CodeSigning"
+    Version="0.1.0.0"
+    ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Yet Another Microsoft Store M0 Acceptance</DisplayName>
+    <PublisherDisplayName>YetAnotherMicrosoftStore M0 CodeSigning</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.19045.0" />
+  </Dependencies>
+  <Applications>
+    <Application
+      Id="App"
+      Executable="yet-another-microsoft-store.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="Yet Another Microsoft Store M0 Acceptance"
+        Description="M0 current-user deployment acceptance package"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

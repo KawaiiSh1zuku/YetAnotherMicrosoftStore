@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:broker": "cargo build --manifest-path src-tauri/broker/Cargo.toml --target x86_64-pc-windows-msvc && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/copy-broker.ps1",
     "preview": "vite preview",
     "tauri": "tauri"
   },

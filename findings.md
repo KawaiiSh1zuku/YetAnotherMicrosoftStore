@@ -69,3 +69,10 @@
 - `storelib_rs 0.1.11` 提供 Display Catalog 和 FE3 解析能力，但其 `FE3Handler::get_package_instances` 低层结果将 `update_id` 留给上层 handler 填充；项目 adapter 按 package moniker 回查所属 `<UpdateIdentity>`，避免按响应顺序错误关联依赖。
 - `storelib_rs` 的原始 DCAT/FE3 结构没有进入项目 DTO；fixture 只使用 `download.invalid` 占位地址和合成包身份，不包含真实令牌、临时 URL 或用户数据。
 - 本次只验证离线 fixture 和 adapter 边界。实时端点变化、鉴权/地区限制、FE3 URL 解析和 Windows 包部署仍属于后续验收，不得由 M1 测试结果推断。
+
+## M0 部署验收发现（2026-10-02）
+
+- `PackageManager.AddPackageAsync` 的本地文件 URI 必须去除 Windows `\\?\\` canonicalize 前缀；否则 URI 会变成 `file://///?/E:/...` 并返回 `0x80070057`。已在 `deployment.rs::file_uri` 中显式剥离设备前缀并拒绝 UNC。
+- Broker 默认进程栈约 1 MiB；包校验使用 1 MiB 栈数组会触发 `0xc00000fd`。已改为堆分配缓冲区，并通过真实 UAC 全用户回环验证。
+- 命名管道采用字节模式加长度前缀，而不是依赖消息边界；这样 `read_exact` 可稳定处理请求/响应帧。
+- 全用户验收的真实后置条件不是 Broker 返回码，而是机器范围清单完整、目标 PFN/full name 不残留；脚本 finally 还必须证明精确证书指纹在所有显式 stores 中不存在。

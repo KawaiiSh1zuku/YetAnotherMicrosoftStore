@@ -38,6 +38,16 @@
 - TDD 契约测试先在模块未实现时失败，随后 `m1_protocol` 5/5 通过；`cargo test --all-targets`（M0 4/4、M1 5/5）、`cargo check --all-targets`、`cargo fmt --all -- --check` 和 `pnpm build` 均通过。
 - 未执行实时 Display Catalog/FE3 请求、真实下载或包安装；因此 M1 的退出证据限定为 fixture/adapter 契约，不扩展为线上服务或部署验收。
 
+## M0 提权部署与双层清单（2026-10-02）
+
+- 固化版本化 Broker 协议：长度前缀 JSON 帧、1 MiB 上限、请求 ID/nonce、父 PID/session 校验、包身份、SHA-256 和 AllUsers 卸载目标。
+- 实现当前用户与机器范围清单：CurrentUser 使用 `FindPackagesByUserSecurityId`；AllUsers 合并 `FindPackages`、`FindProvisionedPackages`、`FindUsers`，并显式输出 `complete`、用户计数、当前用户/其他用户和预配状态。
+- 实现包校验替换：源包拒绝相对路径、UNC/设备路径和重解析点；Broker 在管理员专属 `ProgramData` 暂存根中复制、重新计算 SHA-256、读取 `AppxManifest.xml` 身份后再调用 WinRT 部署 API。
+- 实现非提权主程序 + 一次性 `runas` Broker：命名管道 ACL 允许当前所有者、Administrators 和 SYSTEM；Broker manifest 为 `requireAdministrator`，主程序保持 Tauri 默认 `asInvoker`；Broker 校验高完整性、管道服务端 PID/session、nonce 和一次请求后退出。
+- 接入 Tauri `scan_installed_packages`、`install_package`、`uninstall_package` 命令；CurrentUser 不启动 Broker，AllUsers 始终走 Broker，并在成功返回前执行完整清单后置校验。
+- 新增 `scripts/m0-deployment-acceptance.ps1` 与 `docs/evidence/m0/README.md`。完整脚本在 Windows 10 build 19045 x64 上通过：CurrentUser 安装/卸载 1/1、AllUsers UAC stage/provision/deprovision/remove 1/1、`-WhatIf` 预检通过；脚本 finally 先清包，再按显式指纹清理 `CurrentUser\Root`、`CurrentUser\TrustedPeople`、`LocalMachine\Root`，复核三处匹配数均为 0。
+- 真实验收包为既有自签 `.msix`，签名指纹仅用于本次测试，不生成新证书；未把包、PFX/CER、私钥、Broker 生成二进制或临时证据加入 Git。
+
 ## 阻塞项与风险
 
 | Item | Status | Handling |

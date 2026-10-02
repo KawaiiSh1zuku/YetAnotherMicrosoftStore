@@ -131,3 +131,10 @@ Task 1 freezes shared types; Task 2 supplies postcondition scans; Task 3 supplie
 - Broker protected staging cleanup is limited to its request ID and protected root.
 - Certificate cleanup is limited to the explicit thumbprint and stores; failure to prove removal fails acceptance.
 - No task resets the branch, deletes broad target directories or removes broad certificate-store paths.
+
+## 本次执行状态（2026-10-02）
+
+- Task 1–5 已实现并通过对应 TDD/全量 Rust 测试；主进程保持普通权限，AllUsers 统一由一次性 UAC Broker 执行。
+- Task 6 已用既有自签 `.msix` 完成 CurrentUser 与 AllUsers 真实回环；`-WhatIf` 预检通过；finally 包清理后，显式证书存储中的目标指纹复核为零匹配。
+- Task 7 的 fresh evidence 已同步到 `task_plan.md`、`progress.md`、`findings.md`、`docs/support-matrix.md` 和 `docs/evidence/m0/README.md`。
+- 按用户要求，本次不执行 Git commit；完成回归后只暂存实现/文档/测试路径，并在交付消息中给出可直接执行的 commit 语句。

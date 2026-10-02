@@ -39,10 +39,6 @@ impl BrokerRequest {
     /// wiring, the broker must add trusted staging-root, identity, signature,
     /// hash, and safe file-opening checks.
     pub fn validate(&self) -> Result<(), BrokerValidationError> {
-        if self.scope == DeploymentScope::AllUsers {
-            return Err(BrokerValidationError::AllUsersBrokerNotReady);
-        }
-
         validate_package_path(&self.package_path)?;
         for dependency in &self.dependency_paths {
             validate_package_path(dependency)?;
