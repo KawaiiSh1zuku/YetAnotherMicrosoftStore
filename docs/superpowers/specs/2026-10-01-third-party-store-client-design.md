@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端设计规格
 
-> 状态：架构已批准；M0 原生部署验收、M1 离线协议适配和 M2 领域持久化已完成。M3 及后续能力仍需按里程碑验收和条件门控，实时 Store/FE3、下载与跨渠道互操作不因本地 fixture、SQLite 测试或构建结果而视为完成。
+> 状态：架构已批准并完成 M0-M2 对照审查。M0 原生部署基础达到受控 Windows 实机证据，M1 离线协议适配和 M2 领域持久化达到自动化测试证据；M3 及后续能力仍须逐级验收。实时 Store/FE3、下载、资源选择和跨渠道互操作不能由 fixture、SQLite 测试或构建结果推断为已支持。
 
 ## 关键边界
 
@@ -19,6 +19,27 @@
 
 互操作里程碑是来源无关的包关联：官方 Store 安装的应用应出现在本客户端的清单和更新扫描中；本客户端安装的应用在包身份、签名、市场/渠道和用户授权兼容时，应仍具备由官方 Store 更新的资格。
 
+## 设计原则与证据等级
+
+### 设计原则
+
+- Windows 包清单是“已安装状态”的事实来源；客户端任务数据库只记录意图、过程和观测来源，不能代替系统清单。
+- Microsoft 返回的包图在每次任务开始时重新解析，并冻结任务使用的产品、市场、架构、语言和部署范围；临时 URL 不得成为持久身份。
+- 目录、解析、适用性、下载、验证、清单、部署和持久化必须保持独立边界，外部协议类型不得穿过领域层或 Tauri API。
+- 普通 Tauri 进程保持非提权；全用户部署只通过一次性 UAC Broker，并以部署后的完整清单后置条件判定成功。
+- 所有能力声明必须指出证据等级、验证环境和未覆盖边界。
+
+### 证据等级
+
+| 等级 | 含义 | 可以证明 | 不能证明 |
+|---|---|---|---|
+| E0 静态 | 代码、配置或文档存在 | 接口和意图已落盘 | 可构建、可运行或外部系统接受 |
+| E1 自动化 | fixture、单元、集成、构建测试通过 | 本地契约和确定性逻辑符合测试 | 实时 Store、真实授权、UAC 或外部更新行为 |
+| E2 受控 Windows 实测 | 在记录的 Windows/载荷/权限环境完成回环 | 指定环境下的真实 Windows 行为 | 其他 OS 构建、架构、产品或市场普遍兼容 |
+| E3 在线/跨渠道实测 | 对 Microsoft 实时服务和官方 Store 完成受控测试 | 指定产品、市场、账户和时间点的互操作 | 对所有产品和授权的永久保证 |
+
+当前基线：M0 为 E2（Windows 10 build 19045 x64、自签测试 MSIX）；M1 为 E1（脱敏 DCAT/FE3 fixture）；M2 为 E1（领域、SQLite 与恢复测试）。M3-M9 尚未达到退出证据。
+
 ## 技术选型
 
 | 层 | 选择 | 理由 |
@@ -29,7 +50,7 @@
 | 样式 | 使用 CSS 变量的 Tailwind CSS | 支持主题、响应式布局且无运行时样式依赖 |
 | 后端 | Rust、Tokio、windows crate | 异步网络/任务控制以及原生 WinRT/Win32 访问 |
 | Store 协议 | 围绕固定版本 storelib_rs 的项目适配器 | 复用 DCAT/FE3 解析，避免供应商类型泄漏到业务层 |
-| 存储 | 嵌入式 SQLite 或等价单文件存储 | 保存任务状态、目录缓存元数据、包缓存元数据和设置，不依赖后台服务 |
+| 存储 | `rusqlite 0.40.2` + bundled SQLite | 保存任务状态、目录缓存元数据、包缓存元数据和设置，不依赖后台服务 |
 | 分发 | Tauri bundler + NSIS | 符合非 Store 分发路径要求 |
 
 Tauri 的 Windows 运行时使用 WebView2；这是 UI 运行时前置条件，不是包获取或更新服务依赖。参见 [Tauri 架构](https://v2.tauri.app/concept/architecture/) 和 [Windows 前置条件](https://v2.tauri.app/start/prerequisites/)。
@@ -47,9 +68,9 @@ Tauri 的 Windows 运行时使用 WebView2；这是 UI 运行时前置条件，�
 - 可用时记录 Application User Model ID。
 - 可解析时记录 Microsoft Store Product ID、Content ID 以及包/分类标识。
 - 最近一次解析使用的市场、语言和渠道。
-- 观测到的安装来源：官方 Store、本客户端或未知。
+- 观测到的安装来源：官方 Store、本客户端、其他或未知。
 
-安装来源只作为诊断和 UI 元数据，绝不能改变包身份、发布者、签名或包族。
+安装来源只作为诊断和 UI 元数据，绝不能改变包身份、发布者、签名或包族。Windows 包清单通常不能单独证明最初由哪个客户端安装：只有本客户端完成部署并经清单后置校验时才能可靠写入“本客户端”；“官方 Store”必须有可验证的 Store 关联证据，否则记录为“未知”，不得根据缺少本地任务历史自行推断。
 
 Microsoft 将 Package Identity 和 Package Family Name 定义为区分包及其版本的稳定标识。参见 [Package Identity 概览](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/package-identity-overview)。
 
@@ -92,21 +113,26 @@ Microsoft 将 Package Identity 和 Package Family Name 定义为区分包及其�
 
 ~~~mermaid
 flowchart LR
-  UI[Vite React UI] --> CMD[Tauri commands/events]
-  CMD --> ORCH[Job orchestrator]
-  ORCH --> CAT[Catalog provider]
-  CAT --> DCAT[Display Catalog]
-  ORCH --> FE3[FE3 package resolver]
-  FE3 --> MS[Microsoft delivery endpoints]
+  UI[Vite React UI] --> API[Tauri commands/events]
+  API --> ORCH[Job orchestrator]
+  ORCH <--> DB[(SQLite)]
+  SETTINGS[Settings / ProxyProvider] --> CAT[Catalog provider]
+  SETTINGS --> RES[FE3 resolver]
+  SETTINGS --> DL[Resumable downloader]
+  ORCH --> CAT --> DCAT[Display Catalog]
+  ORCH --> RES --> FE3[FE3 / Microsoft delivery metadata]
   ORCH --> SEL[Applicability selector]
-  SEL --> DL[Resumable downloader]
-  DL --> VERIFY[Hash/signature verifier]
-  VERIFY --> DEPLOY[Native package deployer]
-  DEPLOY --> PM[Windows PackageManager]
-  ORCH --> INV[Installed package inventory]
-  INV --> DIFF[Version/update diff]
-  DIFF --> UI
+  SEL --> DL --> VERIFY[Hash / identity / signature preflight]
+  VERIFY --> DEPLOY[Deployment coordinator]
+  DEPLOY --> CURRENT[Current-user PackageManager]
+  DEPLOY --> BROKER[One-shot UAC Broker]
+  BROKER --> MACHINE[Stage / provision / remove-for-all-users]
+  ORCH --> INV[Current-user and machine inventory]
+  INV --> DIFF[Identity correlation / version diff]
+  DIFF --> API
 ~~~
+
+图表示目标逻辑关系，不表示所有节点当前均已实现。M0 已覆盖 `DEPLOY`、`BROKER`、`CURRENT`、`MACHINE` 和基础 `INV`；M1 已覆盖 `CAT`/`RES` 的离线适配；M2 已覆盖 `DB`、领域状态和恢复语义。`SEL`、`DL`、完整 `VERIFY`、`DIFF`、稳定 `API` 与产品 UI 属于 M3-M7。
 
 ### Rust 模块职责边界
 
@@ -122,6 +148,8 @@ flowchart LR
 - tauri_api：唯一面向前端的命令/事件层，将内部错误转换为稳定 DTO。
 
 前端不得依赖 storelib_rs 类型、FE3 XML 结构、原始下载 URL 或 WinRT 错误对象。
+
+当前代码仍保留 M0 调试期命令和字符串错误返回；它们不是最终 Tauri API 契约。进入 M6 集成前必须移除脚手架命令，将目录、持久化和部署错误统一映射为封闭的 `AppErrorDto`。
 
 ## Store 获取与包解析
 
@@ -149,6 +177,8 @@ storelib_rs 必须被隔离在项目自有接口之后：
 - 如果 crate 或端点发生变化，保留可替换实现路径。
 
 StoreLib 本身是参考实现，不是稳定的平台 SDK。仓库已归档，见 [StoreDev/StoreLib](https://github.com/StoreDev/StoreLib)；Rust 移植版文档见 [storelib_rs](https://docs.rs/crate/storelib_rs/latest)。
+
+当前 M1 已精确固定 `storelib_rs 0.1.11` 和 `roxmltree 0.20.0`，以脱敏 fixture 验证 DCAT 搜索/产品规范化、FE3 包实例和依赖边。production adapter 虽已存在，但尚未形成实时端点、授权、市场和临时 URL 的 E3 证据；上线前必须在 M4/M5 的受控网络验收中重新验证。
 
 ### 适用性选择
 
@@ -233,7 +263,9 @@ Microsoft 将 MSIXVC 描述为“Microsoft Installer for Xbox Virtual Console”
 - broker 返回结构化部署状态以及 HRESULT/错误文本。
 - broker 绝不接受任意可执行路径或命令行。
 
-第一个实现里程碑必须验证选定 Windows 版本和包格式是否允许 broker 执行目标全用户预配流程。如果包无法进行机器范围预配，UI 必须报告该限制，不得静默回退到当前用户安装。
+M0 已在 Windows 10 build 19045 x64 上，以既有自签测试 MSIX 完成当前用户和全用户真实回环：一次性 `runas` Broker、管理员暂存副本、stage/provision、机器清单、deprovision、`RemoveForAllUsers` 和精确证书清理均有记录。该 E2 证据不覆盖其他 Windows 构建、ARM64/x86 主机、bundle/eAppx 真实载荷或 Microsoft Store 授权产品。
+
+如果包无法进行机器范围预配，UI 必须报告该限制，不得静默回退到当前用户安装。后续 M5 必须复用 M0 的部署原语，不得重新引入另一套 Broker 或绕过已有的后置清单判定。
 
 ### 更新
 
@@ -248,6 +280,27 @@ Microsoft 将 MSIXVC 描述为“Microsoft Installer for Xbox Virtual Console”
 7. 重新扫描清单并记录最终版本。
 
 本设计不集成后台 Windows Update 或 Store 更新队列。
+
+## 领域模型与持久化
+
+M2 使用项目自有领域模型和 SQLite schema v1，持久化以下数据：
+
+- 产品及其市场、本地化语言和目录更新时间。
+- 包版本、包族、moniker、架构、语言、格式、大小、哈希和观测来源。
+- 前置依赖与 bundle 更新边。
+- 安装/更新任务的请求上下文、阶段、进度、选择结果和安全错误 DTO。
+- 缓存条目、应用设置、安装来源观测和脱敏诊断索引。
+
+任务恢复必须遵循以下规则：
+
+- 解析、选择、下载、验证或等待提权阶段中断后进入 `Interrupted`，下一步必须重新解析，不能复用临时 URL。
+- 部署阶段中断后进入 `NeedsReconciliation`，必须先扫描 Windows 包清单，再决定完成、失败或重新解析。
+- 已完成或已取消任务不得在重启后自行恢复执行。
+- 原始请求市场、架构、语言和部署范围属于任务快照，不受后续全局设置变更影响。
+
+普通 SQLite 设置不得保存代理用户名、密码、令牌或 Store 临时 URL。诊断只保存封闭 operation、稳定错误码、阶段、可选 OS 错误码和时间；进入实时网络能力前，`SafeErrorDetail` 还必须从任意键值字符串收紧为封闭字段集合。
+
+M3 进入任务必须通过新 migration 补齐 publisher、resource ID、package kind、最低 Windows build 和资源限定字段，才能实现确定性的适用性选择。不得直接修改已发布的 schema v1 内容来伪装迁移历史。
 
 ## 代理配置
 
@@ -264,7 +317,9 @@ Microsoft 将 MSIXVC 描述为“Microsoft Installer for Xbox Virtual Console”
 
 ## Tauri 命令与事件契约
 
-第一版稳定命令集为：
+当前 M0 暴露 `probe_deployment`、`scan_installed_packages`、`install_package` 和 `uninstall_package`，用于部署 Spike 与验收；其中错误仍以字符串返回，且脚手架 `greet` 尚未移除。它们是临时开发接口，不是前端稳定契约。
+
+M6 目标稳定命令集为：
 
 - search_apps
 - get_app_details
@@ -280,6 +335,8 @@ Microsoft 将 MSIXVC 描述为“Microsoft Installer for Xbox Virtual Console”
 - get_settings
 - update_settings
 - clear_cache
+
+M0 的安装/卸载能力应作为 `start_install`/`start_update` 内部的部署后端复用；若产品需要暴露卸载功能，必须另行加入稳定命令、权限确认和影响范围设计，不能直接沿用 Spike 参数形状。
 
 事件按任务作用域划分：
 
@@ -360,9 +417,11 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 - msixvc_capability_unavailable
 - unsupported_package_type
 
-每个错误都有稳定代码、本地化用户消息、安全诊断详情和重试策略。未经重新解析，重试不得重复无效包选择或哈希验证失败的操作。
+每个错误都有稳定代码、本地化用户消息、安全诊断详情和重试策略。未经重新解析，重试不得重复无效包选择或哈希验证失败的操作。Broker/M0 内部错误必须在 Tauri API 边界映射到本表中的稳定代码；原始 HRESULT 只允许进入脱敏诊断，不直接成为用户消息。
 
 ## 测试策略
+
+每次里程碑验收必须报告对应证据等级和环境。E1 测试只在无外部状态变化时默认运行；会安装包、触发 UAC、修改证书存储或访问实时 Store 的 E2/E3 测试必须显式提供载荷/账户/环境并独立记录清理结果。
 
 ### 单元与 fixture 测试
 
@@ -399,24 +458,28 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 - 日志中不出现令牌、凭据或原始 URL。
 - 键盘独立操作和屏幕阅读器冒烟测试。
 
-## 发布阶段
+## 里程碑边界
 
-1. 协议/部署 Spike：单个免费公开 MSIX/AppX，完成新鲜 DCAT/FE3 解析、验证和全用户部署。
-2. 目录 UI：搜索、本地化详情、市场/语言/架构选择器。
-3. 下载与缓存：可续传任务、代理模式、保留策略和恢复。
-4. 部署/更新：清单、版本差异、特权 broker 和更新队列。
-5. MSIXVC 能力：针对独立 API/服务要求进行研究和验证；本阶段完成前不作 Xbox 支持声明。
-6. 发布加固：NSIS、支持矩阵、诊断和回归测试集。
+1. M0 基线与部署 Spike：已完成。建立 Tauri/Rust 基线、当前用户部署、一次性 UAC Broker、双层清单和受控 Windows 实测。
+2. M1 Store 协议适配：已完成 E1。固定并隔离 `storelib_rs`，建立 DCAT/FE3 fixture 契约；不代表线上端点验收。
+3. M2 领域模型与持久化：已完成 E1。建立 schema v1、repository、安全错误模型和重启恢复；不代表下载或更新已实现。
+4. M3 适用性与资源选择：先补 schema v2 字段和错误详情封闭化，再实现架构、语言、市场、OS、资源包和依赖选择。
+5. M4 下载、缓存与代理：实现受控实时协议 smoke、四种代理模式、续传、缓存、URL 过期重解析和完整下载验证。
+6. M5 安装/更新编排与身份关联：复用 M0 部署基础，接入包图、版本差异、Store 产品关联和来源无关更新，不重复实现 Broker。
+7. M6 Tauri API 与前端主流程：冻结安全 DTO 和命令/事件，完成搜索、详情、队列、已安装和设置 UI。
+8. M7 跨渠道互操作验收：在指定测试产品/市场/账户上取得 E3 证据并验证不降级策略。
+9. M8 NSIS 与发布加固：干净机安装/升级/卸载、签名、诊断、网络白名单和可访问性回归。
+10. M9 MSIXVC 研究门：第一阶段之后独立评估；未通过专门审批前不下载、不安装、不更新。
 
 ## 下一次评审待决策事项
 
-- 全用户预配的最低 Windows 构建版本。
-- storelib_rs 固定 crates.io 版本，还是经过审计的 Git revision。
+- 产品最低 Windows 构建版本；当前只有 Windows 10 build 19045 x64 的 E2 证据。
 - 首次发布的 system 代理模式是否支持 PAC/WPAD，还是只支持静态 Windows 代理设置。
 - 全用户安装成功后是否默认保留缓存包。
 - 付费产品和 Microsoft 账户认证是后续项目，还是永久不在范围内。
 - “官方 Store 更新第三方安装”是接受条件性兼容保证，还是必须建立逐产品认证矩阵。
+- Release Broker 和 NSIS 的代码签名证书、签名流水线与轮换策略。
 
-## 审批门槛
+## 当前执行门
 
-本规格和配套实现计划已准备好一并评审。用户批准或提出修改前，不得开始实现或安装依赖；批准后先执行实现计划中的 M0 基线与部署 Spike。
+M0-M2 已通过本规格规定的对应证据门。本轮细化完成后，下一实施工作是 M3：先完成 schema v2/领域字段补齐和 `SafeErrorDetail` 封闭化，再实现适用性选择。实时 Store、下载、跨渠道更新、NSIS 发布和 MSIXVC 仍分别受 M4、M7、M8、M9 门控。

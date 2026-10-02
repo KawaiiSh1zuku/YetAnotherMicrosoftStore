@@ -10,10 +10,12 @@
 - 证据评审：已完成
 - 中文规格文档：已完成，已批准进入 M0
 - 中文实现计划与里程碑：已完成，已批准进入 M0
+- 规格与实施计划细化：已完成，已同步当前架构、证据等级和 M3A/M3B 执行门
 - M0：当前用户与全用户部署验收完成；双层清单、一次性 UAC Broker 和证书清理已验证
 - M1：Store 协议 adapter、规范化 DTO、DCAT/FE3 脱敏 fixtures 和契约测试完成；未宣称线上 Store/FE3 实时验收
 - M2：领域 DTO、安全错误契约、可恢复任务状态机、SQLite schema v1 和 repository 已完成
-- 产品代码：Tauri/Rust/React 基线、M1 协议边界和 M2 持久化边界已建立，M3 尚未开始
+- M0-M2 计划匹配审查：已完成；M0 为受控 Windows E2，M1/M2 为自动化 E1
+- 产品代码：Tauri/Rust/React 基线、M1 协议边界和 M2 持久化边界已建立，M3A 尚未开始
 
 ## 已确认决策
 
@@ -32,16 +34,20 @@
 
 ## 下一步门槛
 
-1. 进入 M3 前扩展持久包 DTO 的 publisher、resource ID、包种类和最低 OS 字段，并把安全错误详情收紧为封闭类型，再实现适用性与资源选择。
+1. M3A：新增 schema v2 migration，扩展 publisher、resource ID、package kind、最低 OS/build 和资源限定字段。
+2. M3A：把版本改为可比较强类型，并将 `SafeErrorDetail` 收紧为封闭类型。
+3. M3B：实现架构、市场、语言、资源包、依赖、最低 OS 和防降级选择器及解释 DTO。
+4. M3 完成前不进入实时下载或 Store 互操作验收。
 
 ## 当前代码验证（2026-10-02）
 
-- 工作区扫描基线为 `master` / `157c23c`；本轮文档修改前工作区干净，未发现未跟踪的证书、私钥、Broker 二进制或临时验收证据。
+- 工作区扫描基线为 `master` / `86cae46`；本轮文档修改前工作区干净，未发现未跟踪的证书、私钥、Broker 二进制或临时验收证据。
 - 实际代码边界包括 `catalog.rs`/`resolver.rs` 的 M1 adapter，以及 `deployment.rs`、`broker_protocol.rs`、`broker_launcher.rs`、`deployment_coordinator.rs`、`inventory.rs` 和 `package_validation.rs` 的 M0 部署路径。
 - 本轮重跑 `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`、`cargo test --manifest-path src-tauri/Cargo.toml --all-targets`（25 项通过，3 项需要签名包/环境变量的真实集成测试保持 ignored）、`cargo check --manifest-path src-tauri/broker/Cargo.toml`、`pnpm build` 和 `pnpm exec tauri build --debug --no-bundle` 均通过。
 - 真实 UAC/包/证书回环证据仍以 `progress.md`、`findings.md` 和 `docs/evidence/m0/README.md` 中已记录的验收为准；本轮没有重新执行会改变 Windows 包或证书状态的脚本。
 - M2 新增测试使默认特性全量结果达到 38 项通过、3 项 M0 真实包测试 ignored；严格 Clippy、Cargo check、Broker check、前端构建和 Tauri debug 非 bundle 构建通过。
 - `cargo clippy --all-targets --all-features` 仍会触发 M0 `broker-dependency` 与桌面 binary 的既有 feature 组合错误；本轮未把该 M0 构建边界修复混入 M2。
+- 本轮重新验证格式、38 项通过/3 项 ignored 的全目标测试、默认特性严格 Clippy、Broker check 和前端构建；没有重复执行会改变包/证书状态的 M0 验收脚本。
 
 ## 约束
 
@@ -56,7 +62,8 @@
 - M0：基线与部署 Spike
 - M1：Store 协议适配
 - M2：领域模型与持久化
-- M3：适用性与资源选择
+- M3A：领域/schema 加固
+- M3B：适用性与资源选择
 - M4：下载、缓存与代理
 - M5：原生部署与跨渠道清单
 - M6：Tauri API 与前端主流程

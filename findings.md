@@ -93,3 +93,37 @@
 - M1 的 `MissingField("product")` 只能证明响应缺失字段，不能证明目录明确返回产品不存在；它应映射为可重试的 `catalog_unavailable`，将 `catalog_not_found` 保留给未来明确的服务语义。
 - 独立审查发现并已修复三项 Important：待处理恢复动作跨二次启动丢失、Job 未冻结原始解析/部署请求上下文、rollback 测试在第一条 DDL 就失败而没有真正覆盖事务回滚。
 - M3 入口仍需补齐 package publisher、resource ID、包种类和最低 OS 适用性字段；M2 当前退出条件只覆盖已承诺的身份名/PFN、版本、架构、语言、市场、来源和任务恢复。
+
+## 规格与计划细化审查基线（2026-10-02）
+
+- 当前 Git 基线为 `master` / `86cae46`，工作区在本轮文档修改前干净；提交历史包含 M0 基线、M0 提权部署验收、M1 协议适配、状态同步和 M2 持久化。
+- 总规格的状态摘要已经承认 M0-M2 完成，但“审批门槛”和“发布阶段”仍保留 M0 尚未开始时的叙述，需要改为当前执行门与 M0-M9 一致的分阶段证据模型。
+- 总实施计划已把 M0-M2 标记为完成，但需要进一步拆开每个里程碑的产物、自动化验证、真实环境验证、明确未覆盖项和下一里程碑前置条件，避免把 fixture/build 证据扩大为实时 Store 或跨渠道验收。
+- 本轮审查采用四级证据：静态代码存在、自动化测试/构建通过、受控 Windows 真实验收通过、外部 Store/在线服务互操作通过；后一级不能由前一级推断。
+- M0、M1、M2 的最终状态将在专项文档、实现文件、测试文件和可复现命令完成交叉核验后写入总计划与进度日志。
+
+## M0 与总计划匹配审查（2026-10-02）
+
+- M0 专项规格、Task 1-7 实现计划、`docs/support-matrix.md`、`docs/evidence/m0/README.md`、提交 `157c23c` 和当前实现文件形成一致证据链；状态可判定为“完成（受 Windows 10 build 19045 x64 与既有自签测试包范围约束）”。
+- 历史真实验收覆盖 CurrentUser 安装/清单/卸载、AllUsers stage/provision/机器清单/deprovision/RemoveForAllUsers、一次性 UAC Broker、包与证书清理；本轮不会仅为文档审查重复执行会改变 Windows 包和证书状态的脚本。
+- M0 自动化与静态证据覆盖协议帧、清单 DTO、协调路由、路径/哈希/身份校验和 ignored 真实包测试入口；真实验收记录不能由普通 `cargo test` 重建，必须保持为独立证据层。
+- M0 专项设计标题仍写“待用户审阅”，与实现计划和真实验收冲突；应改为“已批准并完成”，同时保留验证机、载荷和未覆盖 bundle/eAppx 的限制。
+- 总计划 M5 中“实现普通安装、全用户 broker、机器清单”的描述与 M0 已完成产物重复；M5 应改成复用 M0 部署基础，补齐包图安装、更新比较、Store 身份关联和来源无关更新编排。
+
+## M1 与总计划匹配审查（2026-10-02）
+
+- `src-tauri/src/catalog.rs` 与 `resolver.rs` 将 `storelib_rs 0.1.11` 限制在 adapter 边界，向项目其余层暴露自有 trait/DTO；依赖版本在 `Cargo.toml` 中精确固定。
+- `m1_protocol` fixture 测试覆盖 DCAT 搜索/产品身份、非 HTTPS URL 拒绝、项目自有 provider 类型、FE3 包/依赖边、坏 XML 和缺失 moniker；测试只证明离线解析与规范化。
+- production adapter 已有实时方法，但本仓库没有实时 DCAT/FE3、授权、地区和临时 CDN URL 的验收证据。因此 M1 应标记为“完成（离线协议适配）”，并把线上契约 smoke test 明确留在 M4/M5 前的受控验收门。
+- 总计划 M1 原任务同时提到 `PackageIdentity`/`InstalledPackage`，但这些 Windows 身份/清单结构实际由 M0 inventory/broker 协议和 M2 领域模型承担；应从 M1 退出条件中剥离，避免错误归属。
+- 原始 FE3 `package_uri` 仍存在于 Rust resolver DTO，用于后续下载层；当前没有穿过 Tauri 命令边界。M4 必须在网络/下载边界增加 host allowlist、URL 过期和日志脱敏验证，不能把 M1 的结构解析当作 URL 安全验收。
+
+## M2 与总计划匹配审查（2026-10-02）
+
+- M2 已建立项目自有 domain/error/job 类型、SQLite schema v1、repository、migration 重放/事务回滚和重启恢复；`rusqlite 0.40.2` 精确固定并使用 bundled SQLite。
+- Job 已冻结请求市场、架构、语言和部署范围；下载/解析/验证中断恢复为 `Interrupted + ReResolve`，部署中断恢复为 `NeedsReconciliation + ReconcileInventory`，避免盲目重复部署。
+- 设置持久化只保存代理模式、host、port 和凭据策略，不保存用户名/密码；诊断 operation 使用枚举，符合 M2 的凭据和诊断边界。
+- M2 当前退出条件所列身份名/PFN、版本、架构、语言、市场、来源和恢复语义已有实现/测试，可判定为“完成（本地域模型与持久化）”。
+- M3 入口前仍需扩展包 publisher、resource ID、package kind、最低 OS/build 和资源限定字段；这些不是把 M2 降为未完成的理由，但必须成为 M3 的前置子任务和 schema v2/migration 决策。
+- `SafeErrorDetail { key, value }` 仍允许任意字符串。进入实时目录/下载前应改为封闭 detail 枚举或按错误码限定字段，避免 URL、令牌和服务原文进入前端 DTO/持久诊断。
+- 当前 M0 Tauri 命令 `scan_installed_packages`、`install_package`、`uninstall_package` 仍以 `Result<_, String>` 暴露错误，且脚手架 `greet`/`probe_deployment` 仍注册；这属于 M0 调试接口，不满足总规格的稳定 `AppErrorDto` 契约。M6 前必须移除/隔离调试命令并把部署错误映射到封闭前端 DTO。

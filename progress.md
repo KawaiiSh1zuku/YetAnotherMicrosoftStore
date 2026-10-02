@@ -69,6 +69,20 @@
 - 最终默认特性 `cargo test --all-targets` 为 38 项通过、3 项既有 M0 环境测试 ignored；严格 Clippy、Cargo check、Broker check、`pnpm build` 和 Tauri debug 非 bundle 构建通过。
 - 未执行实时 DCAT/FE3、包下载或新的 Windows 安装/卸载；M2 退出证据限定为本地域模型、SQLite 与构建测试。
 
+## 规格/计划细化与 M0-M2 对照审查（2026-10-02）
+
+- 以 `master` / `86cae46` 和干净工作区为审查基线，读取总规格、总实施计划、M0 专项规格/计划、支持矩阵、M0 证据说明、M0-M2 实现与测试。
+- 本轮重跑 `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` 通过。
+- 本轮重跑 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets`：38 项通过，3 项需要签名包/环境变量的 M0 真实部署测试 ignored；没有失败。
+- 本轮重跑默认特性严格 Clippy（`--all-targets -- -D warnings`）、Broker `cargo check` 和 `pnpm build`，均通过。
+- 本轮重跑 `pnpm exec tauri build --debug --no-bundle` 通过，生成 debug 主程序并按既有脚本复制 Broker；生成二进制保持被 Git 忽略。
+- 不重复执行会改变 Windows 包/证书状态的 M0 验收脚本；M0 真实 CurrentUser/AllUsers/UAC/清理结论只引用已记录的 Windows 10 build 19045 x64 验收证据。
+- 审查确认：M0 完成但需修正文档状态和 M5 重复职责；M1 完成的是离线 adapter/fixture 契约而非线上 Store；M2 完成本地领域/SQLite/恢复边界，但 M3 前须补字段与收紧安全错误详情。
+- 已细化总规格：新增 E0-E3 证据等级、当前/目标架构、安装来源置信规则、M2 持久化与恢复契约、当前临时 Tauri API 边界和 M0-M9 执行门。
+- 已细化总计划：按实际文件结构重写，拆分 M3A/M3B，消除 M5 对 M0 Broker/清单的重复职责，并加入 M0-M2 匹配审查表、可复现命令、风险和退出条件。
+- 已将 M0 专项规格状态从“待用户审阅”修正为“已批准并完成”，同时保留验证环境和未覆盖载荷边界。
+- 最终 `git diff --check`、陈旧状态词扫描和文档链接目标检查通过；本轮只修改 6 个 Markdown 规划/规格文件，没有修改产品代码或加入生成物。
+
 ## 阻塞项与风险
 
 | Item | Status | Handling |
@@ -89,3 +103,4 @@
 | M2 评审记录补丁使用了不存在的 `findings.md` 章节标题 | 1 | 读取文件尾部后改用实际的“当前代码状态扫描”插入点 |
 | M2 Important 修复的跨文件补丁因 `persistence.rs` 格式化上下文不匹配而拒绝 | 1 | 确认补丁未部分应用，拆为 Job、migration、repository 的小型文件级补丁 |
 | 最终文件统计循环中的 `$f` 被 PowerShell 在传给 Bash 前展开 | 1 | 改为不含 shell 变量的显式 `wc -l` 文件列表 |
+| M0、M1、M2 三个只读审查子代理均返回 `429 Too Many Requests` | 1 | 不采用任何子代理结论，不重复相同并发请求；由主线直接读取实现、测试和证据文档完成审查 |
