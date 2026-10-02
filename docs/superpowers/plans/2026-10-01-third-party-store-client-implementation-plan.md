@@ -180,11 +180,12 @@ M8 ──> M9（新范围审批后）
 
 ### M4：实时解析、下载、缓存与代理
 
-- 在显式测试开关下对 production adapter 做受控实时 smoke，记录市场、语言、产品和时间，不保存临时 URL/令牌。
-- 新建 `ProxyProvider`：disabled、system、自定义 HTTP(S)、SOCKS5；凭据只引用 Windows Credential Manager 或运行时输入。
-- 实现 Range 续传、ETag/长度变化处理、取消、限速/并发、URL 过期重新解析和按内容哈希原子落盘。
-- 实现缓存上限、保留时间、verified/partial 分离和重启恢复；SQLite 不保存敏感 URL。
-- 实现 host/redirect allowlist、大小/SHA-256 流式验证和日志脱敏。
+- [x] 在显式测试开关下对 production adapter 做受控实时 smoke，记录市场、语言、产品和时间，不保存临时 URL/令牌。
+
+- [x] 新建 `ProxyProvider`：disabled、system、自定义 HTTP(S)、SOCKS5；凭据只引用 Windows Credential Manager 或运行时输入。
+- [x] 实现 Range 续传、ETag/长度变化处理、取消、限速/并发、URL 过期重新解析和按内容哈希原子落盘。
+- [x] 实现缓存上限、保留时间、verified/partial 分离和重启恢复；SQLite 不保存敏感 URL。
+- [x] 实现 host/redirect allowlist、大小/SHA-256 流式验证和日志脱敏。
 
 退出条件：本地可控 HTTP fixture 与受控实时 smoke 均通过；四种代理模式和缓存恢复有证据；失败不会改变已安装包。
 
