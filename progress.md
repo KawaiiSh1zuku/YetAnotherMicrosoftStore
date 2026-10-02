@@ -56,6 +56,19 @@
 - 发现并同步三处陈旧叙述：设计规格、README 和 2026-10-01 总实施计划仍停留在“进入/批准 M0”；现已改为 M0 验收完成、M1 离线协议适配完成、M2 待开始，并保留实时 Store/FE3、下载、跨渠道更新和 MSIXVC 的未验收边界。
 - M0 实施计划原有 Task 1–7 复选框未反映底部完成记录；现已全部勾选，并注明实际以单次最终提交 `157c23c` 交付，未按 Task 拆分提交。
 
+## M2 领域模型与持久化（2026-10-02）
+
+- 评审 M1 DTO/错误边界：`storelib_rs` 类型仍只存在于 `catalog`/`resolver` adapter；M2 不改写 adapter，新增独立领域与前端安全错误转换层。
+- 第一轮 TDD 已完成：`m2_domain` 先因 `domain`/`error`/`jobs` 模块不存在而失败，随后 6/6 通过。
+- 已固定包身份、版本、架构、语言、市场、格式和安装来源字段；完整文档错误码可稳定序列化，M1 协议详情不会原样进入前端 DTO。
+- 任务状态机把普通活动阶段重启恢复为 `Interrupted` 并要求重新解析，把部署中断恢复为 `NeedsReconciliation` 并要求先扫描 Windows 包清单，避免盲目重复部署。
+- 固定 `rusqlite = 0.40.2`，关闭默认功能并启用 bundled SQLite；新增 schema v1，覆盖产品、包版本、依赖、任务、缓存、设置、安装来源与诊断索引。
+- 第二轮 TDD 已完成：`m2_persistence` 先因领域类型、SQLite 依赖和 persistence 模块不存在而失败，随后 migration 首次执行/重放/失败回滚、repository 往返和重启恢复 4/4 通过。
+- 自审补充测试先因代理/诊断模型缺口失败，修正后 M2 目标测试 12/12 通过；代理凭据只持久化策略，不把用户名/密码放入 SQLite，诊断 operation 使用封闭枚举。
+- 独立只读审查发现 3 项 Important：重复启动会丢恢复动作、Job 未冻结请求上下文、migration rollback 测试未在成功 DDL 后失败。三项均先补失败测试，再完成修复；M2 目标测试现为 13/13。
+- 最终默认特性 `cargo test --all-targets` 为 38 项通过、3 项既有 M0 环境测试 ignored；严格 Clippy、Cargo check、Broker check、`pnpm build` 和 Tauri debug 非 bundle 构建通过。
+- 未执行实时 DCAT/FE3、包下载或新的 Windows 安装/卸载；M2 退出证据限定为本地域模型、SQLite 与构建测试。
+
 ## 阻塞项与风险
 
 | Item | Status | Handling |
@@ -70,3 +83,9 @@
 | 错误 | 尝试次数 | 处理 |
 |---|---:|---|
 | 一次性翻译规格多个段落的 apply_patch 上下文不匹配 | 1 | 拆成按章节的小型补丁，随后成功完成剩余章节 |
+| M2 首次使用不存在的 `transaction_with_behavior_unchecked` | 1 | 核对 `rusqlite 0.40.2` 源码，改用支持共享借用且失败回滚的 `unchecked_transaction` |
+| migration 失败测试用 `expect_err` 意外要求 `Persistence: Debug` | 1 | 改为直接断言 `Result::is_err`，避免为数据库连接扩大调试接口 |
+| `cargo clippy --all-targets --all-features` 编译不到 `run()` | 1 | 确认是 M0 `broker-dependency` 既有 feature 组合问题；不混入 M2 修复，改跑默认桌面特性严格 Clippy并保留失败证据 |
+| M2 评审记录补丁使用了不存在的 `findings.md` 章节标题 | 1 | 读取文件尾部后改用实际的“当前代码状态扫描”插入点 |
+| M2 Important 修复的跨文件补丁因 `persistence.rs` 格式化上下文不匹配而拒绝 | 1 | 确认补丁未部分应用，拆为 Job、migration、repository 的小型文件级补丁 |
+| 最终文件统计循环中的 `$f` 被 PowerShell 在传给 Bash 前展开 | 1 | 改为不含 shell 变量的显式 `wc -l` 文件列表 |

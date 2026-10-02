@@ -83,3 +83,13 @@
 - 现有 Rust 测试覆盖 M0 Broker 协议、部署契约、清单、协调和校验，以及 M1 协议 fixture。当前 `cargo test --all-targets` 结果是 25 项通过、3 项 ignored；ignored 测试要求签名包和 M0 环境变量，不能作为本轮真实包验收结果。
 - 当前构建证据为 Rust 格式检查、Broker `cargo check`、前端 `pnpm build` 和 Tauri debug 非 bundle 构建均成功；构建过程复制了 Broker 到 `src-tauri/broker/deployment-broker-x86_64-pc-windows-msvc.exe`，该生成文件保持被忽略。
 - 文档一致性检查发现设计规格、README 和总实施计划滞后于代码/验收记录，已统一更新为 M0 完成、M1 离线适配完成、M2 待开始；仍明确不承诺实时 Store/FE3、下载、跨渠道更新或 MSIXVC。
+
+## M2 领域与持久化评审（2026-10-02）
+
+- 选择固定 `rusqlite 0.40.2`、关闭默认功能并启用 bundled SQLite；M2 使用项目自有 repository 和显式 SQL migration，不引入 ORM 或异步数据库运行时。
+- M1 provider DTO 隔离有效，M2 不改写 `storelib_rs` adapter；新增转换层把协议错误映射为规格中的稳定错误码、消息键和重试策略。当前转换只传固定字段，但 `SafeErrorDetail` 类型本身仍需在 M3 前收紧为封闭类型。
+- 活动下载/解析/校验任务在重启后必须重新解析临时 URL；部署中断不能盲目重试，必须先进入 `NeedsReconciliation` 并扫描 Windows 包清单。
+- 自定义代理设置需要保存协议、主机、端口和“是否使用安全凭据存储”的策略，但普通 SQLite 设置不得承载用户名/密码。诊断 operation 使用枚举而不是自由文本，减少把 URL、令牌或服务响应写入持久诊断的风险。
+- M1 的 `MissingField("product")` 只能证明响应缺失字段，不能证明目录明确返回产品不存在；它应映射为可重试的 `catalog_unavailable`，将 `catalog_not_found` 保留给未来明确的服务语义。
+- 独立审查发现并已修复三项 Important：待处理恢复动作跨二次启动丢失、Job 未冻结原始解析/部署请求上下文、rollback 测试在第一条 DDL 就失败而没有真正覆盖事务回滚。
+- M3 入口仍需补齐 package publisher、resource ID、包种类和最低 OS 适用性字段；M2 当前退出条件只覆盖已承诺的身份名/PFN、版本、架构、语言、市场、来源和任务恢复。

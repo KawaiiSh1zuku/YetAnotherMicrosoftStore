@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端实现计划
 
-> 状态：M0 当前用户/全用户部署验收已完成；M1 离线 Store 协议适配已完成；M2 及后续里程碑仍按退出验收条件推进。
+> 状态：M0 当前用户/全用户部署验收、M1 离线 Store 协议适配和 M2 领域持久化已完成；M3 及后续里程碑仍按退出验收条件推进。
 
 ## 1. 执行范围
 
@@ -124,14 +124,14 @@ M9 仅在 M8 后单独评估
 - 将 `storelib_rs` 固定在单一 adapter 中，禁止 UI 直接依赖其类型。
 - 保存脱敏 DCAT/FE3 fixture，并覆盖失效 URL、缺失字段和依赖错误。
 
-验证：解析 fixture、错误序列化边界和 adapter 契约测试已通过；schema migration round-trip 与重启恢复属于 M2，尚未开始。
+验证：解析 fixture、错误序列化边界和 adapter 契约测试已通过；schema migration round-trip 与重启恢复已在 M2 完成。
 
-### M2：领域模型与持久化（未开始）
+### M2：领域模型与持久化（已完成）
 
-- 在评审 M1 DTO 和错误码边界后，建立 SQLite migrations：产品、包版本、依赖、任务、缓存、设置、安装来源和诊断索引。
-- 定义可恢复任务状态机与前端安全 DTO 的持久化映射。
+- [x] 在评审 M1 DTO 和错误码边界后，建立 SQLite migrations：产品、包版本、依赖、任务、缓存、设置、安装来源和诊断索引。
+- [x] 定义可恢复任务状态机与前端安全 DTO 的持久化映射。
 
-验证：schema migration round-trip、错误序列化快照和重启恢复测试通过后，才可标记 M2 完成。
+验证：schema migration 首次执行/重放/事务回滚、领域 repository 往返、错误序列化快照和重启恢复测试已通过；未执行实时 Store、下载或部署操作。
 
 ### M3-M5：解析、下载与部署闭环
 
@@ -187,4 +187,4 @@ M9 仅在 M8 后单独评估
 
 ## 9. 当前执行点
 
-中文规格和本实现计划已获批准并已执行 M0/M1。下一步是评审 M1 DTO/错误码边界后进入 M2；实时 Display Catalog/FE3 请求、真实下载、跨渠道更新和 MSIXVC 仍未验收，不得从 fixture 或本地构建结果推断支持。
+中文规格和本实现计划已获批准并已执行 M0-M2。下一步是评审 M2 包/设置 DTO 与任务恢复边界后进入 M3；实时 Display Catalog/FE3 请求、真实下载、跨渠道更新和 MSIXVC 仍未验收，不得从 fixture、SQLite 或本地构建结果推断支持。

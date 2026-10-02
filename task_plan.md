@@ -12,7 +12,8 @@
 - 中文实现计划与里程碑：已完成，已批准进入 M0
 - M0：当前用户与全用户部署验收完成；双层清单、一次性 UAC Broker 和证书清理已验证
 - M1：Store 协议 adapter、规范化 DTO、DCAT/FE3 脱敏 fixtures 和契约测试完成；未宣称线上 Store/FE3 实时验收
-- 产品代码：Tauri/Rust/React 基线与 M1 协议边界已建立，M2 尚未开始
+- M2：领域 DTO、安全错误契约、可恢复任务状态机、SQLite schema v1 和 repository 已完成
+- 产品代码：Tauri/Rust/React 基线、M1 协议边界和 M2 持久化边界已建立，M3 尚未开始
 
 ## 已确认决策
 
@@ -31,7 +32,7 @@
 
 ## 下一步门槛
 
-1. 进入 M2 领域模型与持久化前，先评审 M1 DTO 边界和错误码。
+1. 进入 M3 前扩展持久包 DTO 的 publisher、resource ID、包种类和最低 OS 字段，并把安全错误详情收紧为封闭类型，再实现适用性与资源选择。
 
 ## 当前代码验证（2026-10-02）
 
@@ -39,6 +40,8 @@
 - 实际代码边界包括 `catalog.rs`/`resolver.rs` 的 M1 adapter，以及 `deployment.rs`、`broker_protocol.rs`、`broker_launcher.rs`、`deployment_coordinator.rs`、`inventory.rs` 和 `package_validation.rs` 的 M0 部署路径。
 - 本轮重跑 `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`、`cargo test --manifest-path src-tauri/Cargo.toml --all-targets`（25 项通过，3 项需要签名包/环境变量的真实集成测试保持 ignored）、`cargo check --manifest-path src-tauri/broker/Cargo.toml`、`pnpm build` 和 `pnpm exec tauri build --debug --no-bundle` 均通过。
 - 真实 UAC/包/证书回环证据仍以 `progress.md`、`findings.md` 和 `docs/evidence/m0/README.md` 中已记录的验收为准；本轮没有重新执行会改变 Windows 包或证书状态的脚本。
+- M2 新增测试使默认特性全量结果达到 38 项通过、3 项 M0 真实包测试 ignored；严格 Clippy、Cargo check、Broker check、前端构建和 Tauri debug 非 bundle 构建通过。
+- `cargo clippy --all-targets --all-features` 仍会触发 M0 `broker-dependency` 与桌面 binary 的既有 feature 组合错误；本轮未把该 M0 构建边界修复混入 M2。
 
 ## 约束
 

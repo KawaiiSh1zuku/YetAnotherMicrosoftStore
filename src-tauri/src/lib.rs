@@ -65,8 +65,12 @@ pub mod broker_protocol;
 pub mod catalog;
 pub mod deployment;
 pub mod deployment_coordinator;
+pub mod domain;
+pub mod error;
 pub mod inventory;
+pub mod jobs;
 pub mod package_validation;
+pub mod persistence;
 pub mod resolver;
 
 #[cfg(not(feature = "broker-dependency"))]
