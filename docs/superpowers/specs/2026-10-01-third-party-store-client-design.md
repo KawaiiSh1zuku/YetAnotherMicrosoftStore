@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端设计规格
 
-> 状态：架构已批准并完成 M0-M3 对照审查。M0 原生部署基础达到受控 Windows 实机证据，M1 离线协议适配、M2 领域持久化和 M3 适用性选择达到自动化测试证据；M4 及后续能力仍须逐级验收。实时 Store/FE3、下载、部署编排和跨渠道互操作不能由 fixture、SQLite 测试或构建结果推断为已支持。
+> 状态：架构已批准并完成 M0-M4 对照审查。M0 原生部署基础达到受控 Windows 实机证据，M1-M3 达到自动化测试证据；M4 达到自动化测试并完成指定产品/市场/语言的受控在线 DCAT/FE3 smoke。真实 CDN 包下载、签名验证、部署编排和跨渠道互操作不能由该 smoke、fixture、SQLite 测试或构建结果推断为已支持。
 
 ## 关键边界
 
@@ -38,7 +38,7 @@
 | E2 受控 Windows 实测 | 在记录的 Windows/载荷/权限环境完成回环 | 指定环境下的真实 Windows 行为 | 其他 OS 构建、架构、产品或市场普遍兼容 |
 | E3 在线/跨渠道实测 | 对 Microsoft 实时服务和官方 Store 完成受控测试 | 指定产品、市场、账户和时间点的互操作 | 对所有产品和授权的永久保证 |
 
-当前基线：M0 为 E2（Windows 10 build 19045 x64、自签测试 MSIX）；M1 为 E1（脱敏 DCAT/FE3 fixture）；M2 为 E1（领域、SQLite 与恢复测试）；M3 为 E1（schema v2、强类型版本、封闭错误详情和纯适用性选择器）。M4-M9 尚未达到退出证据。
+当前基线：M0 为 E2（Windows 10 build 19045 x64、自签测试 MSIX）；M1 为 E1（脱敏 DCAT/FE3 fixture）；M2 为 E1（领域、SQLite 与恢复测试）；M3 为 E1（schema v2、强类型版本、封闭错误详情和纯适用性选择器）；M4 为 E1 加受控在线协议 smoke（未下载真实包）。M5-M9 尚未达到退出证据。
 
 ## 技术选型
 
@@ -132,7 +132,7 @@ flowchart LR
   DIFF --> API
 ~~~
 
-图表示目标逻辑关系，不表示所有节点当前均已实现。M0 已覆盖 `DEPLOY`、`BROKER`、`CURRENT`、`MACHINE` 和基础 `INV`；M1 已覆盖 `CAT`/`RES` 的离线适配；M2 已覆盖 `DB`、领域状态和恢复语义；M3 已覆盖纯函数 `SEL` 和其解释 DTO。`DL`、完整 `VERIFY`、`DIFF`、稳定 `API` 与产品 UI 属于 M4-M7。
+图表示目标逻辑关系，不表示所有节点当前均已实现。M0 已覆盖 `DEPLOY`、`BROKER`、`CURRENT`、`MACHINE` 和基础 `INV`；M1 已覆盖 `CAT`/`RES` 的适配；M2 已覆盖 `DB`、领域状态和恢复语义；M3 已覆盖纯函数 `SEL` 和其解释 DTO；M4 已覆盖 `DL` 的安全传输/缓存与大小/SHA-256 `VERIFY`。包签名预检、`DIFF`、稳定 `API` 与产品 UI 属于 M5-M7。
 
 ### Rust 模块职责边界
 
@@ -178,7 +178,7 @@ storelib_rs 必须被隔离在项目自有接口之后：
 
 StoreLib 本身是参考实现，不是稳定的平台 SDK。仓库已归档，见 [StoreDev/StoreLib](https://github.com/StoreDev/StoreLib)；Rust 移植版文档见 [storelib_rs](https://docs.rs/crate/storelib_rs/latest)。
 
-当前 M1 已精确固定 `storelib_rs 0.1.11` 和 `roxmltree 0.20.0`，以脱敏 fixture 验证 DCAT 搜索/产品规范化、FE3 包实例和依赖边。production adapter 虽已存在，但尚未形成实时端点、授权、市场和临时 URL 的 E3 证据；上线前必须在 M4/M5 的受控网络验收中重新验证。
+当前 M1 已精确固定 `storelib_rs 0.1.11` 和 `roxmltree 0.20.0`，以脱敏 fixture 验证 DCAT 搜索/产品规范化、FE3 包实例和依赖边。M4 已在指定产品 `9WZDNCRFJ3TJ`、市场 `US`、语言 `en` 上完成一次显式开关控制的实时 adapter smoke；这只证明当时的协议解析，不证明授权产品覆盖、临时 CDN URL 下载或普遍 E3 兼容。
 
 ### 适用性选择
 
@@ -307,13 +307,13 @@ M3 已通过新 migration 补齐 publisher、resource ID、package kind、最低
 设置模型有四种明确模式：
 
 - disabled：直连。
-- system：读取用户/系统代理策略，包括所选 HTTP 栈支持的自动检测/PAC 行为。
+- system：读取 WinHTTP 当前用户 IE proxy config 中的静态代理；PAC/自动检测/WPAD 尚未支持并显式报错。
 - http / https：显式代理 URL 和可选凭据策略。
 - socks5：显式 SOCKS5 代理 URL 和可选凭据策略。
 
 实现不得假设通用 Rust HTTP 客户端会自动复现所有 Windows 代理行为。Microsoft 记录了 WinINet 与 WinHTTP 的重要差异，包括桌面应用如何继承 Internet 选项以及自动代理如何配置。参见 [WinINet 与 WinHTTP](https://learn.microsoft.com/windows/win32/wininet/wininet-vs-winhttp) 和 [在 WinHTTP 中使用 WinINet 代理设置](https://learn.microsoft.com/en-us/windows/win32/winhttp/setting-wininet-proxy-configurations-in-winhttp)。
 
-因此网络层暴露 ProxyProvider 边界。system 模式可使用感知 Windows 的解析器；自定义 HTTP(S)/SOCKS5 模式使用显式连接器配置。只有用户主动选择保存时才存储凭据，并且不得写入普通日志。
+因此网络层暴露 ProxyProvider 边界。M4 system 模式使用 Windows API 读取当前用户静态配置并选择 HTTPS 代理；自定义 HTTP(S)/SOCKS5 模式使用显式连接器配置。运行时凭据不写入普通设置、SQLite 或日志；PAC/WPAD 需要后续单独实现按 URL 解析和测试。
 
 ## Tauri 命令与事件契约
 
@@ -465,7 +465,7 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 2. M1 Store 协议适配：已完成 E1。固定并隔离 `storelib_rs`，建立 DCAT/FE3 fixture 契约；不代表线上端点验收。
 3. M2 领域模型与持久化：已完成 E1。建立 schema v1、repository、安全错误模型和重启恢复；不代表下载或更新已实现。
 4. M3 适用性与资源选择：已完成 E1。schema v2、强类型版本、封闭错误详情，以及架构、语言、市场、OS、资源包、依赖、格式和防降级选择已有本地自动化证据。
-5. M4 下载、缓存与代理：实现受控实时协议 smoke、四种代理模式、续传、缓存、URL 过期重解析和完整下载验证。
+5. M4 下载、缓存与代理：已完成 E1 加受控在线协议 smoke；四种代理模式（system 限静态配置）、续传、缓存、URL 过期重解析和大小/SHA-256 验证已有证据，但未执行真实 CDN 包下载与签名验证。
 6. M5 安装/更新编排与身份关联：复用 M0 部署基础，接入包图、版本差异、Store 产品关联和来源无关更新，不重复实现 Broker。
 7. M6 Tauri API 与前端主流程：冻结安全 DTO 和命令/事件，完成搜索、详情、队列、已安装和设置 UI。
 8. M7 跨渠道互操作验收：在指定测试产品/市场/账户上取得 E3 证据并验证不降级策略。
@@ -475,7 +475,7 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 ## 下一次评审待决策事项
 
 - 产品最低 Windows 构建版本；当前只有 Windows 10 build 19045 x64 的 E2 证据。
-- 首次发布的 system 代理模式是否支持 PAC/WPAD，还是只支持静态 Windows 代理设置。
+- 首次发布是否在 M4 静态 Windows 代理基础上继续支持 PAC/WPAD；当前实现会对纯自动配置显式报错。
 - 全用户安装成功后是否默认保留缓存包。
 - 付费产品和 Microsoft 账户认证是后续项目，还是永久不在范围内。
 - “官方 Store 更新第三方安装”是接受条件性兼容保证，还是必须建立逐产品认证矩阵。
@@ -483,4 +483,4 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 
 ## 当前执行门
 
-M0-M3 已通过本规格规定的对应证据门。下一实施工作是 M4：受控 production adapter smoke、代理边界、续传下载、缓存恢复、host/redirect allowlist 和流式校验。实时下载、包图部署、跨渠道更新、NSIS 发布和 MSIXVC 仍分别受 M4/M5、M7、M8、M9 门控。
+M0-M4 已通过本规格规定的对应证据门。下一实施工作是 M5：复用 M0 部署基础，把 M3 选择结果和 M4 verified 本地包接入包图部署、签名预检、身份关联、版本差异与重扫收敛。真实 CDN 包下载、跨渠道更新、NSIS 发布和 MSIXVC 仍分别受 M5、M7、M8、M9 门控。

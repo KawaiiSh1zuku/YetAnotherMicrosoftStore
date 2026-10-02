@@ -439,6 +439,48 @@ impl Persistence {
         .transpose()
     }
 
+    pub fn cache_entries(&self) -> Result<Vec<CacheEntry>, PersistenceError> {
+        let mut statement = self.connection.prepare(
+            "SELECT cache_key, job_id, update_id, path, size, sha256, state,
+                    last_accessed_at
+             FROM cache_entries ORDER BY cache_key",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (cache_key, job_id, update_id, path, size, sha256, state, last_accessed_at) = row?;
+            Ok(CacheEntry {
+                cache_key,
+                job_id,
+                update_id,
+                path,
+                size: from_i64(size, "cache.size")?,
+                sha256,
+                state: parse_enum::<CacheState>(&state, "cache.state")?,
+                last_accessed_at,
+            })
+        })
+        .collect()
+    }
+
+    pub fn delete_cache_entry(&self, cache_key: &str) -> Result<(), PersistenceError> {
+        self.connection.execute(
+            "DELETE FROM cache_entries WHERE cache_key = ?1",
+            [cache_key],
+        )?;
+        Ok(())
+    }
+
     pub fn save_settings(&self, settings: &AppSettings) -> Result<(), PersistenceError> {
         self.connection.execute(
             "INSERT INTO settings (key, value_json, updated_at)

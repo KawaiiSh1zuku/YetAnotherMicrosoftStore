@@ -35,9 +35,12 @@ roxmltree = "=0.20.0"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 zip = "=8.0.0"
 uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "=0.12.28", features = ["socks", "stream"] }
+tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "sync", "time"] }
+futures-util = "0.3"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = [
@@ -47,6 +50,7 @@ windows = { version = "=0.62.2", features = [
     "Management_Deployment",
     "System",
     "Win32_Foundation",
+    "Win32_Networking_WinHttp",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",

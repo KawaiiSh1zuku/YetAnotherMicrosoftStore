@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{applicability::ApplicabilityError, catalog::CatalogError, resolver::ResolverError};
+use crate::{
+    applicability::ApplicabilityError, catalog::CatalogError, download::DownloadError,
+    resolver::ResolverError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -174,6 +177,7 @@ impl From<&CatalogError> for AppErrorDto {
             }
             CatalogError::MalformedFixture(_)
             | CatalogError::MissingField(_)
+            | CatalogError::UnsupportedLocale
             | CatalogError::StoreLib => {
                 Self::new(ErrorCode::CatalogUnavailable, RetryAdvice::Retry)
             }
@@ -195,7 +199,8 @@ impl From<&ResolverError> for AppErrorDto {
             | ResolverError::InvalidPackageSize
             | ResolverError::InvalidPackageMoniker
             | ResolverError::UnsupportedPackageFormat
-            | ResolverError::InvalidMinimumOsVersion => {
+            | ResolverError::InvalidMinimumOsVersion
+            | ResolverError::UnsupportedLocale => {
                 Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve)
             }
         }
@@ -224,6 +229,26 @@ impl From<&ApplicabilityError> for AppErrorDto {
                 ErrorCode::PackageNotInstalled,
                 RetryAdvice::ReconcileInventory,
             ),
+        }
+    }
+}
+
+impl From<&DownloadError> for AppErrorDto {
+    fn from(error: &DownloadError) -> Self {
+        match error {
+            DownloadError::UrlExpired | DownloadError::InvalidResumeResponse => {
+                Self::new(ErrorCode::DownloadUrlExpired, RetryAdvice::ReResolve)
+            }
+            DownloadError::SizeMismatch | DownloadError::HashMismatch => {
+                Self::new(ErrorCode::HashMismatch, RetryAdvice::ReResolve)
+            }
+            DownloadError::Transport | DownloadError::Io | DownloadError::HttpStatus => {
+                Self::new(ErrorCode::DownloadFailed, RetryAdvice::Retry)
+            }
+            DownloadError::InvalidRequest
+            | DownloadError::InvalidNetworkPolicy
+            | DownloadError::RedirectRejected
+            | DownloadError::Cancelled => Self::new(ErrorCode::DownloadFailed, RetryAdvice::Never),
         }
     }
 }

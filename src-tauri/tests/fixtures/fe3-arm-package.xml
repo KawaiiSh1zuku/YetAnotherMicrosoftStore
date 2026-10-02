@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<root>
+  <NewUpdates>
+    <UpdateInfo>
+      <ID>7</ID>
+      <Xml>
+        <UpdateIdentity UpdateID="arm-update" RevisionNumber="1"/>
+        <Properties><SecuredFragment/></Properties>
+        <Metadata>
+          <AppxPackageMetadata>
+            <AppxFamilyMetadata Name="Contoso.Legacy" Publisher="CN=Contoso"/>
+            <AppxMetadata PackageMoniker="Contoso.Legacy_1.2.3.4_arm__abc" PackageType="AppX" IsAppxBundle="false">{}</AppxMetadata>
+          </AppxPackageMetadata>
+        </Metadata>
+      </Xml>
+    </UpdateInfo>
+  </NewUpdates>
+  <ExtendedUpdateInfo>
+    <Updates>
+      <Update>
+        <ID>7</ID>
+        <Xml>
+          <ExtendedProperties Handler="appx" IsAppxFramework="false" PackageIdentityName="Contoso.Legacy" DefaultPropertiesLanguage="en-US"/>
+          <Files>
+            <File FileName="legacy.appx" InstallerSpecificIdentifier="Contoso.Legacy_1.2.3.4_arm__abc" Size="4096"/>
+          </Files>
+          <HandlerSpecificData type="appx:AppxInstaller">
+            <AppxPackageInstallData MainPackage="true" PackageFileName="legacy.appx"/>
+          </HandlerSpecificData>
+        </Xml>
+      </Update>
+    </Updates>
+  </ExtendedUpdateInfo>
+</root>

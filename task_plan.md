@@ -10,13 +10,14 @@
 - 证据评审：已完成
 - 中文规格文档：已完成，已批准进入 M0
 - 中文实现计划与里程碑：已完成，已批准进入 M0
-- 规格与实施计划细化：已完成，已同步当前架构、证据等级和 M3A/M3B 执行门
+- 规格与实施计划细化：已完成，已同步当前架构、证据等级和 M5 执行门
 - M0：当前用户与全用户部署验收完成；双层清单、一次性 UAC Broker 和证书清理已验证
 - M1：Store 协议 adapter、规范化 DTO、DCAT/FE3 脱敏 fixtures 和契约测试完成；未宣称线上 Store/FE3 实时验收
 - M2：领域 DTO、安全错误契约、可恢复任务状态机、SQLite schema v1 和 repository 已完成
 - M3：schema v2、强类型版本、封闭错误详情、适用性与资源选择器已完成
-- M0-M3 计划匹配审查：已完成；M0 为受控 Windows E2，M1-M3 为自动化 E1
-- 产品代码：Tauri/Rust/React 基线、M1 协议边界、M2 持久化边界和 M3 选择边界已建立，M4 尚未开始
+- M4：受控 DCAT/FE3 在线 smoke、静态 Windows/自定义代理、续传下载、流式校验、缓存恢复与淘汰已完成
+- M0-M4 计划匹配审查：已完成；M0 为受控 Windows E2，M1-M3 为自动化 E1，M4 为 E1 加受控在线协议 smoke
+- 产品代码：Tauri/Rust/React 基线以及 M1-M4 协议、持久化、选择、下载/缓存边界已建立；M5 尚未开始
 
 ## 已确认决策
 
@@ -35,10 +36,10 @@
 
 ## 下一步门槛
 
-1. M4：在显式开关下执行受控 production adapter smoke，并记录产品、市场、语言和时间。
-2. M4：实现 disabled/system/HTTP(S)/SOCKS5 代理边界，以及可续传下载、取消和 URL 过期重解析。
-3. M4：实现 host/redirect allowlist、大小/SHA-256 校验和 verified/partial 缓存恢复。
-4. M4 完成前不进入包图部署编排或 Store 互操作验收。
+1. M5：把 M3 选定、M4 已验证的本地包图接入既有 M0 `DeploymentCoordinator`/Broker/Inventory。
+2. M5：完成 PFN/Product ID/Content ID 关联、严格版本差异、防降级、部署后清单重扫和稳定错误映射。
+3. M5 不重复实现 Broker，不把 M4 在线协议 smoke 当作真实 CDN 下载或跨渠道互操作证据。
+4. PAC/WPAD 保留为独立代理能力门；M4 system 模式只承诺 WinHTTP 当前用户静态代理配置。
 
 ## 当前代码验证（2026-10-02）
 
@@ -51,6 +52,8 @@
 - 本轮重新验证格式、38 项通过/3 项 ignored 的全目标测试、默认特性严格 Clippy、Broker check 和前端构建；没有重复执行会改变包/证书状态的 M0 验收脚本。
 - M3 新增 23 项测试并扩展 1 项 M1 fixture 契约；当前全目标结果为 62 项通过、3 项 M0 真实包测试 ignored，默认特性严格 Clippy 通过。
 - M3 证据只覆盖 schema v1→v2、本地 DTO/选择算法和脱敏 FE3 fixture；没有执行实时 Store、下载或部署。
+- M4 新增 Windows 静态系统代理、HTTP(S)/SOCKS5、host/redirect allowlist、Range+ETag/长度变化、取消、并发/限速、URL 刷新、大小/SHA-256、verified/partial 恢复与 retention/LRU 测试；独立审查修复后最终全目标结果为 91 项通过、4 项 ignored。
+- 显式开关下的受控在线 smoke 于 2026-10-02 对 `9WZDNCRFJ3TJ`、`US`、`en` 成功观察到 20 个包和 81 条依赖；未保存临时 URL，未下载真实包，未改变安装状态。
 
 ## 约束
 

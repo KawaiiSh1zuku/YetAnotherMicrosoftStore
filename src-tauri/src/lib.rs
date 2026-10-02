@@ -63,16 +63,20 @@ pub mod applicability;
 pub mod broker;
 pub mod broker_launcher;
 pub mod broker_protocol;
+pub mod cache;
 pub mod catalog;
 pub mod deployment;
 pub mod deployment_coordinator;
 pub mod domain;
+pub mod download;
 pub mod error;
 pub mod inventory;
 pub mod jobs;
 pub mod package_validation;
 pub mod persistence;
 pub mod resolver;
+pub mod settings;
+pub mod verification;
 
 #[cfg(not(feature = "broker-dependency"))]
 use deployment::DeploymentProbe;

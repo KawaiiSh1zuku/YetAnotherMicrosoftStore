@@ -2,7 +2,12 @@ use std::future::Future;
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
-use storelib_rs::{DCatSearch, DisplayCatalogHandler, DisplayCatalogModel, IdentifierType};
+use std::str::FromStr;
+
+use storelib_rs::{
+    DCatEndpoint, DCatSearch, DisplayCatalogHandler, DisplayCatalogModel, IdentifierType, Lang,
+    Locale, Market,
+};
 
 pub type CatalogFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -76,6 +81,7 @@ pub enum CatalogError {
     MalformedFixture(String),
     MissingField(&'static str),
     InvalidUrl { field: &'static str },
+    UnsupportedLocale,
     StoreLib,
 }
 
@@ -87,6 +93,7 @@ impl std::fmt::Display for CatalogError {
             }
             Self::MissingField(field) => write!(formatter, "catalog field is missing: {field}"),
             Self::InvalidUrl { field, .. } => write!(formatter, "catalog URL is invalid: {field}"),
+            Self::UnsupportedLocale => formatter.write_str("Store locale is unsupported"),
             Self::StoreLib => formatter.write_str("store protocol request failed"),
         }
     }
@@ -126,6 +133,22 @@ impl StoreLibCatalogAdapter {
         Self {
             handler: DisplayCatalogHandler::production(),
         }
+    }
+
+    pub fn production_for_locale(market: &str, language: &str) -> Result<Self, CatalogError> {
+        let market = Market::from_str(&market.trim().to_ascii_uppercase())
+            .map_err(|_| CatalogError::UnsupportedLocale)?;
+        let language = language
+            .split('-')
+            .next()
+            .ok_or(CatalogError::UnsupportedLocale)?
+            .trim()
+            .to_ascii_lowercase();
+        let language = Lang::from_str(&language).map_err(|_| CatalogError::UnsupportedLocale)?;
+        let locale = Locale::new(market, language, true).with_full_tag(true);
+        Ok(Self {
+            handler: DisplayCatalogHandler::new(DCatEndpoint::Production, locale),
+        })
     }
 
     /// Parse a captured DisplayCatalog autosuggest response without network IO.

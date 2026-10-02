@@ -102,7 +102,7 @@
 | `storelib_rs` 非 Microsoft 官方库且协议端点不稳定 | 已知 | 通过 provider trait 隔离、固定 revision、加入 fixture 和替换路径 |
 | 全用户部署需要提权/预配语义 | 开放 | 实现前先做原生 Rust/WinRT Spike |
 | msixvc 是 Xbox 专用包族 | 已知 | 第一阶段只识别；专门能力验证前不下载、安装或更新 |
-| WinINet 与 WinHTTP 的系统代理/PAC 行为不同 | 已知 | 显式建模代理模式，测试 system、HTTP(S)、SOCKS5 和 PAC 情况 |
+| WinINet 与 WinHTTP 的系统代理/PAC 行为不同 | 已知 | M4 只实现 WinHTTP 当前用户静态值；纯 PAC/WPAD 显式拒绝并保留为后续能力门 |
 
 ## 本次错误记录
 
@@ -116,3 +116,17 @@
 | M2 Important 修复的跨文件补丁因 `persistence.rs` 格式化上下文不匹配而拒绝 | 1 | 确认补丁未部分应用，拆为 Job、migration、repository 的小型文件级补丁 |
 | 最终文件统计循环中的 `$f` 被 PowerShell 在传给 Bash 前展开 | 1 | 改为不含 shell 变量的显式 `wc -l` 文件列表 |
 | M0、M1、M2 三个只读审查子代理均返回 `429 Too Many Requests` | 1 | 不采用任何子代理结论，不重复相同并发请求；由主线直接读取实现、测试和证据文档完成审查 |
+
+## M4 下载、缓存与代理（2026-10-02）
+
+- 从 `master` / `14188ad` 的干净基线进入 M4；先形成文件级实施计划，再按 TDD 建立代理/URL 策略、下载、校验和缓存契约。
+- 新增 `settings.rs`：disabled、WinHTTP 当前用户静态 system、自定义 HTTP(S) 与 SOCKS5。运行时凭据 Debug 脱敏且不进入 SQLite；纯 PAC/自动检测/WPAD 显式返回未支持。
+- 新增 `download.rs` 与 `verification.rs`：HTTPS host allowlist、逐跳重定向复核、Range + If-Range、ETag/Content-Range/总长度变化重启、一次 URL 刷新、取消、并发与聚合限速、大小/SHA-256 流式校验和按内容哈希提升。
+- 新增 `cache.rs` 和 persistence cache 查询/删除：启动恢复 partial sidecar，核对 verified 哈希，拒绝缓存根逃逸，按 retention 后 LRU 淘汰并保护活动任务；数据库和 sidecar 不保存临时下载 URL。
+- 本地真实 socket fixture 覆盖 15 项下载场景，代理/网络策略 6 项、缓存 7 项；live smoke 作为显式开关测试保持 ignored，普通测试不会访问外网。
+- 受控在线 smoke 通过代理于 2026-10-02 成功执行：产品 `9WZDNCRFJ3TJ`、市场 `US`、语言 `en`，观察 20 个包与 81 条依赖。输出只含非敏感输入、时间和计数；未保存 URL/令牌，未下载真实包，未改变安装状态。
+- 在线 FE3 暴露 ARM32 moniker，原枚举只有 x86/x64/ARM64/neutral；新增 `Architecture::Arm` 与脱敏 fixture 回归，避免把 ARM32 错映射为 ARM64或因单个包终止整个包图。
+- 下载自审补齐三个边界：无 ETag 的 partial 从零开始、`Content-Range` 总长度变化重启、限速等待可取消。fixture 的非阻塞 listener 一度把属性传给 accepted socket，导致 Windows `WouldBlock` 后析构双 panic；已恢复 accepted socket 为阻塞模式并验证默认并行运行。
+- 独立只读审查提出 7 类 Important：缓存重解析点约束、校验期取消、空闲限速额度、共享内容计费/淘汰、同 key 并发、chunked 超限和提升后未入库孤儿文件。已逐项补回归测试并修复；同时将 `DownloadRequest` 的 Debug URL 脱敏、禁止把 HTTP-only system proxy 复用于 HTTPS。
+- 修复后重跑格式、91 项通过/4 项 ignored 的全目标测试和默认特性严格 Clippy，均成功；M4 聚焦测试为下载 15、网络策略 6、缓存 7。
+- M4 文档明确区分：本地 fixture 是真实字节传输的 E1，在线 smoke 只证明指定时点协议适配；真实 Microsoft CDN 包下载、签名验证、代理服务器互操作、磁盘故障和部署编排仍未验收。

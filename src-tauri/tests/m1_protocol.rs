@@ -127,3 +127,14 @@ async fn fe3_fixture_maps_applicability_fields_without_leaking_vendor_types() {
     assert_eq!(package.content_id.as_deref(), Some("content-123"));
     assert_eq!(package.format, PackageFormat::Msix);
 }
+
+#[tokio::test]
+async fn fe3_arm32_package_is_represented_without_aborting_the_graph() {
+    let graph =
+        StoreLibResolverAdapter::parse_fixture(include_str!("fixtures/fe3-arm-package.xml"))
+            .await
+            .expect("ARM32 package should remain representable");
+
+    assert_eq!(graph.packages.len(), 1);
+    assert_eq!(graph.packages[0].architecture, Architecture::Arm);
+}

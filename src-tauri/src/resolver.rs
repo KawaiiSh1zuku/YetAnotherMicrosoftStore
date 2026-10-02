@@ -1,8 +1,12 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use storelib_rs::{DisplayCatalogHandler, FE3Handler, IdentifierType, PackageType};
+use storelib_rs::{
+    DCatEndpoint, DisplayCatalogHandler, FE3Handler, IdentifierType, Lang, Locale, Market,
+    PackageType,
+};
 
 use crate::domain::{Architecture, PackageFormat, PackageKind, PackageVersion};
 
@@ -62,6 +66,7 @@ pub enum ResolverError {
     InvalidPackageMoniker,
     UnsupportedPackageFormat,
     InvalidMinimumOsVersion,
+    UnsupportedLocale,
     StoreLib,
 }
 
@@ -80,6 +85,7 @@ impl std::fmt::Display for ResolverError {
             Self::InvalidMinimumOsVersion => {
                 formatter.write_str("FE3 minimum OS version is invalid")
             }
+            Self::UnsupportedLocale => formatter.write_str("Store locale is unsupported"),
             Self::StoreLib => formatter.write_str("store protocol request failed"),
         }
     }
@@ -104,6 +110,22 @@ impl StoreLibResolverAdapter {
         Self {
             handler: DisplayCatalogHandler::production(),
         }
+    }
+
+    pub fn production_for_locale(market: &str, language: &str) -> Result<Self, ResolverError> {
+        let market = Market::from_str(&market.trim().to_ascii_uppercase())
+            .map_err(|_| ResolverError::UnsupportedLocale)?;
+        let language = language
+            .split('-')
+            .next()
+            .ok_or(ResolverError::UnsupportedLocale)?
+            .trim()
+            .to_ascii_lowercase();
+        let language = Lang::from_str(&language).map_err(|_| ResolverError::UnsupportedLocale)?;
+        let locale = Locale::new(market, language, true).with_full_tag(true);
+        Ok(Self {
+            handler: DisplayCatalogHandler::new(DCatEndpoint::Production, locale),
+        })
     }
 
     /// Parse and normalize a captured FE3 response without network IO.
@@ -268,6 +290,7 @@ fn parse_package_moniker(value: &str) -> Result<MonikerMetadata, ResolverError> 
     let architecture = match parts.next() {
         Some("x64" | "amd64") => Architecture::X64,
         Some("arm64") => Architecture::Arm64,
+        Some("arm") => Architecture::Arm,
         Some("x86") => Architecture::X86,
         Some("neutral") => Architecture::Neutral,
         _ => return Err(ResolverError::InvalidPackageMoniker),

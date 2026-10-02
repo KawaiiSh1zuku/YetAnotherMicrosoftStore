@@ -143,3 +143,16 @@
 - 已安装依赖匹配至少需要 identity、publisher 和 architecture；只比较 identity 会把 ARM64/x86 framework 误当成 x64 依赖。Update 还必须先匹配已安装对象，缺失时不得退化为 Install。
 - BCP-47 回退应按 exact → 较短同 script → 较长同 script → 同 primary language 排序，并按资源 identity 分组选择；全局只保留一个语言资源会漏掉独立资源组。
 - 当前失败路径返回稳定 `ApplicabilityError`，但不会携带此前累计的逐包拒绝解释；M3 尚未把选择器暴露为 Tauri 命令，M6 设计安全 API/UI 投影时必须补失败解释 DTO，不能直接序列化含 `package_uri` 的内部 `SelectionResult`。
+
+## M4 网络、下载与缓存发现（2026-10-02）
+
+- `WinHttpGetIEProxyConfigForCurrentUser` 返回当前用户 Internet Options 的静态代理、bypass、自动检测和 PAC URL 标志；M4 只把静态值转换为显式 `reqwest::Proxy`。PAC/WPAD 需要按目标 URL 调用 Windows 自动代理解析，不能用环境变量或单一代理 URL冒充。
+- WinHTTP 代理字符串可能按协议给出多个端点；Microsoft 包 URL 使用 HTTPS，因此解析优先选择 `https=`，再退到通用端点。bypass 的分号列表转换为 reqwest 逗号列表，`*.domain` 收紧为 `.domain`；`<local>` 不扩张为不精确的任意主机规则。
+- `ClientBuilder` 先 `no_proxy()` 再安装选定 route，保证 disabled/custom/system 不与 reqwest 环境代理叠加；自定义 SOCKS5 使用 `socks5h`，让代理端解析 DNS。
+- 续传不能只依赖本地文件长度。只有 sidecar 的 update ID、期望大小、期望 SHA-256 和非空 ETag 全部匹配时才发送 `Range` + `If-Range`；服务端 ETag、range start 或总长度变化均清理旧 partial 并至多从零重启一次。
+- Content-Length 仅作早期拒绝，最终信任边界仍是落盘后的实际大小和 SHA-256。校验失败会清理 partial，取消/传输失败则保留可恢复 partial；verified 文件只由同一缓存卷内的 rename 提升。
+- 签名 URL 只存在于内存中的 `DownloadRequest`；partial sidecar 只含 job/update、ETag、期望大小/哈希和访问时间，SQLite cache entry 只含本地路径与内容元数据。
+- 缓存根在创建前后拒绝重解析点，文件操作同时核对原始绝对路径和 canonical path；根外记录只去索引不删除外部文件。共享内容按唯一物理路径计费且只有最后一个引用淘汰时才删除，活动 job 的 partial 即使超额也保留。
+- 同一 `DownloadManager` 内相同 cache key 串行化，避免并发写同一 partial/sidecar；未知长度响应会在下一个 chunk 超出期望大小前终止，校验/rename 前重复检查取消。限速器只预留未来发送时隙，不积累无限空闲额度，也不持锁睡眠。
+- verified 内容提升后、SQLite 入库前崩溃会留下孤儿文件；无活动下载的启动协调会清理未索引 verified 文件。有活动任务时跳过该清理，避免删除刚提升但尚未入库的内容。
+- 受控在线 smoke 表明 `storelib_rs 0.1.11` 在指定输入和时间点仍能返回 DCAT/FE3 包图，但同时揭示 ARM32 moniker 是真实输入。该证据不覆盖付费/授权产品、其他市场、CDN 字节下载、包签名或 Windows 安装。

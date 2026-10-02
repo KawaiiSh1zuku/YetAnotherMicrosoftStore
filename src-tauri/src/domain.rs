@@ -89,6 +89,7 @@ impl<'de> Deserialize<'de> for PackageVersion {
 pub enum Architecture {
     X64,
     Arm64,
+    Arm,
     X86,
     Neutral,
 }
