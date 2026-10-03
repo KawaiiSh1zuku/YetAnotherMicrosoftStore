@@ -129,7 +129,6 @@ function selectionRejection(reason: AppDetails["selectionPreview"]["rejectionRea
     operating_system: "当前 Windows 版本不满足要求。",
     format: "当前系统不支持此包格式。",
     architecture: "没有与当前设备兼容的架构。",
-    language_resource: "缺少可用的语言资源。",
     dependency: "缺少必需依赖。",
     package_not_installed: "未找到可更新的已安装包。",
     version: "已安装版本不低于目录版本。",

@@ -233,7 +233,7 @@ impl ProductionApiBackend {
         }
         let settings = self.load_settings(&persistence)?;
         let now = unix_now();
-        let requested_languages = prioritized_languages(&request.language, &settings);
+        let requested_languages = prioritized_languages(&settings);
         let job = Job {
             job_id: format!("job-{}", uuid::Uuid::new_v4()),
             kind,
@@ -332,7 +332,7 @@ impl ApiBackend for ProductionApiBackend {
                 .map_err(|error| AppErrorDto::from(&error))?;
             validate_resolved_product(&graph, &request.product_id, &request.market)?;
             let host = system_host_capabilities()?;
-            let preferred_languages = prioritized_languages(&request.language, &settings);
+            let preferred_languages = prioritized_languages(&settings);
             let preferences = SelectionPreferences {
                 market: request.market,
                 preferred_architectures: settings.preferred_architectures,
@@ -932,7 +932,7 @@ async fn resolve_update_package(
     let preferences = SelectionPreferences {
         market: job.market.clone(),
         preferred_architectures: settings.preferred_architectures.clone(),
-        preferred_languages: prioritized_languages(&job.language, settings),
+        preferred_languages: prioritized_languages(settings),
         mode: SelectionMode::Update,
     };
     let selection = match select_packages(&graph, host, &preferences, &[installed_selection]) {
@@ -1025,14 +1025,19 @@ fn validate_resolved_product(
     Ok(())
 }
 
-fn prioritized_languages(requested: &str, settings: &AppSettings) -> Vec<String> {
-    let mut languages = vec![requested.to_owned()];
-    for language in &settings.preferred_languages {
+fn prioritized_languages(settings: &AppSettings) -> Vec<String> {
+    let mut languages: Vec<String> = Vec::new();
+    for language in settings
+        .preferred_languages
+        .iter()
+        .map(String::as_str)
+        .chain(["en-US"])
+    {
         if !languages
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(language))
         {
-            languages.push(language.clone());
+            languages.push(language.to_owned());
         }
     }
     languages
@@ -1362,12 +1367,32 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
+    use std::{
+        path::Path,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
     };
 
-    use super::{collect_bounded, UPDATE_SCAN_CONCURRENCY_LIMIT};
+    use super::{
+        collect_bounded, default_settings, prioritized_languages, UPDATE_SCAN_CONCURRENCY_LIMIT,
+    };
+
+    #[test]
+    fn language_priorities_preserve_order_and_add_one_english_fallback() {
+        let mut settings = default_settings(Path::new(r"C:YamsCache"));
+        settings.preferred_languages =
+            vec!["zh-CN".to_owned(), "ja-JP".to_owned(), "EN-us".to_owned()];
+
+        assert_eq!(
+            prioritized_languages(&settings),
+            vec!["zh-CN", "ja-JP", "EN-us"]
+        );
+
+        settings.preferred_languages.clear();
+        assert_eq!(prioritized_languages(&settings), vec!["en-US"]);
+    }
 
     #[tokio::test]
     async fn update_network_work_is_bounded_and_concurrent() {

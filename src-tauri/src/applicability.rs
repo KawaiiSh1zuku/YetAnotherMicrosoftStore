@@ -55,7 +55,6 @@ pub enum DecisionReason {
     SatisfiedByInstalled,
     MinimumOsNotMet,
     ArchitectureIncompatible,
-    LanguageNotPreferred,
     UnsupportedFormat,
     VersionNotNewer,
     VersionAheadOfCatalog,
@@ -86,7 +85,6 @@ pub enum SelectionRejectionReason {
     OperatingSystem,
     Format,
     Architecture,
-    LanguageResource,
     Dependency,
     PackageNotInstalled,
     Version,
@@ -188,7 +186,7 @@ pub fn preview_packages(
             installable: false,
             main: None,
             dependency_count: 0,
-            rejection_reason: Some(closed_rejection_reason(&error, graph, host, preferences)),
+            rejection_reason: Some(closed_rejection_reason(&error, graph, host)),
         },
     }
 }
@@ -197,7 +195,6 @@ fn closed_rejection_reason(
     error: &ApplicabilityError,
     graph: &PackageGraph,
     host: &HostCapabilities,
-    preferences: &SelectionPreferences,
 ) -> SelectionRejectionReason {
     match error {
         ApplicabilityError::MarketMismatch => SelectionRejectionReason::Market,
@@ -210,14 +207,14 @@ fn closed_rejection_reason(
             .packages
             .iter()
             .find(|package| package.update_id == *update_id)
-            .and_then(|package| incompatibility_reason(package, host, preferences, true))
+            .and_then(|package| package_incompatibility_reason(package, host))
             .map(selection_rejection_from_decision)
             .unwrap_or(SelectionRejectionReason::Dependency),
         ApplicabilityError::NoCompatiblePackage => graph
             .packages
             .iter()
             .filter(|package| package.package_kind == PackageKind::Main)
-            .filter_map(|package| incompatibility_reason(package, host, preferences, false))
+            .filter_map(|package| package_incompatibility_reason(package, host))
             .map(selection_rejection_from_decision)
             .next()
             .unwrap_or(SelectionRejectionReason::NoCompatiblePackage),
@@ -229,7 +226,6 @@ fn selection_rejection_from_decision(reason: DecisionReason) -> SelectionRejecti
         DecisionReason::MinimumOsNotMet => SelectionRejectionReason::OperatingSystem,
         DecisionReason::UnsupportedFormat => SelectionRejectionReason::Format,
         DecisionReason::ArchitectureIncompatible => SelectionRejectionReason::Architecture,
-        DecisionReason::LanguageNotPreferred => SelectionRejectionReason::LanguageResource,
         DecisionReason::PackageNotInstalled => SelectionRejectionReason::PackageNotInstalled,
         DecisionReason::VersionNotNewer | DecisionReason::VersionAheadOfCatalog => {
             SelectionRejectionReason::Version
@@ -262,7 +258,7 @@ pub fn select_packages(
         .iter()
         .filter(|package| package.package_kind == PackageKind::Main)
     {
-        if let Some(reason) = incompatibility_reason(package, host, preferences, false) {
+        if let Some(reason) = package_incompatibility_reason(package, host) {
             decisions.push(decision(package, false, reason));
             continue;
         }
@@ -399,8 +395,7 @@ fn best_framework_candidate<'a>(
                 && requirement
                     .minimum_version
                     .is_none_or(|minimum| package.version >= minimum)
-                && incompatibility_reason(package, context.host, context.preferences, true)
-                    .is_none()
+                && package_incompatibility_reason(package, context.host).is_none()
         })
         .max_by_key(|package| root_rank(package, context.preferences))
 }
@@ -456,9 +451,7 @@ fn select_dependencies<'a>(
             ));
             continue;
         }
-        if let Some(reason) =
-            incompatibility_reason(dependency, context.host, context.preferences, true)
-        {
+        if let Some(reason) = package_incompatibility_reason(dependency, context.host) {
             selection
                 .decisions
                 .push(decision(dependency, false, reason));
@@ -494,7 +487,7 @@ fn select_dependencies<'a>(
         package.package_kind == PackageKind::Resource
             && package.is_neutral != Some(true)
             && package.language.is_some()
-            && incompatibility_reason(package, context.host, context.preferences, true).is_none()
+            && package_incompatibility_reason(package, context.host).is_none()
     }) {
         let Some(rank) = language_rank(package.language.as_deref(), context.preferences) else {
             continue;
@@ -512,9 +505,7 @@ fn select_dependencies<'a>(
     }
 
     for package in bundled {
-        if let Some(reason) =
-            incompatibility_reason(package, context.host, context.preferences, true)
-        {
+        if let Some(reason) = package_incompatibility_reason(package, context.host) {
             selection.decisions.push(decision(package, false, reason));
             continue;
         }
@@ -546,26 +537,6 @@ fn select_dependencies<'a>(
     selection.visiting_ids.remove(source.update_id.as_str());
     selection.completed_ids.insert(source.update_id.as_str());
     Ok(())
-}
-
-fn incompatibility_reason(
-    package: &ResolvedPackage,
-    host: &HostCapabilities,
-    preferences: &SelectionPreferences,
-    check_language: bool,
-) -> Option<DecisionReason> {
-    if let Some(reason) = package_incompatibility_reason(package, host) {
-        return Some(reason);
-    }
-    if check_language
-        && package.package_kind == PackageKind::Resource
-        && package.is_neutral != Some(true)
-        && package.language.is_some()
-        && language_rank(package.language.as_deref(), preferences).is_none()
-    {
-        return Some(DecisionReason::LanguageNotPreferred);
-    }
-    None
 }
 
 pub fn package_incompatibility_reason(
@@ -621,36 +592,43 @@ fn language_rank(
     preferences: &SelectionPreferences,
 ) -> Option<(usize, u8, usize)> {
     let language = language?.to_ascii_lowercase();
-    preferences
+    let preferred = preferences
         .preferred_languages
         .iter()
         .enumerate()
         .filter_map(|(preference_index, preferred)| {
-            let preferred = preferred.to_ascii_lowercase();
-            if preferred == language {
-                return Some((preference_index, 0, 0));
-            }
-            if preferred.starts_with(&format!("{language}-")) {
-                return Some((
-                    preference_index,
-                    1,
-                    tag_component_count(&preferred) - tag_component_count(&language),
-                ));
-            }
-            if language.starts_with(&format!("{preferred}-")) {
-                return Some((
-                    preference_index,
-                    2,
-                    tag_component_count(&language) - tag_component_count(&preferred),
-                ));
-            }
-            (primary_language(&preferred) == primary_language(&language)).then_some((
-                preference_index,
-                3,
-                0,
-            ))
+            language_match_rank(&language, &preferred.to_ascii_lowercase())
+                .map(|(specificity, distance)| (preference_index, specificity, distance))
         })
-        .min()
+        .min();
+    if preferred.is_some() {
+        return preferred;
+    }
+
+    language_match_rank(&language, "en-us")
+        .map(|(specificity, distance)| {
+            (preferences.preferred_languages.len(), specificity, distance)
+        })
+        .or(Some((preferences.preferred_languages.len() + 1, 0, 0)))
+}
+
+fn language_match_rank(language: &str, preferred: &str) -> Option<(u8, usize)> {
+    if preferred == language {
+        return Some((0, 0));
+    }
+    if preferred.starts_with(&format!("{language}-")) {
+        return Some((
+            1,
+            tag_component_count(preferred) - tag_component_count(language),
+        ));
+    }
+    if language.starts_with(&format!("{preferred}-")) {
+        return Some((
+            2,
+            tag_component_count(language) - tag_component_count(preferred),
+        ));
+    }
+    (primary_language(preferred) == primary_language(language)).then_some((3, 0))
 }
 
 fn primary_language(language: &str) -> Option<&str> {

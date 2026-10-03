@@ -72,6 +72,9 @@ test("360 px workbench keeps navigation and text inside the viewport", async ({ 
   await expect(page.getByRole("heading", { name: "查找 Windows 应用" })).toBeVisible();
   await page.getByRole("button", { name: "设置" }).click();
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+  await page.getByRole("combobox", { name: "添加语言" }).selectOption("ja-JP");
+  await page.getByRole("button", { name: "上移 ja-JP" }).click();
+  await expect(page.getByRole("combobox", { name: "优先语言 1" })).toHaveValue("ja-JP");
 
   const overflow = await page.evaluate(() => ({
     document: document.documentElement.scrollWidth - document.documentElement.clientWidth,

@@ -319,6 +319,17 @@ fn update_scan_concurrency_accepts_sixty_four_and_rejects_values_above_the_limit
     assert!(rejected.validated().is_err());
 }
 
+#[test]
+fn language_priorities_allow_an_empty_list_but_reject_case_insensitive_duplicates() {
+    let mut settings =
+        ApiAppSettings::from_domain(domain_settings()).expect("valid settings should map to API");
+    settings.preferred_languages.clear();
+    assert!(settings.clone().validated().is_ok());
+
+    settings.preferred_languages = vec!["en-US".to_owned(), "EN-us".to_owned()];
+    assert!(settings.validated().is_err());
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 enum SearchMode {
     #[default]

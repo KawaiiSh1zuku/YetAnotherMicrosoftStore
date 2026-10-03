@@ -1,19 +1,28 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Database, Download, Globe2, Network, Palette } from "lucide-react";
+import { ArrowDown, ArrowUp, Database, Download, Globe2, Network, Palette, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 import { ConfirmDialog } from "../../components/ui/alert-dialog";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { localizeError } from "../../lib/i18n";
+import { LANGUAGE_PRESETS, languageLabel } from "../../lib/languages";
 import type { StoreClient } from "../../lib/tauri";
 import type { AppSettings, ProxyMode, ThemeMode } from "../../lib/types";
 
 const settingsSchema = z.object({
   region: z.string().trim().regex(/^[A-Za-z]{2}$/, "请输入两个字母的地区代码。"),
   market: z.string().trim().regex(/^[A-Za-z]{2}$/, "请输入两个字母的市场代码。"),
-  language: z.string().trim().min(2, "请输入语言标签。"),
+  languages: z.array(z.object({
+    tag: z.string().regex(/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/, "请选择有效的语言。"),
+  })).max(32, "最多可设置 32 个优先语言。").superRefine((languages, context) => {
+    languages.forEach((language, index) => {
+      if (languages.slice(0, index).some((candidate) => candidate.tag.toLowerCase() === language.tag.toLowerCase())) {
+        context.addIssue({ code: "custom", path: [index, "tag"], message: "语言不能重复。" });
+      }
+    });
+  }),
   proxyMode: z.enum(["disabled", "system", "http", "https", "socks5"]),
   proxyHost: z.string().optional(),
   proxyPort: z.number().int().min(0).max(65535).nullable().optional(),
@@ -45,12 +54,14 @@ interface SettingsViewProps {
 export function SettingsView({ client, settings, loadError, onSettingsChanged }: SettingsViewProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm<SettingsForm>({
+  const { control, register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm<SettingsForm>({
     resolver: zodResolver(settingsSchema),
     defaultValues: formValues(settings),
   });
   const proxyMode = watch("proxyMode");
   const theme = watch("theme");
+  const languageValues = watch("languages");
+  const { fields: languageFields, append: appendLanguage, move: moveLanguage, remove: removeLanguage } = useFieldArray({ control, name: "languages" });
 
   useEffect(() => { reset(formValues(settings)); }, [reset, settings]);
 
@@ -62,7 +73,7 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
       ...settings,
       region: values.region.toUpperCase(),
       market: values.market.toUpperCase(),
-      preferredLanguages: [values.language],
+      preferredLanguages: values.languages.map((language) => language.tag),
       proxyMode: values.proxyMode,
       proxyHost: isCustomProxy(values.proxyMode) ? values.proxyHost ?? null : null,
       proxyPort: isCustomProxy(values.proxyMode) ? values.proxyPort ?? null : null,
@@ -102,10 +113,55 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
       <header className="view-header"><div><p className="eyebrow">本机偏好</p><h1 id="settings-heading">设置</h1></div></header>
       <form className="settings-form" onSubmit={handleSubmit(save)} noValidate>
         <SettingsSection icon={<Globe2 aria-hidden="true" />} title="地区与兼容性">
-          <div className="field-grid">
+          <div className="field-grid field-grid--two">
             <Field label="地区" error={errors.region?.message}><Input {...register("region")} aria-invalid={Boolean(errors.region)} /></Field>
             <Field label="市场" error={errors.market?.message}><Input {...register("market")} aria-invalid={Boolean(errors.market)} /></Field>
-            <Field label="首选语言" error={errors.language?.message}><Input {...register("language")} aria-invalid={Boolean(errors.language)} /></Field>
+          </div>
+          <div className="language-priority" aria-label="语言优先级">
+            <div className="language-priority__list">
+              {languageFields.map((field, index) => {
+                const tag = languageValues[index]?.tag ?? field.tag;
+                return (
+                  <div className="language-priority__row" key={field.id}>
+                    <span className="language-priority__rank">{index + 1}</span>
+                    <select className="select" aria-label={`优先语言 ${index + 1}`} {...register(`languages.${index}.tag`)}>
+                      {!LANGUAGE_PRESETS.some((option) => option === tag) && (
+                        <option value={tag}>{languageLabel(tag)}</option>
+                      )}
+                      {LANGUAGE_PRESETS
+                        .filter((option) => option === tag || (
+                          option.toLowerCase() !== tag.toLowerCase()
+                          && !languageValues.some((language, candidateIndex) => (
+                            candidateIndex !== index
+                            && language.tag.toLowerCase() === option.toLowerCase()
+                          ))
+                        ))
+                        .map((option) => <option key={option} value={option}>{languageLabel(option)}</option>)}
+                    </select>
+                    <button type="button" className="language-priority__action" aria-label={`上移 ${tag}`} title="上移" disabled={index === 0} onClick={() => moveLanguage(index, index - 1)}><ArrowUp aria-hidden="true" /></button>
+                    <button type="button" className="language-priority__action" aria-label={`下移 ${tag}`} title="下移" disabled={index === languageFields.length - 1} onClick={() => moveLanguage(index, index + 1)}><ArrowDown aria-hidden="true" /></button>
+                    <button type="button" className="language-priority__action language-priority__action--danger" aria-label={`删除 ${tag}`} title="删除" onClick={() => removeLanguage(index)}><Trash2 aria-hidden="true" /></button>
+                    {errors.languages?.[index]?.tag?.message && <small className="field-error language-priority__error">{errors.languages[index]?.tag?.message}</small>}
+                  </div>
+                );
+              })}
+            </div>
+            {languageFields.length < Math.min(32, LANGUAGE_PRESETS.length) && (
+              <select
+                className="select language-priority__add"
+                aria-label="添加语言"
+                value=""
+                onChange={(event) => {
+                  if (event.target.value) appendLanguage({ tag: event.target.value });
+                }}
+              >
+                <option value="">添加语言</option>
+                {LANGUAGE_PRESETS.filter((option) => !languageValues.some(
+                  (language) => language.tag.toLowerCase() === option.toLowerCase(),
+                ))
+                  .map((option) => <option key={option} value={option}>{languageLabel(option)}</option>)}
+              </select>
+            )}
           </div>
         </SettingsSection>
 
@@ -154,7 +210,8 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
 
 function formValues(settings: AppSettings | null): SettingsForm {
   return {
-    region: settings?.region ?? "US", market: settings?.market ?? "US", language: settings?.preferredLanguages[0] ?? "en-US",
+    region: settings?.region ?? "US", market: settings?.market ?? "US",
+    languages: (settings?.preferredLanguages ?? ["en-US"]).map((tag) => ({ tag })),
     proxyMode: settings?.proxyMode ?? "disabled", proxyHost: settings?.proxyHost ?? "", proxyPort: settings?.proxyPort ?? null,
     cacheEnabled: settings?.cacheEnabled ?? true, maxCacheGiB: Math.max(1, Math.round((settings?.maxCacheBytes ?? 10 * 1024 ** 3) / 1024 ** 3)),
     retentionDays: settings?.retentionDays ?? 30, maxConcurrentDownloads: settings?.maxConcurrentDownloads ?? 2,

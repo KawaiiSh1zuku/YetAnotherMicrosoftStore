@@ -16,7 +16,7 @@
 - `CurrentUser` 指运行中的管理员账户；`AllUsers` 指机器范围 stage/provision/remove。NSIS 仍为 `currentUser` 安装器。
 - 删除 Broker crate、IPC、sidecar、相关状态和发布脚本。Broker 中仍被主程序使用的包请求类型先迁移到无 IPC 语义的领域模块，再删除协议模块。
 - 程序尚未发布，不承担旧数据库兼容：把现有 4 个 migration 和本次 schema 调整合并为唯一的 `0001_initial.sql`，`CURRENT_SCHEMA_VERSION` 重置为 `1`。最终 schema 不创建 `requires_elevation` 等已删除字段；旧开发数据库由开发者删除后重建。
-- 搜索、详情、安装 worker 和更新扫描必须共享同一适用性选择入口。用户架构设置只影响排序，主机能力和格式支持仍为硬门。
+- 搜索、详情、安装 worker 和更新扫描必须共享同一适用性选择入口。用户架构和语言设置只影响排序；主机能力与格式支持仍为硬门，语言依次按用户列表、`en-US`、任意可用资源回退。
 - 所有新网络补全均有上限：搜索最多 20 项且补全最多 4 个并发；更新扫描使用独立的 1–64 并发设置（默认 16）。单项失败产生 `partial` 或封闭 `skipped` 原因，不取消整批。
 - 不把 fixture、单元测试、构建或 PE 静态检查称为真实 Store/CDN/部署验收。
 
@@ -164,12 +164,13 @@ pnpm exec tauri build --debug --no-bundle
 - x64 主机偏好只有 x64、图中只有 x86 时仍选择 x86；neutral 同理。
 - ARM64 主机默认顺序为 ARM64、x86、neutral；不默认接受未经能力模型声明的 x64 仿真。
 - 同一 PackageGraph/host/preferences/installed 输入的详情 preview 与 worker `SelectionResult` 主包版本、架构、格式、语言和依赖数一致。
-- OS、格式、语言资源和依赖缺失分别返回封闭拒绝原因。
+- 用户语言列表无匹配资源时先回退 `en-US`，再回退任意可用语言，不因语言偏好拒绝安装。
+- OS、格式和依赖缺失分别返回封闭拒绝原因。
 
 ### 3.2 实现统一入口
 
 - 保持 `select_packages` 为唯一选择算法；增加由 `SelectionResult` 投影出的安全 `SelectionPreview`，不含 URL、token 或本地路径。
-- 把 `preferred_architectures` 从候选硬过滤改为兼容候选的排序权重；主机兼容集、OS、格式、语言和依赖仍是硬门。
+- 把 `preferred_architectures` 从候选硬过滤改为兼容候选的排序权重；把 `preferred_languages` 改为有序软偏好并增加 `en-US` 与任意语言回退；主机兼容集、OS、格式和依赖仍是硬门。
 - 详情、安装、更新和修复都构造同一 `SelectionPreferences` 并调用统一入口；删除详情页只数主包架构的旁路判断。
 - Tauri DTO 暴露 preview 的可安装状态、主包选择和封闭拒绝原因。
 
@@ -294,6 +295,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m2_persistence --test m6_
 - 修改：`src/features/details/DetailsView.tsx`
 - 修改：`src/features/installed/InstalledView.tsx`
 - 修改：`src/features/queue/QueueView.tsx`
+- 修改：`src/features/settings/SettingsView.tsx`
+- 新建：`src/lib/languages.ts`
 - 修改：`src/App.css`
 - 修改：`src/test/App.test.tsx`
 - 修改：`src/test/tauri.test.ts`
@@ -307,6 +310,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m2_persistence --test m6_
 - 更新按钮运行中有状态；零候选显示“扫描完成，未发现更新”；partial 显示非阻塞警告与计数。
 - 来源 badge 不折行，窄窗口无横向不可达内容；Playwright 在桌面和窄视口做可访问性与溢出断言。
 - queue UI 不再识别 `awaiting_elevation` 或显示二次 UAC 文案。
+- 设置页语言改为最多 32 项的预设优先级列表，覆盖添加、排序、删除、去重、空列表和窄视口溢出；不提供自由文本输入。
 
 ### 7.2 实现 UI
 
@@ -315,6 +319,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m2_persistence --test m6_
 - 安装范围改为“当前管理员账户 / 所有用户”的分段控件文案。
 - 已安装页使用内容驱动的范围列和 `white-space: nowrap` badge；窄视口改为稳定键值 grid。
 - 所有异步状态保留显式 loading/success/partial/error，禁止扫描完成后无反馈。
+- 语言预设使用稳定 BCP-47 标签；后端仍保留合法旧标签，搜索和详情使用第一优先语言，空列表回退 `en-US`。
 
 ### 7.3 验证
 

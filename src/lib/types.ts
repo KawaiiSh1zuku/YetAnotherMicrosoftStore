@@ -75,7 +75,7 @@ export interface SelectionPreview {
     language: string | null;
   } | null;
   dependencyCount: number;
-  rejectionReason: "market" | "operating_system" | "format" | "architecture" | "language_resource" | "dependency" | "package_not_installed" | "version" | "no_compatible_package" | null;
+  rejectionReason: "market" | "operating_system" | "format" | "architecture" | "dependency" | "package_not_installed" | "version" | "no_compatible_package" | null;
 }
 
 export interface JobSnapshot {

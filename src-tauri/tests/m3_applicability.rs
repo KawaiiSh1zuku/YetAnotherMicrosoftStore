@@ -296,6 +296,92 @@ fn bcp47_fallback_selects_best_resource_and_neutral_resource() {
 }
 
 #[test]
+fn language_resources_fall_back_to_en_us_without_blocking_installation() {
+    let root = package(
+        "bundle",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::Neutral,
+        PackageFormat::MsixBundle,
+        PackageKind::Main,
+    );
+    let mut french = package(
+        "resource-fr",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::Neutral,
+        PackageFormat::Msix,
+        PackageKind::Resource,
+    );
+    french.identity_name = Some("Example.Resources".to_owned());
+    french.language = Some("fr-FR".to_owned());
+    french.is_neutral = Some(false);
+    let mut english = french.clone();
+    english.update_id = "resource-en-us".to_owned();
+    english.language = Some("en-US".to_owned());
+    let mut packages = graph(vec![root, french, english]);
+    packages.dependencies = vec![
+        DependencyEdge {
+            source_update_id: "bundle".to_owned(),
+            target_update_id: "resource-fr".to_owned(),
+            kind: DependencyKind::Bundled,
+        },
+        DependencyEdge {
+            source_update_id: "bundle".to_owned(),
+            target_update_id: "resource-en-us".to_owned(),
+            kind: DependencyKind::Bundled,
+        },
+    ];
+    let mut preferences = preferences(SelectionMode::Install);
+    preferences.preferred_languages = vec!["zh-CN".to_owned(), "ja-JP".to_owned()];
+
+    let result = select_packages(&packages, &x64_host(), &preferences, &[])
+        .expect("an unmatched language preference must not block installation");
+    let selected = result
+        .packages
+        .iter()
+        .map(|package| package.update_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(selected, vec!["bundle", "resource-en-us"]);
+}
+
+#[test]
+fn language_resources_fall_back_to_any_available_language_after_en_us() {
+    let root = package(
+        "bundle",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::Neutral,
+        PackageFormat::MsixBundle,
+        PackageKind::Main,
+    );
+    let mut french = package(
+        "resource-fr",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::Neutral,
+        PackageFormat::Msix,
+        PackageKind::Resource,
+    );
+    french.identity_name = Some("Example.Resources".to_owned());
+    french.language = Some("fr-FR".to_owned());
+    french.is_neutral = Some(false);
+    let mut packages = graph(vec![root, french]);
+    packages.dependencies = vec![DependencyEdge {
+        source_update_id: "bundle".to_owned(),
+        target_update_id: "resource-fr".to_owned(),
+        kind: DependencyKind::Bundled,
+    }];
+    let mut preferences = preferences(SelectionMode::Install);
+    preferences.preferred_languages = vec!["zh-CN".to_owned()];
+
+    let result = select_packages(&packages, &x64_host(), &preferences, &[])
+        .expect("the available language must be selected as the final fallback");
+
+    assert!(result
+        .packages
+        .iter()
+        .any(|package| package.update_id == "resource-fr"));
+}
+
+#[test]
 fn installed_framework_satisfies_prerequisite_without_reselection() {
     let root = package(
         "main",

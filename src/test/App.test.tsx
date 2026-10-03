@@ -89,6 +89,26 @@ describe("M6 desktop workbench", () => {
     );
   });
 
+  it("saves the user ordered language priority list", async () => {
+    const user = userEvent.setup();
+    const client = createClient();
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const firstLanguage = await screen.findByRole("combobox", { name: "优先语言 1" });
+    await user.selectOptions(firstLanguage, "zh-CN");
+    await user.selectOptions(screen.getByRole("combobox", { name: "添加语言" }), "ja-JP");
+    expect(within(firstLanguage).queryByRole("option", { name: /ja-JP/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "上移 ja-JP" }));
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() =>
+      expect(client.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ preferredLanguages: ["ja-JP", "zh-CN"] }),
+      ),
+    );
+  });
+
   it("renders loading, empty, and localized safe error states", async () => {
     const user = userEvent.setup();
     let finishSearch: ((value: never[]) => void) | undefined;

@@ -405,12 +405,12 @@ impl ApiAppSettings {
             || !safe_market(&self.market)
             || self.preferred_architectures.is_empty()
             || self.preferred_architectures.len() > 16
-            || self.preferred_languages.is_empty()
             || self.preferred_languages.len() > 32
             || self
                 .preferred_languages
                 .iter()
                 .any(|language| !safe_language(language))
+            || has_case_insensitive_duplicates(&self.preferred_languages)
             || !proxy_valid
             || self.max_cache_bytes == 0
             || !(1..=365).contains(&self.retention_days)
@@ -953,6 +953,14 @@ fn safe_language(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn has_case_insensitive_duplicates(values: &[String]) -> bool {
+    values.iter().enumerate().any(|(index, value)| {
+        values[..index]
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(value))
+    })
 }
 
 fn safe_market(value: &str) -> bool {
