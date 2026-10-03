@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, process::Command};
 
 use yet_another_microsoft_store_lib::diagnostics::{
     DiagnosticEvent, DiagnosticService, SingleInstanceGuard, NETWORK_HOST_ALLOWLIST,
@@ -138,6 +138,45 @@ fn elevated_runtime_configuration_has_no_broker_sidecar() {
     let package: serde_json::Value =
         serde_json::from_str(include_str!("../../package.json")).expect("parse package scripts");
     assert!(package["scripts"].get("build:broker").is_none());
+}
+
+#[test]
+fn direct_cargo_build_defaults_to_the_embedded_frontend_protocol() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+        ])
+        .output()
+        .expect("run cargo metadata");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse cargo metadata");
+    let package = metadata["packages"]
+        .as_array()
+        .and_then(|packages| {
+            packages
+                .iter()
+                .find(|package| package["name"] == "yet-another-microsoft-store")
+        })
+        .expect("application package metadata");
+
+    assert_eq!(
+        package["features"]["default"],
+        serde_json::json!(["custom-protocol"])
+    );
+    assert_eq!(
+        package["features"]["custom-protocol"],
+        serde_json::json!(["tauri/custom-protocol"])
+    );
 }
 
 #[test]

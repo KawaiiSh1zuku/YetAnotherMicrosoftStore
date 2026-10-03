@@ -24,6 +24,8 @@ Install the matching Rust target and MSVC tools, then run:
 
 `-Architecture all` builds both. The script removes any inherited `TAURI_CONFIG` while bundling so a local signing override cannot change the documented unsigned artifact contract. It fails if the requested Rust target is absent, if the application PE machine type or elevation manifest is wrong, if a legacy Broker file is present, or if NSIS does not emit exactly one fresh installer.
 
+The application crate enables Tauri's `custom-protocol` feature by default, so direct Cargo builds embed `frontendDist` and never require a localhost server. `tauri dev` explicitly disables default features and starts Vite at `http://localhost:1420`. Build the frontend before direct Cargo checks on a clean checkout; the release script enforces this order.
+
 Each clean `release-artifacts/<architecture>/` directory contains:
 
 - the unsigned NSIS setup executable;

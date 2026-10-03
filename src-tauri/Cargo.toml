@@ -62,6 +62,10 @@ windows = { version = "=0.62.2", features = [
 ] }
 windows-collections = "=0.3.2"
 
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

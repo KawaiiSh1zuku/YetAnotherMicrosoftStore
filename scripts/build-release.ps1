@@ -135,6 +135,7 @@ Push-Location $repoRoot
 try {
     if (-not $SkipChecks) {
         Invoke-Checked pnpm @('test')
+        Invoke-Checked pnpm @('build')
         Invoke-Checked cargo @('test', '--manifest-path', 'src-tauri/Cargo.toml', '--all-targets')
     }
     Invoke-Checked pnpm @('run', 'generate:licenses')

@@ -53,6 +53,7 @@ Yet Another Microsoft Store 是一个 Windows 桌面客户端，用于搜索 Mic
 ```powershell
 pnpm install --frozen-lockfile
 pnpm test
+pnpm build
 cargo test --manifest-path src-tauri/Cargo.toml --lib --tests
 pnpm build:release
 ```
@@ -79,6 +80,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib --tests
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 pnpm exec tauri build --debug --no-bundle
 ```
+
+`pnpm exec tauri dev` 启动 Vite 并让 WebView2 连接 `http://localhost:1420`，只用于开发热更新。普通 `cargo build`、`cargo test` 和 `tauri build` 默认启用内嵌前端协议，因此生成的 EXE 不依赖本地 Web 服务器；修改前端后应先运行 `pnpm build`，避免嵌入旧的 `dist`。
 
 ## 许可证状态
 

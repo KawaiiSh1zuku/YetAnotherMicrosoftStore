@@ -358,10 +358,10 @@ pnpm exec playwright test
 
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml --lib --tests
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 pnpm test
 pnpm build
+cargo test --manifest-path src-tauri/Cargo.toml --lib --tests
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 pnpm exec playwright test
 pnpm exec tauri build --debug --no-bundle
 ```
