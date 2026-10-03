@@ -81,7 +81,7 @@
 - [x] Write failing tests for length-prefixed frames, size limits, version/nonce mismatch, parent PID mismatch, UAC cancellation and exit mapping.
 - [x] Run the focused broker test; expected FAIL.
 - [x] Implement named-pipe DACL for current user/Administrators/SYSTEM, random 128-bit nonce, bounded timeouts and ShellExecuteExW with runas; no automatic UAC retry.
-- [x] Implement Broker high-integrity check, caller/session/signature validation and protected-copy deployment calls.
+- [x] Implement Broker high-integrity check, caller PID/session/image-path validation and protected-copy deployment calls; caller Authenticode is not required for unsigned distribution.
 - [x] Embed the isolated manifest and assert Broker requireAdministrator and main asInvoker in build tests.
 - [x] Run cargo test --manifest-path src-tauri/Cargo.toml --all-targets and cargo build --manifest-path src-tauri/broker/Cargo.toml --target x86_64-pc-windows-msvc; 已在最终提交 `157c23c` 中交付，未按 Task 拆分提交。
 

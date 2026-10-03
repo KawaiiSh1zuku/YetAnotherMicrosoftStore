@@ -1,6 +1,7 @@
 #[cfg(not(feature = "broker-dependency"))]
 struct RuntimeState {
     backend: app_runtime::ProductionApiBackend,
+    diagnostics: diagnostics::DiagnosticService,
 }
 
 #[cfg(not(feature = "broker-dependency"))]
@@ -112,7 +113,19 @@ async fn update_settings(
     state: tauri::State<'_, RuntimeState>,
     settings: tauri_api::ApiAppSettings,
 ) -> Result<tauri_api::ApiAppSettings, error::AppErrorDto> {
-    api(&state).update_settings(settings).await
+    let previous_diagnostics = state.diagnostics.is_enabled();
+    let requested_diagnostics = settings.diagnostics_enabled;
+    state
+        .diagnostics
+        .set_enabled(requested_diagnostics)
+        .map_err(|_| diagnostics_error())?;
+    match api(&state).update_settings(settings).await {
+        Ok(settings) => Ok(settings),
+        Err(error) => {
+            let _ = state.diagnostics.set_enabled(previous_diagnostics);
+            Err(error)
+        }
+    }
 }
 
 #[cfg(not(feature = "broker-dependency"))]
@@ -122,9 +135,26 @@ async fn clear_cache(state: tauri::State<'_, RuntimeState>) -> Result<(), error:
 }
 
 #[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+fn export_diagnostics(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<diagnostics::DiagnosticExport, error::AppErrorDto> {
+    state.diagnostics.export().map_err(|_| diagnostics_error())
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+fn diagnostics_error() -> error::AppErrorDto {
+    error::AppErrorDto::new(
+        error::ErrorCode::DeploymentFailed,
+        error::RetryAdvice::Retry,
+    )
+}
+
+#[cfg(not(feature = "broker-dependency"))]
 fn start_runtime_tasks(
     app: tauri::AppHandle,
     backend: app_runtime::ProductionApiBackend,
+    diagnostics: diagnostics::DiagnosticService,
 ) -> Result<(), std::io::Error> {
     use std::time::Duration;
     use tauri::Emitter;
@@ -154,7 +184,11 @@ fn start_runtime_tasks(
                                 () = tokio::time::sleep(Duration::from_secs(1)) => {},
                             }
                         }
-                        Ok(job_worker::RunOnceOutcome::LeaseLost) | Err(_) => {
+                        Ok(job_worker::RunOnceOutcome::LeaseLost) => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                        Err(_) => {
+                            let _ = diagnostics.record(diagnostics::DiagnosticEvent::WorkerFailure);
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
                     }
@@ -194,16 +228,39 @@ fn start_runtime_tasks(
 pub fn run() {
     use tauri::Manager;
 
-    tauri::Builder::default()
+    let single_instance = match diagnostics::SingleInstanceGuard::acquire() {
+        Ok(guard) => guard,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return,
+        Err(error) => panic!("failed to acquire application instance guard: {error}"),
+    };
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_root = app.path().app_data_dir()?;
             let cache_root = app.path().app_cache_dir()?.join("packages");
+            let download_root = app.path().download_dir()?;
             let paths = app_runtime::RuntimePaths::new(data_root.join("state.sqlite3"), cache_root)
                 .map_err(|_| std::io::Error::other("runtime path initialization failed"))?;
             let backend = app_runtime::ProductionApiBackend::new(paths);
-            start_runtime_tasks(app.handle().clone(), backend.clone())?;
-            app.manage(RuntimeState { backend });
+            let diagnostics_enabled = backend
+                .diagnostics_enabled()
+                .map_err(|_| std::io::Error::other("settings initialization failed"))?;
+            let diagnostics = diagnostics::DiagnosticService::new(
+                data_root.join("diagnostics"),
+                download_root,
+                diagnostics_enabled,
+            )?;
+            let panic_diagnostics = diagnostics.clone();
+            let previous_panic_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |panic_info| {
+                let _ = panic_diagnostics.record(diagnostics::DiagnosticEvent::Panic);
+                previous_panic_hook(panic_info);
+            }));
+            start_runtime_tasks(app.handle().clone(), backend.clone(), diagnostics.clone())?;
+            app.manage(RuntimeState {
+                backend,
+                diagnostics,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -219,10 +276,17 @@ pub fn run() {
             list_job_events,
             get_settings,
             update_settings,
-            clear_cache
+            clear_cache,
+            export_diagnostics
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            let _ = handle.state::<RuntimeState>().diagnostics.clean_shutdown();
+        }
+    });
+    drop(single_instance);
 }
 pub mod app_runtime;
 pub mod applicability;
@@ -235,6 +299,7 @@ pub mod deployment;
 pub mod deployment_coordinator;
 pub mod deployment_orchestrator;
 pub mod deployment_plan;
+pub mod diagnostics;
 pub mod domain;
 pub mod download;
 pub mod error;

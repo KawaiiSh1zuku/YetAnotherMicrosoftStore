@@ -529,6 +529,11 @@ impl ApiBackend for ProductionApiBackend {
 }
 
 impl ProductionApiBackend {
+    pub fn diagnostics_enabled(&self) -> Result<bool, AppErrorDto> {
+        let persistence = self.open_persistence()?;
+        Ok(self.load_settings(&persistence)?.diagnostics_enabled)
+    }
+
     fn clear_cache_safely(&self) -> Result<(), AppErrorDto> {
         let persistence = self.open_persistence()?;
         let has_active_job = persistence

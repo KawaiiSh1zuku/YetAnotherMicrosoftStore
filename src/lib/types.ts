@@ -146,3 +146,8 @@ export interface UpdateCandidate {
   availableVersion: string;
   productId: string | null;
 }
+
+export interface DiagnosticExport {
+  fileName: string;
+  destination: "downloads";
+}

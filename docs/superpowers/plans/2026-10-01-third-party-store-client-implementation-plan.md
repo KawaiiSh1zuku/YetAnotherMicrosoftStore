@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端实现计划
 
-> 状态：已完成 M0-M6。M0 为受控 Windows E2，M1-M5 为对应自动化 E1（M4 另有受控在线协议 smoke）；M6 完成持久化 worker、安全 Tauri API、五视图前端，并在指定产品/市场/语言/Windows 环境取得一次真实 CDN 下载、Microsoft 签名 `.msixbundle` CurrentUser 安装与精确回滚 E2。跨渠道 E3、发布和 MSIXVC 仍由 M7-M9 门控。
+> 状态：已完成 M0-M6。M7 因当前验证机 Microsoft Store 不可用而按用户指示延期。M8 已完成 unsigned 发布工程的本地 E1 实现与 x64 NSIS 构建；ARM64 workflow 和干净机发布矩阵仍待执行。跨渠道 E3、正式发布验收和 MSIXVC 继续由 M7-M9 门控。
 
 ## 1. 执行范围
 
@@ -40,7 +40,7 @@
 
 ## 3. 当前结构与演进边界
 
-M0-M6 采用按职责分文件的扁平 Rust 模块；不为了匹配早期草案强制搬迁目录。后续新模块沿用这一边界，单个模块明显膨胀后再拆子目录：
+M0-M8 采用按职责分文件的扁平 Rust 模块；不为了匹配早期草案强制搬迁目录。后续新模块沿用这一边界，单个模块明显膨胀后再拆子目录：
 
 ```text
 src-tauri/
@@ -67,7 +67,8 @@ src-tauri/
     verification.rs            # M4；签名预检在 M5 扩展
     cache.rs                   # M4
     settings.rs                # M4
-    tauri_api.rs               # M6 计划
+    tauri_api.rs               # M6
+    diagnostics.rs             # M8 封闭诊断与恢复标记
   broker/                      # M0 独立 requireAdministrator binary
   migrations/
     0001_m2.sql
@@ -101,9 +102,9 @@ docs/
 | M3 适用性与资源选择 | 完成（E1） | 补齐 schema v2/领域字段，实现 OS、架构、市场、语言、资源和依赖选择 | 23 项 M3 测试覆盖强类型版本、封闭错误、v1→v2、旧错误任务兼容、x64/ARM64/x86/neutral、市场/语言、资源分组、依赖环/传递依赖、最低 OS、格式门和防降级；选择结果可解释 | 只验证本地逻辑和脱敏 fixture；不访问实时下载，不执行部署 |
 | M4 下载、缓存与代理 | 完成（E1 + 受控在线协议 smoke） | 实现受控实时协议 smoke、可续传下载、缓存和四种代理模式 | 91 项全目标测试通过、4 项环境测试 ignored；在线 smoke 记录产品/市场/语言/时间与包图计数；host/redirect、Range+ETag、URL 刷新、取消、限速/并发、缓存恢复和脱敏均有测试 | 在线 smoke 未下载真实包；system 仅静态当前用户代理，PAC/WPAD 未支持；不宣称跨渠道更新 |
 | M5 安装/更新编排与身份关联 | 完成（E1；真实包图 E2 门待载荷） | 复用 M0 部署原语接入适用包图、版本差异和 Store 产品关联 | schema v3、verified 包图、签名预检接口、清单重扫、严格更新、防降级、PFN/Product ID/Content ID 关联和稳定错误映射通过自动化验证 | 不重复实现 Broker；真实签名 Microsoft 包图/UAC 未重跑；官方 Store 接管仍待 M7 |
-| M6 Tauri API 与前端主流程 | 未开始 | 冻结安全命令/事件 DTO，完成搜索、详情、队列、已安装和设置 UI | 移除脚手架接口；UI 完成主流程、进度/取消/恢复、键盘/焦点/窄窗口检查 | 静态 mock 不能代替 M5 后端集成 |
-| M7 更新与互操作验证 | 未开始 | 取得双渠道更新和冲突策略的 E3 证据 | 指定产品/市场/账户上完成官方 Store→第三方检测、第三方→官方 Store 手动更新、任一渠道领先不降级和重扫收敛 | 条件性兼容，不作普遍保证 |
-| M8 NSIS 与发布加固 | 未开始 | 形成可签名、可升级、可诊断的分发包 | 干净机 NSIS 安装/升级/卸载、Release Broker/安装器签名、WebView2、日志、网络白名单和可访问性回归通过 | 未签名 debug Broker 不能进入发布 |
+| M6 Tauri API 与前端主流程 | 完成（E1 + 单产品 E2） | 冻结安全命令/事件 DTO，完成搜索、详情、队列、已安装和设置 UI | 13 个安全命令、五视图 UI、持久化 worker、UI 自动化和指定 Microsoft bundle CurrentUser 回环通过 | 单产品回环不证明跨渠道、AllUsers 或普遍兼容 |
+| M7 更新与互操作验证 | 延期 | 取得双渠道更新和冲突策略的 E3 证据 | 当前验证机 Microsoft Store 不可用；待恢复后按产品/市场/账户矩阵执行 | 没有 E3 证据；条件性兼容不作普遍保证 |
+| M8 NSIS 与发布加固 | 进行中（本地 E1） | 形成可复现、可升级、可诊断的 unsigned 分发包 | NSIS/诊断/许可证/双架构脚本与 CI 已实现，本地 x64 unsigned 构建通过 | ARM64 workflow、哈希发布和干净机安装/升级/卸载尚未执行 |
 | M9 MSIXVC 研究门（后续） | 未开始 | 独立评估 MSIXVC/Xbox API、服务和许可要求 | 调研与专门 Spike 经新范围审批 | 第一阶段不下载、不安装、不更新 |
 
 ## 5. 依赖关系与并行边界
@@ -118,7 +119,7 @@ M8 ──> M9（新范围审批后）
 
 - M3A 冻结字段后，M6A 可以先做静态 UI 和 mock 数据，但不得宣称后端功能完成。
 - M4 可以与 M5 的 Product ID/PFN 关联只读研究并行，但 M5 部署编排必须等待 M4 产生已验证的本地包图。
-- M8 的 NSIS 配置可在 M6 后预研，但发布验收必须等待 M7。
+- 用户明确允许在本机 Store 不可用时先完成 M8 发布工程；这只改变实现顺序，不改变证据依赖。正式发布验收仍不得把 M7 延期解释为 M7 通过。
 
 禁止的并行：
 
@@ -217,6 +218,8 @@ M8 ──> M9（新范围审批后）
 
 ### M7：更新与跨渠道互操作验证
 
+当前状态：按用户指示延期。验证机 Microsoft Store 不可用，因此本阶段没有执行 Store 队列、账户或跨渠道写操作，也没有新增 E3 结论。
+
 - 选定具有合法授权、可重复恢复且风险可控的测试产品/账户/市场矩阵。
 - 验证官方 Store 安装→第三方清单/更新检测，以及第三方安装→官方 Store 手动更新。
 - 验证任一渠道版本领先、目录滞后、市场不可用和授权缺失时不降级并给出明确状态。
@@ -226,18 +229,22 @@ M8 ──> M9（新范围审批后）
 
 ### M8：NSIS 与发布加固
 
-- 配置 Tauri NSIS bundle、版本号、安装目录、升级/卸载行为和 WebView2 前置策略。
-- 建立 Release 主程序/Broker/安装器签名、时间戳和证书轮换方案。
-- 加入诊断导出、网络主机审计、日志脱敏、崩溃恢复和依赖许可证清单。
+- [x] 配置 Tauri NSIS bundle、版本号、当前用户安装、禁止降级和 WebView2 download bootstrapper。
+- [x] 建立 x64/ARM64 Release 构建、PE 架构复核、SHA-256、构建元数据和架构独立工件目录。
+- [x] 按用户决策统一为 unsigned 发布；tag 不要求证书 secrets，工件固定携带 SHA-256、source commit、dirty 和 `signed:false` 元数据。
+- [x] 加入封闭诊断导出、网络主机审计、崩溃恢复标记和无本机路径的依赖许可证清单。
+- [x] 配置 GitHub x64 `windows-2025` 与 ARM64 `windows-11-arm` 原生 runner 矩阵。
+- [ ] 实际运行 ARM64 workflow 和 unsigned tag，保存可核验工件与公开 checksum 证据。
+- [ ] 在干净 x64/ARM64 环境完成哈希复核、安装、升级、降级拒绝、卸载、AllUsers 回滚、WebView2 和可访问性矩阵。
 
-退出条件：干净机安装/升级/卸载、Release 签名验证、无 PowerShell/winget 产品子进程和完整回归矩阵通过。
+退出条件：双架构工件哈希复核、干净机安装/升级/卸载/AllUsers 回滚、无 PowerShell/winget 产品子进程和完整回归矩阵通过。
 
 ### M9：MSIXVC 研究门（后续）
 
 - 单独记录 Xbox/MSIXVC API、服务、许可、磁盘和流式安装要求。
 - 未获得新的范围批准前，不修改第一阶段支持矩阵，也不实现下载、安装或更新。
 
-## 7. M0-M6 进度与计划匹配审查
+## 7. M0-M8 进度与计划匹配审查
 
 | 里程碑 | 原计划核心要求 | 当前实际证据 | 偏差与处置 | 结论 |
 |---|---|---|---|---|
@@ -248,6 +255,8 @@ M8 ──> M9（新范围审批后）
 | M4 | 受控在线协议 smoke、代理、可续传下载、校验、缓存恢复和 URL 安全边界 | `settings.rs`、`download.rs`、`verification.rs`、`cache.rs`；28 项 M4 自动化测试、1 项 ARM32 协议回归和 1 项 opt-in 在线 smoke | system 代理收敛为静态当前用户配置；PAC/WPAD 显式留后。在线 smoke 不等于真实 CDN 包下载 | 匹配，完成（E1 + 受控在线 smoke） |
 | M5 | verified 包图、身份关联、严格版本决策、签名预检、M0 部署委托和清单收敛 | `identity.rs`、`deployment_plan.rs`、`deployment_orchestrator.rs`、schema v3；19 项 M5 自动化测试通过，1 项真实签名包测试 ignored | 独立审查修复 canonical 路径误拒绝、AllUsers 未预配误判、framework 隐式预配、清单顺序依赖和 verified 关联降级；真实签名包图/UAC 未重跑 | 匹配，完成（E1；E2 环境门待载荷） |
 | M6 | 持久化 worker、安全 Tauri API、五视图 UI、可逆真实 CurrentUser 回环 | schema v4、event store/commands/lease、13 个命令、React 工作台；Rust 171 passed/7 ignored、Vitest 10/10、Playwright 2/2；指定 Sysinternals Suite bundle E2 | FE3 category GUID 曾被误作依赖、bundle `~`/manifest 差异和本机代理/CDN 互操作均在真实验收中修复并加入回归；E2 仅限记录环境 | 匹配，完成（E1 + 单产品 E2） |
+| M7 | 双渠道更新和冲突策略 E3 | 当前机器 Microsoft Store 不可用，未执行 | 用户明确要求先跳过；保留全部 E3 门，不以 M8 代替 | 延期，未验收 |
+| M8 | NSIS、双架构、诊断、许可证和发布回归 | unsigned 发布脚本/CI/NSIS/诊断/许可证已实现；本地 x64 构建通过 | 用户取消代码签名与 tag 签名门；ARM64/哈希发布/干净机门保持开放 | 进行中（本地 E1） |
 
 本轮可复现验证命令：
 
@@ -262,7 +271,7 @@ pnpm build
 pnpm exec tauri build --debug --no-bundle
 ```
 
-当前结果：171 项 Rust 测试通过，7 项需要显式真实包/在线环境的测试 ignored；格式、严格 Clippy、Broker check、Vitest 10/10、Playwright 2/2、前端构建和 Tauri debug 非 bundle 构建均通过。M6 的真实回环另以显式环境变量执行并完整恢复基线；默认 ignored 状态不会重复改变 Windows 包状态，也不构成跨渠道 E3。
+M8 当前结果为 176 项 Rust 测试通过、7 项环境测试 ignored，Vitest 11/11、Playwright 2/2、前端构建和 x64 Release/NSIS 构建通过。x64 setup 为 3,561,882 bytes，独立复核 SHA-256 `bbfefdc198ebce4a234eb96971441c1756ad288d9c4e6fc3d330c66a0ff1fe89`，明确 unsigned 且来自 dirty source。ARM64、checksum 发布和干净机门不会由本地 x64 结果推断。
 
 ## 8. 风险、回滚与停止条件
 
@@ -291,4 +300,4 @@ pnpm exec tauri build --debug --no-bundle
 
 ## 10. 当前执行点
 
-中文规格和本实现计划已获批准，M0-M6 的进度/代码/测试/证据与计划已完成对照审查。下一步进入 M7：用明确产品/市场/账户矩阵验证官方 Store 与本客户端的来源无关关联、更新资格和防降级。M6 只证明一个 Microsoft 签名 bundle 的 CurrentUser 下载/安装/回滚；跨渠道 E3、AllUsers 真实 Store 包图、NSIS 发布和 MSIXVC 仍未验收。
+中文规格和本实现计划已获批准。M7 因当前验证机 Store 不可用而延期；M8 unsigned 发布工程先行实现，但目前只具备本地 x64 E1 证据。下一步先运行 ARM64/tag 流水线、发布双架构 checksum 并完成干净机矩阵；验证环境恢复后再补 M7 产品/市场/账户 E3。M6 单产品回环、M8 编译和 CI 配置都不能替代跨渠道 E3、发布验收或 MSIXVC 验收。

@@ -185,3 +185,16 @@
 - 本机代理可完成目录/FE3 元数据请求，但对该 HTTP CDN 大文件链路不互通；SOCKS5/SOCKS5H 提前断开、HTTP proxy 返回 502、强制 HTTPS 出现 TLS EOF，而直连 Range 返回 206。因此本次验收采用元数据经代理、精确 delivery 主机字节直连；这只是已记录环境的路由结论，不是通用代理兼容声明。
 - `9P7KNL5RWT25` / `US` / `en-US` 在 2026-10-03 返回 `Microsoft.SysinternalsSuite_8wekyb3d8bbwe` 版本 `2026.9.0.0`、300,193,716 字节 neutral `.msixbundle`。production worker 已完成真实下载、SHA-256、bundle identity、Microsoft 系统信任签名、CurrentUser 安装、精确清单验证、卸载与零目标基线恢复。
 - 该真实回环不需要本地签名、证书导入或 UAC；签名来自 Microsoft 交付包并由 WinTrust/Windows 验证。证据只覆盖这一产品、市场、语言、时间点、Windows 10 build 19045 x64 和 CurrentUser 范围，不证明 AllUsers、其他产品/架构、付费授权或官方 Store 跨渠道 E3。
+
+## M8 发布加固发现（2026-10-03）
+
+- 双架构可重复发布不应让 Tauri 的 `beforeBuildCommand` 猜目标或复用任意 Broker；顶层脚本必须先按显式 triple/profile 构建并复制 sidecar，再校验 Broker 与主程序 PE machine。
+- 本机只具备 x64 MSVC 工具链。使用 GitHub 公共仓库的原生 `windows-11-arm` runner 比在 x64 runner 临时安装 ARM64 linker 更少环境分支，但配置本身不是 ARM64 编译证据，必须由实际 workflow 工件闭环。
+- `tauri.conf.json` 的版本位于顶层 `version`，不是 `package.version`。PowerShell `Set-StrictMode` 会在长时间编译后才暴露错误，因此发布契约测试和最终真实脚本运行缺一不可。
+- 发布目录不能只覆盖同名文件；版本变化会遗留旧 setup。脚本现在只删除固定的 `release-artifacts/<architecture>` 目录并重建，workflow 才可安全上传整个目录。
+- 用户没有代码签名证书并明确选择 unsigned 分发；tag 不应制造与普通 CI 不同的证书 secret 门。工件真实性改由 release commit、架构元数据和同时发布的 SHA-256 提供。
+- `diagnostics_enabled` 是现有隐私契约而非装饰性 UI。默认 false 时不应创建事件日志或 crash marker；开启/关闭必须与设置保存协同，关闭时清除精确诊断文件。
+- 只限制导出为 200 条不能限制磁盘或读取内存。事件文件需在写入侧设置字节上限；当前采用 64 KiB 轮转，解析仍丢弃未知/畸形行。
+- 固定 session marker 只有在单实例成立时才可靠，否则正常并发实例会互相误报/删除。当前使用 session-local Windows mutex 保证单实例，M6 的数据库 generation fence 仍独立负责 worker 所有权。
+- NSIS `allowDowngrades=false`、升级数据保留和 WebView2 bootstrapper 配置只是工程意图；未经过干净机行为验证前，README 和发布说明只能写“configured”，不能写成已验收事实。
+- unsigned Release 的 AllUsers 路径按用户原始设计不检查主程序 Authenticode；该决策不能扩张为取消其他 Broker 边界。父 PID/session/nonce/镜像路径、命名管道对端、受保护暂存、包身份/哈希和 Microsoft 包签名验证继续 fail closed。

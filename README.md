@@ -1,34 +1,85 @@
 # Yet Another Microsoft Store
 
-Windows desktop client for direct Microsoft Store package delivery. M0 native deployment through M6 durable jobs, safe Tauri API, desktop workflows, and one reversible real Store package round trip are complete at their documented evidence levels.
+Yet Another Microsoft Store is a Windows desktop client that searches Microsoft Store catalog metadata, resolves compatible AppX/MSIX packages, downloads them from Microsoft delivery hosts, verifies package identity and signatures, and deploys them through Windows package APIs.
 
-## Current development state
+The application is built with Rust, Tauri 2, React, and TypeScript. It does not use `winget` or PowerShell as a product runtime dependency.
 
-- M0: CurrentUser and AllUsers deployment paths have passed the recorded Windows 10 19045 x64 acceptance loop, including one-shot UAC Broker, machine inventory postconditions, and exact certificate cleanup.
-- M1: DCAT/FE3 adapters, project-owned DTOs, redacted fixtures, and contract tests are complete. This does not claim live Store/FE3 endpoint, authorization, download, or cross-channel update acceptance.
-- M2: Project-owned domain/error/job DTOs, SQLite schema v1, repositories, transactional migrations, and restart recovery are complete. This is local persistence evidence only and does not claim live Store, download, or update acceptance.
-- M3: SQLite schema v2, typed four-part versions, closed safe error details, FE3 applicability mapping, and explainable package/resource/dependency selection are complete at local E1 evidence. This does not claim live Store, download, package deployment, or cross-channel acceptance.
-- M4: A controlled live DCAT/FE3 smoke and local HTTP download/cache/proxy tests are complete. Static current-user Windows proxy settings, custom HTTP(S)/SOCKS5, resumable verified downloads, URL refresh, cancellation, and cache recovery are implemented. PAC/WPAD remains outside this evidence; M6 separately exercised one real Microsoft CDN payload.
-- M5: SQLite schema v3 identity correlation, verified package-graph planning, WinTrust signature preflight, strict install/update decisions, deployment convergence, and stable error mapping are complete at local E1 evidence. Production deployment delegates to the M0 coordinator/Broker.
-- M6: SQLite schema v4 events/projections, durable commands, generation-fenced worker leases, 13 safe Tauri commands, and the search/details/queue/installed/settings workbench are complete. One Microsoft-signed Sysinternals Suite `.msixbundle` passed real CurrentUser download, SHA-256/identity/WinTrust validation, install, inventory convergence, uninstall, and exact baseline restoration on Windows 10 19045 x64; this does not claim cross-channel Store E3, AllUsers, or general product compatibility.
-- M7: Official Store cross-channel correlation/update interoperability is the next development gate.
+## Release status
+
+Version `0.1.0` is a pre-release build. M0-M6 are implemented at the evidence levels recorded in [the support matrix](docs/support-matrix.md). M7 cross-channel Store interoperability is deferred because the current validation machine's Microsoft Store is unavailable. M8 release hardening is implemented at local E1: the x64 unsigned NSIS path has been compiled and checked, while the ARM64 artifact path is configured for GitHub's native ARM64 runner but has not yet been executed in this checkout.
+
+Release artifacts are intentionally unsigned because the project does not use a code-signing certificate. Publish both architecture-specific SHA-256 files with every release and complete the clean-machine checklist in [the release guide](docs/release.md). Windows may show an unknown-publisher or SmartScreen warning.
+
+## Supported environment
+
+- Windows 10 x64 build 19045 is the currently recorded validation baseline.
+- Release artifacts target Windows x64 and Windows ARM64.
+- Supported payload families are `.msix`, `.appx`, `.msixbundle`, and `.appxbundle` within the documented package, identity, architecture, and authorization boundaries.
+- `.eappx` and `.eappxbundle` remain conditional; MSIXVC/Xbox, EXE, and MSI payloads are not supported.
+- Current-user deployment is the default. All-users operations use a one-shot UAC Broker; the main application remains `asInvoker`.
+- The NSIS installer is configured for per-user installation, downgrade blocking, and Microsoft's WebView2 download bootstrapper. Those behaviors still require clean-machine acceptance; initial installation may require network access.
+
+The recorded Sysinternals Suite round trip proves one product, market, language, host, time, and CurrentUser scenario. It is not a general compatibility or official Store update guarantee.
+
+## Install
+
+1. Download the installer matching the machine architecture from the release.
+2. Verify the SHA-256 value against the adjacent `SHA256SUMS.txt`.
+3. Run the NSIS installer. It is configured for the current Windows user. Application-data preservation during an in-place upgrade remains part of the clean-machine release checklist.
+
+The installer, main executable, and Broker are unsigned. The elevated Broker still validates the named-pipe peer PID/session/nonce, caller image path, protected staging path, package identity, hash, and Microsoft package signature; it does not require Authenticode on the caller executable.
+
+## Privacy and network boundary
+
+The production network audit permits these Microsoft hosts:
+
+- `displaycatalog.mp.microsoft.com`
+- `fe3.delivery.mp.microsoft.com`
+- `dl.delivery.mp.microsoft.com`
+- `tlu.dl.delivery.mp.microsoft.com`
+
+Signed download URLs and proxy credentials are not persisted. Diagnostic exports contain only closed event names, timestamps, version/architecture data, crash-recovery state, and the host allowlist. They omit URLs, tokens, proxy credentials, raw service responses, HRESULT values, and local paths. Use **Settings > Export diagnostics** to create a JSON report in the current user's Downloads directory.
+
+## Build from source
+
+Prerequisites:
+
+- Windows with the MSVC build tools for the target architecture
+- the stable Rust toolchain selected by `rust-toolchain.toml` (CI currently pins `1.98.1`)
+- Node.js 24 and pnpm `8.15.1`
+- WebView2 development/runtime prerequisites required by Tauri
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm test
+cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+pnpm build:release
+```
+
+Build one architecture without rerunning the full quality gate:
+
+```powershell
+./scripts/build-release.ps1 -Architecture x64 -SkipChecks
+./scripts/build-release.ps1 -Architecture arm64 -SkipChecks
+```
+
+The script verifies the main executable and Broker PE machine type and writes the installer, `SHA256SUMS.txt`, `BUILD-METADATA.json`, and `THIRD_PARTY_LICENSES.json` under `release-artifacts/<architecture>/`.
+
+See [the release guide](docs/release.md) for dual-architecture CI, hash publication, and upgrade/uninstall acceptance. See [diagnostics](docs/diagnostics.md) for the export contract.
 
 ## Development checks
 
 ```powershell
-pnpm install
 pnpm test
 pnpm exec playwright test
 pnpm build
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo check --manifest-path src-tauri/broker/Cargo.toml
 pnpm exec tauri build --debug --no-bundle
-pnpm tauri dev
 ```
 
-The deployment path keeps the Tauri main process at the Windows default `asInvoker` level. Current-user operations call `PackageManager` directly; all-users install, uninstall, and machine inventory use a one-shot `runas` Broker with a protected staging copy and bounded named-pipe protocol. It never launches PowerShell/winget. See [docs/support-matrix.md](docs/support-matrix.md) for the evidence boundary.
+## License status
 
-## Recommended IDE Setup
-
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+The repository does not currently declare a project distribution license. Do not mirror or redistribute source or binaries without maintainer permission. Third-party dependency license metadata is generated from the locked Cargo and pnpm graphs and bundled as `THIRD_PARTY_LICENSES.json`.

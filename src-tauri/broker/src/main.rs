@@ -127,61 +127,6 @@ fn validate_caller_image(server_pid: u32) -> Result<(), BrokerFailure> {
         return Err(BrokerFailure::new(5, "caller image path is not a file"));
     }
 
-    // Debug brokers are used by the local acceptance harness, whose test
-    // executable is intentionally unsigned. Release brokers fail closed on
-    // an unsigned or untrusted caller image.
-    if !cfg!(debug_assertions) {
-        verify_authenticode(&caller_path)?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn verify_authenticode(path: &std::path::Path) -> Result<(), BrokerFailure> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Security::WinTrust::{
-        WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0,
-        WINTRUST_FILE_INFO, WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_IGNORE, WTD_UI_NONE,
-    };
-
-    let wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let mut file_info = WINTRUST_FILE_INFO {
-        cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
-        pcwszFilePath: PCWSTR(wide.as_ptr()),
-        hFile: Default::default(),
-        pgKnownSubject: null_mut(),
-    };
-    let mut data = WINTRUST_DATA {
-        cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
-        dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_NONE,
-        dwUnionChoice: WTD_CHOICE_FILE,
-        Anonymous: WINTRUST_DATA_0 {
-            pFile: &mut file_info,
-        },
-        dwStateAction: WTD_STATEACTION_IGNORE,
-        ..Default::default()
-    };
-    let status = unsafe {
-        WinVerifyTrust(
-            HWND(null_mut()),
-            &WINTRUST_ACTION_GENERIC_VERIFY_V2 as *const _ as *mut _,
-            (&mut data as *mut WINTRUST_DATA).cast(),
-        )
-    };
-    if status != 0 {
-        return Err(BrokerFailure::new(
-            5,
-            format!("caller image signature rejected: 0x{status:08x}"),
-        ));
-    }
     Ok(())
 }
 

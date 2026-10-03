@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build && pnpm build:broker",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -18,12 +18,29 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": ["'self'"],
+        "img-src": ["'self'", "data:"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "script-src": ["'self'"],
+        "connect-src": ["ipc:", "http://ipc.localhost"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "frame-ancestors": ["'none'"]
+      }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "Yet Another Microsoft Store contributors",
+    "copyright": "Copyright (c) 2026 Yet Another Microsoft Store contributors",
+    "category": "Utility",
+    "shortDescription": "A Windows client for direct Microsoft Store package delivery.",
+    "longDescription": "Search, download, verify, install, update, and remove supported Microsoft Store packages with explicit safety and compatibility boundaries.",
+    "resources": {
+      "resources/THIRD_PARTY_LICENSES.json": "THIRD_PARTY_LICENSES.json"
+    },
     "externalBin": ["broker/deployment-broker"],
     "icon": [
       "icons/32x32.png",
@@ -31,6 +48,21 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": false,
+        "compression": "lzma",
+        "startMenuFolder": "Yet Another Microsoft Store",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
   }
 }

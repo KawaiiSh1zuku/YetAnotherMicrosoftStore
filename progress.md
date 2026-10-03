@@ -168,3 +168,17 @@
 - Task 6 于 2026-10-03 在 Windows 10 build 19045 x64 对 `9P7KNL5RWT25` / `US` / `en-US` 完成真实回环：解析 `Microsoft.SysinternalsSuite_8wekyb3d8bbwe` 版本 `2026.9.0.0` 的 neutral `.msixbundle`，下载 300,193,716 字节，校验 SHA-256、bundle identity 和 Microsoft 系统信任签名，经 durable worker 完成 CurrentUser 安装、精确后置清单、卸载与完整基线恢复。
 - 真实验收未导入/删除测试证书、未触发 UAC、未执行 AllUsers 或官方 Store 跨渠道更新；Windows PowerShell 5.1 独立复核 `Microsoft.SysinternalsSuite` 包计数为 0。PowerShell 7 的 Appx 模块加载失败未计入验收证据。
 - 最终回归通过：Rust 全目标 171 项通过、7 项显式环境测试 ignored，严格 Clippy、Broker check、`pnpm test` 10/10、`pnpm build`、Playwright 2/2、Tauri debug no-bundle 和 `git diff --check` 均通过。
+
+## M8 NSIS、双架构发布工程与诊断（2026-10-03）
+
+- 按用户指示跳过当前无法执行的 M7：本机 Microsoft Store 不可用，本轮未执行账户、Store 队列或跨渠道写操作，也未新增 E3 结论。
+- Tauri bundle 收敛为 NSIS，配置当前用户安装、禁止降级、WebView2 download bootstrapper、CSP、发布元数据和依赖许可证资源；产品运行时不依赖 PowerShell 或 winget。
+- 新增 `build-release.ps1`：按 x64/ARM64 显式目标构建 Release Broker 和主程序、复核 PE machine、生成 unsigned NSIS、SHA-256、构建元数据与架构独立目录；移除继承的 `TAURI_CONFIG`，固定 `signed:false`。
+- GitHub Actions 使用 `windows-2025` x64 与 `windows-11-arm` ARM64 原生 runner。PR/main/tag 使用同一 unsigned 路径，不读取证书 secrets，不导入证书。
+- 依赖许可证生成器从 locked Cargo/pnpm 图产生 591 条无本机路径、无 `UNKNOWN` 的记录；发布目录在每次架构构建前精确清空，避免旧安装器混入上传。
+- 新增默认关闭的封闭诊断：设置关闭时不持久化；开启后只写固定事件，64 KiB 轮转、最多导出 200 条，UUID 防覆盖，Windows mutex 保证单实例 session marker；导出不含 URL、token、路径、原始错误或服务响应。
+- 独立只读审查发现并推动修复错误版本字段、诊断开关失效、无界日志、旧工件混入、多实例 marker、导出覆盖和 README 证据夸大；用户随后取消签名/PFX 设计和结构正则测试脚本。
+- 当前全量结果：Rust 176 passed / 7 ignored，严格 Clippy、Broker check、Vitest 11/11、Playwright 2/2、Vite、Tauri debug no-bundle 与 PowerShell/YAML 静态解析通过。
+- 当前源码的本地 x64 unsigned NSIS 成功：3,561,882 bytes，SHA-256 `bbfefdc198ebce4a234eb96971441c1756ad288d9c4e6fc3d330c66a0ff1fe89`，独立重算一致，元数据为 `signed:false`、`dirty:true`。
+- 本机未安装 ARM64 MSVC/Rust target，且未推送当前未提交改动，因此没有运行 ARM64 workflow。ARM64 实际工件、checksum 发布、干净机安装/升级/卸载/AllUsers 回滚/WebView2/可访问性矩阵均保持开放，不宣称 M8 发布验收完成。
+- 按用户最终决策，Release Broker 不要求 unsigned 主程序的 Authenticode；仍保留父 PID/session/nonce/镜像路径、管道对端、受保护暂存、重解析点、包身份/哈希和 Microsoft 包签名检查。

@@ -2,7 +2,7 @@
 
 > 记录日期：2026-10-03
 >
-> 本文件记录 M0 基线、原生部署路径、M4 网络边界、M5 编排和 M6 单产品真实回环证据；不把该产品的 CurrentUser 实测扩展为普遍兼容、跨渠道更新、AllUsers 或 MSIXVC 能力。
+> 本文件记录 M0 基线、原生部署路径、M4 网络边界、M5 编排、M6 单产品真实回环和 M8 unsigned 发布工程证据；不把本地 x64 构建或该产品的 CurrentUser 实测扩展为 ARM64 工件、普遍兼容、跨渠道更新、AllUsers 实机回环或 MSIXVC 能力。
 
 ## 构建基线
 
@@ -34,7 +34,7 @@
 | 当前用户部署路径 | 已验收 | 非提权 Rust 测试完成安装、清单后置校验、卸载和缺失复核 |
 | 全用户部署/预配 | 已验收 | 一次性 `runas` Broker 完成 UAC、管理员暂存、stage/provision、机器清单、deprovision 和 `RemoveForAllUsers` |
 | PowerShell / winget 子进程 | 未使用 | M0 Rust 代码和 Tauri 配置没有 shell 调用 |
-| UAC broker 实际启动 | 已验收 | Broker manifest `requireAdministrator`、命名管道 ACL/帧协议、父 PID/session/nonce/镜像路径校验和 UAC 回环通过；Release Broker 额外执行 Authenticode 校验，Debug 验收允许未签名测试宿主 |
+| UAC broker 实际启动 | 已验收 | Broker manifest `requireAdministrator`、命名管道 ACL/帧协议、父 PID/session/nonce/镜像路径校验和 UAC 回环通过；按 unsigned 发布决策，Release/Debug 均不要求调用方 Authenticode |
 
 测试和桌面构建目标限定为 Windows；其他平台不属于产品支持范围。
 
@@ -75,13 +75,26 @@ M5 最终自动化结果包含 19 项聚焦测试；工作区全目标为 110 �
 | production URL 策略 | HTTP/HTTPS 精确白名单 | 仅 `dl.delivery.mp.microsoft.com`、`tlu.dl.delivery.mp.microsoft.com` 默认端口；拒绝其他主机、凭据、fragment 和非默认端口；下载强制大小与 SHA-256 |
 | 真实 Store CurrentUser 回环 | 已完成单产品 E2 | 2026-10-03，Windows 10 build 19045 x64，`9P7KNL5RWT25` / `US` / `en-US`，`Microsoft.SysinternalsSuite_8wekyb3d8bbwe` `2026.9.0.0`，neutral `.msixbundle`，300,193,716 字节 |
 | 签名与清理 | 已验证并恢复基线 | SHA-256、bundle identity、WinTrust 和 Windows 部署通过；未导入证书、未触发 UAC；卸载后 Windows PowerShell 5.1 复核目标包计数为 0 |
-| 最终自动化门 | 全部通过 | Rust 171 passed / 7 ignored，严格 Clippy、Broker check、Vitest 10/10、Playwright 2/2、前端构建和 Tauri debug no-bundle 通过 |
+| 最终自动化门 | 全部通过 | M6 记录为 Rust 171 passed / 7 ignored，严格 Clippy、Broker check、Vitest 10/10、Playwright 2/2、前端构建和 Tauri debug no-bundle 通过 |
 
 真实回环只证明上述产品、市场、语言、时间点、主机与 CurrentUser 范围。它没有使用官方 Store 队列，不证明官方 Store 可更新本客户端安装、AllUsers、付费/授权产品、其他架构/Windows 构建或通用代理互操作；这些仍属于 M7/M8 的独立验收门。
+
+## M8 发布工程与诊断
+
+| 能力 | 当前结论 | 证据边界 |
+|---|---|---|
+| NSIS 配置 | 本地 x64 未签名构建通过 | per-user、禁止降级和 WebView2 bootstrapper 已配置；尚未在干净机验证行为 |
+| 双架构构建 | x64 本地脚本通过；ARM64 CI 已配置 | 脚本复核主程序/Broker PE machine；`windows-11-arm` workflow 尚未实际运行，不能宣称已有 ARM64 工件 |
+| 发布真实性 | unsigned + SHA-256 | 项目不使用代码签名证书；tag 与普通 CI 路径一致，发布时必须同时提供 checksum 和 `BUILD-METADATA.json`，Windows 可能显示未知发布者 |
+| 诊断与恢复 | 封闭、默认关闭且有界 | 设置关闭时不持久化；开启后仅固定事件，64 KiB 轮转、最多导出 200 条、单实例 session marker，不含 URL/path/raw error |
+| 依赖许可 | 591 条锁定图记录已生成 | `THIRD_PARTY_LICENSES.json` 不含本机路径且无 `UNKNOWN`；项目自身仍未声明分发许可证 |
+| 本地 x64 工件 | 编译与独立哈希复核通过 | `0.1.0` setup 为 3,561,882 bytes，SHA-256 `bbfefdc198ebce4a234eb96971441c1756ad288d9c4e6fc3d330c66a0ff1fe89`，`signed:false`、dirty source |
+
+M8 当前是本地 E1 工程证据，不是发布验收。ARM64 实际工件、干净 x64/ARM64 哈希复核、安装/升级/降级拒绝/卸载、AllUsers 回滚、WebView2 与可访问性矩阵仍必须完成；M7 的跨渠道 E3 也保持延期且未通过。
 
 ## M0 停止条件
 
 - 真实验收只使用既有自签证书；脚本结束后按显式指纹清理证书存储并复核为零匹配。
 - 全用户安装必须通过 Broker，主进程不得永久提权。
 - 任何 `.msixvc`、Xbox、`.exe` 或 `.msi` 流程都必须停在能力门。
-- broker 的 M0 `validate()` 只校验请求形状，不能作为提权授权；实际 IPC/UAC 路径已补可信暂存目录、重解析点防护、身份/签名/哈希验证和安全文件打开。发布构建不得用 Debug Broker 替代 Release Broker。
+- broker 的 M0 `validate()` 只校验请求形状，不能作为提权授权；实际 IPC/UAC 路径保留父 PID/session/nonce/镜像路径、可信暂存目录、重解析点防护、包身份/签名/哈希验证和安全文件打开。发布构建不得用 Debug Broker 替代 Release Broker。

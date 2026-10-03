@@ -1,8 +1,8 @@
 [package]
 name = "yet-another-microsoft-store"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Windows client for direct Microsoft Store package delivery"
+authors = ["Yet Another Microsoft Store contributors"]
 edition = "2021"
 
 [features]

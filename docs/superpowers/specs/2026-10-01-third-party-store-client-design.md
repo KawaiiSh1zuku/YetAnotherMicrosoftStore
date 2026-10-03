@@ -470,7 +470,7 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 6. M5 安装/更新编排与身份关联：已完成 E1。复用 M0 部署基础，接入 verified 包图、WinTrust 预检、版本差异、Store 产品关联和部署后重扫，不重复实现 Broker；M6 的单产品回环进一步覆盖该编排的真实签名 CurrentUser E2。
 7. M6 Tauri API 与前端主流程：已完成 E1 加单产品 E2。schema v4 追加式事件日志、durable command inbox、generation-fenced 租约 worker、安全 DTO、13 个稳定命令和搜索/详情/队列/已安装/设置 UI 已实现；指定 Sysinternals Suite 包完成真实下载、安装和精确回滚。
 8. M7 跨渠道互操作验收：在指定测试产品/市场/账户上取得 E3 证据并验证不降级策略。
-9. M8 NSIS 与发布加固：干净机安装/升级/卸载、签名、诊断、网络白名单和可访问性回归。
+9. M8 NSIS 与发布加固：x64/ARM64 unsigned 工件、公开 SHA-256、干净机安装/升级/卸载、诊断、网络白名单和可访问性回归。
 10. M9 MSIXVC 研究门：第一阶段之后独立评估；未通过专门审批前不下载、不安装、不更新。
 
 ## 下一次评审待决策事项
@@ -480,7 +480,7 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 - 全用户安装成功后是否默认保留缓存包。
 - 付费产品和 Microsoft 账户认证是后续项目，还是永久不在范围内。
 - “官方 Store 更新第三方安装”是接受条件性兼容保证，还是必须建立逐产品认证矩阵。
-- Release Broker 和 NSIS 的代码签名证书、签名流水线与轮换策略。
+- unsigned installer 的未知发布者提示、checksum 展示和用户信任说明是否足够清晰。
 
 ## 当前执行门
 

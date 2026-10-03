@@ -5,6 +5,7 @@ import type {
   AppSettings,
   CatalogProduct,
   DeploymentScope,
+  DiagnosticExport,
   InventorySnapshot,
   JobChangedHint,
   JobControl,
@@ -55,6 +56,7 @@ export interface StoreClient {
   getSettings(): Promise<AppSettings>;
   updateSettings(settings: AppSettings): Promise<AppSettings>;
   clearCache(): Promise<void>;
+  exportDiagnostics(): Promise<DiagnosticExport>;
   subscribeJobChanges(listener: (hint: JobChangedHint) => void): Promise<UnlistenFn>;
 }
 
@@ -72,6 +74,7 @@ export const tauriClient: StoreClient = {
   getSettings: () => invoke("get_settings"),
   updateSettings: (settings) => invoke("update_settings", { settings }),
   clearCache: () => invoke("clear_cache"),
+  exportDiagnostics: () => invoke("export_diagnostics"),
   subscribeJobChanges: async (listener) =>
     listen<JobChangedHint>("job://changed", ({ payload }) => listener(payload)),
 };

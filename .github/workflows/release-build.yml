@@ -1,0 +1,66 @@
+name: release-build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Enable pnpm
+        shell: powershell
+        run: corepack enable; corepack prepare pnpm@8.15.1 --activate
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  bundle:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - architecture: arm64
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Enable pnpm
+        shell: powershell
+        run: corepack enable; corepack prepare pnpm@8.15.1 --activate
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build NSIS artifact
+        shell: powershell
+        run: ./scripts/build-release.ps1 -Architecture '${{ matrix.architecture }}' -SkipChecks
+      - uses: actions/upload-artifact@v7
+        with:
+          name: yet-another-microsoft-store-${{ matrix.architecture }}-unsigned
+          path: release-artifacts/${{ matrix.architecture }}/
+          if-no-files-found: error

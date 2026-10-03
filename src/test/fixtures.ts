@@ -84,6 +84,10 @@ export function createClient(overrides: Partial<StoreClient> = {}): StoreClient 
     getSettings: vi.fn().mockResolvedValue(settings),
     updateSettings: vi.fn().mockResolvedValue(settings),
     clearCache: vi.fn().mockResolvedValue(undefined),
+    exportDiagnostics: vi.fn().mockResolvedValue({
+      fileName: "yamstore-diagnostics-1.json",
+      destination: "downloads",
+    }),
     subscribeJobChanges: vi.fn().mockResolvedValue(() => undefined),
     ...overrides,
   };

@@ -30,6 +30,7 @@ test.beforeEach(async ({ page }) => {
       requestJobControl: async () => job, getJob: async () => job, listJobs: async () => [job],
       listJobEvents: async () => ({ events: [], nextCursor: null }), getSettings: async () => settings,
       updateSettings: async (next) => next, clearCache: async () => undefined,
+      exportDiagnostics: async () => ({ fileName: "yamstore-diagnostics-browser.json", destination: "downloads" }),
       subscribeJobChanges: async () => () => undefined,
     };
   });

@@ -126,7 +126,7 @@ Broker 不接受可执行文件路径、命令行、脚本、注册表修改、�
 - 启动、连接和单次请求均有超时；超时后关闭管道并终止本次协调状态，但不得强杀未知进程。
 - Broker 处理一个请求后立即退出，避免形成常驻高权限服务。
 
-发布构建中，Broker 必须验证发起进程映像路径、会话、发布者签名和预期产品身份。开发验收允许使用当前构建产物的精确 SHA-256 代替发布签名，但该开发模式必须由 debug 编译条件隔离，不能进入 release。
+Broker 必须验证发起进程 PID、映像路径、会话、nonce 和管道对端身份，但 unsigned Release/Debug 均不要求调用方 Authenticode。高权限操作仍只接受封闭协议，并继续验证受保护暂存边界、包身份、哈希和 Microsoft 包签名。
 
 ## 5. Broker 安全边界
 
@@ -251,7 +251,7 @@ Windows 10 路径不假设 Windows 11 的可选包原子预配能力。包含复
 ### 9.2 需要一次或多次 UAC 的 Windows 验收
 
 - UAC 取消返回 `ElevationCancelled`，没有包状态变化。
-- 错误 nonce、错误调用方哈希、越界路径、文件替换和身份不匹配均在部署前被拒绝。
+- 错误 nonce、错误调用方 PID/session/镜像路径、越界路径、文件替换和包身份不匹配均在部署前被拒绝。
 - 对项目合成测试包执行 stage → provision → machine scan。
 - 对同一测试包执行 deprovision → remove-for-all-users → current/machine/provisioned scan。
 - 记录每个阶段的 Package Family Name、Package Full Name、版本、HRESULT 和前后快照，但不记录私钥或完整用户 SID。

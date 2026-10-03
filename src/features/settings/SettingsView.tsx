@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Database, Globe2, Network, Palette } from "lucide-react";
+import { Database, Download, Globe2, Network, Palette } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -85,6 +85,15 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
     catch (value) { setError(localizeError(value)); }
   }
 
+  async function exportDiagnostics() {
+    setError(null);
+    setMessage(null);
+    try {
+      const exported = await client.exportDiagnostics();
+      setMessage(`诊断文件已保存到下载目录：${exported.fileName}`);
+    } catch (value) { setError(localizeError(value)); }
+  }
+
   if (!settings) return <section className="view">{loadError ? <div className="inline-alert" role="alert">{loadError}</div> : <div role="status">正在加载设置...</div>}</section>;
   return (
     <section className="view" aria-labelledby="settings-heading">
@@ -129,6 +138,7 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
             {(["light", "dark", "system"] as ThemeMode[]).map((value) => <button key={value} type="button" aria-pressed={theme === value} onClick={() => setValue("theme", value)}>{value === "light" ? "浅色" : value === "dark" ? "深色" : "跟随系统"}</button>)}
           </div>
           <label className="toggle-row"><span><strong>保存脱敏诊断</strong><small>不包含下载地址、凭据或本地路径</small></span><input type="checkbox" {...register("diagnosticsEnabled")} /></label>
+          <Button type="button" variant="secondary" onClick={exportDiagnostics}><Download aria-hidden="true" />导出诊断</Button>
         </SettingsSection>
 
         {error && <div className="inline-alert" role="alert">{error}</div>}

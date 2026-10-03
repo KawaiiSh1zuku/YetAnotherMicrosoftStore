@@ -19,7 +19,9 @@
 - M5：schema v3、verified 包图、WinTrust 预检、身份关联、严格版本决策与部署后收敛已完成 E1
 - M0-M5 计划匹配审查：已完成；M0 为受控 Windows E2，M1-M3/M5 为自动化 E1，M4 为 E1 加受控在线协议 smoke
 - M6：已完成；schema v4 追加式事件日志、durable command inbox、generation-fenced 租约 worker、安全 Tauri DTO、五视图前端和单产品 CurrentUser 真实回环均已验收
-- 产品代码：Tauri/Rust/React 主流程已串联 M1-M5 的协议、选择、下载/缓存、签名预检和原生部署边界；跨渠道更新、发布加固和 MSIXVC 仍分别受 M7-M9 门控
+- M7：按用户指示延期；当前验证机 Microsoft Store 不可用，未取得跨渠道 E3 证据
+- M8：发布工程实现完成本地 E1；x64 unsigned NSIS 已构建，ARM64 原生 GitHub runner 和干净机矩阵仍待执行；按用户决策不使用代码签名
+- 产品代码：Tauri/Rust/React 主流程已串联 M1-M5 的协议、选择、下载/缓存、签名预检和原生部署边界；跨渠道 E3、发布验收和 MSIXVC 仍分别受 M7-M9 门控
 
 ## 已确认决策
 
@@ -38,10 +40,10 @@
 
 ## 下一步门槛
 
-1. M7：用既有官方 Store 安装或更新同身份包，验证来源无关关联、防降级和跨渠道互操作；M6 单产品 CurrentUser 回环不替代该 E3 门。
-2. M7：扩展真实产品/市场/语言/架构矩阵，并继续以完整 Windows 清单而不是客户端数据库判定已安装状态。
-3. PAC/WPAD 保留为独立代理能力门；当前 system 模式只承诺 WinHTTP 当前用户静态代理配置。
-4. M8：完成 NSIS、Release Broker 签名、干净机安装/升级/卸载与发布诊断。
+1. M8：在 GitHub 原生 ARM64 runner 实际产出并核验 ARM64 unsigned 工件，tag 与普通 CI 使用同一无证书路径。
+2. M8：在干净 x64/ARM64 VM 完成哈希复核、WebView2、安装/升级/降级拒绝/卸载、AllUsers 回滚和可访问性矩阵。
+3. M7：验证机 Microsoft Store 恢复后，用明确产品/市场/账户矩阵补跨渠道 E3；M6 单产品 CurrentUser 回环和 M8 构建均不替代该门。
+4. PAC/WPAD 保留为独立代理能力门；当前 system 模式只承诺 WinHTTP 当前用户静态代理配置。
 
 ## M5 实施结果（2026-10-03）
 
@@ -71,6 +73,8 @@
 - M6 允许 `dl.delivery.mp.microsoft.com` 与 `tlu.dl.delivery.mp.microsoft.com` 的默认端口 HTTP/HTTPS 交付 URL；任何下载仍必须同时有期望大小和 SHA-256，重定向逐跳复核，其他主机、凭据、fragment 或非默认端口均拒绝。
 - 2026-10-03 在 Windows 10 build 19045 x64 上，以产品 `9P7KNL5RWT25`、市场 `US`、语言 `en-US` 完成真实 Microsoft 签名 `.msixbundle` CurrentUser 回环：下载 300,193,716 字节、校验 SHA-256/manifest/WinTrust、安装后精确清单验证、卸载并恢复原始零目标清单。未导入测试证书、未触发 UAC、未执行 AllUsers 或官方 Store 跨渠道更新。
 - M6 最终门通过：Rust 全目标 171 项通过、7 项显式环境测试 ignored，严格 Clippy、Broker check、前端构建、Tauri debug no-bundle、Vitest 10/10、Playwright 2/2 与 staged diff 检查均通过；单产品 E2 不扩展为 M7 E3 或普遍兼容声明。
+- M8 新增 NSIS-only 配置、WebView2 bootstrapper、x64/ARM64 构建脚本、原生双 runner GitHub Actions、SHA-256/构建元数据、依赖许可证清单和封闭诊断导出；删除无证书环境不需要的签名与结构正则测试脚本。
+- M8 当前证据仅包含本地 x64 unsigned NSIS 与自动化回归；ARM64 workflow、干净机安装/升级/卸载/AllUsers 回滚和官方 Store M7 均未执行，不构成发布验收。
 
 ## 约束
 

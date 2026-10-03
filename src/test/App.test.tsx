@@ -56,6 +56,21 @@ describe("M6 desktop workbench", () => {
     expect(client.updateSettings).not.toHaveBeenCalled();
   });
 
+  it("exports a redacted diagnostics report from settings", async () => {
+    const user = userEvent.setup();
+    const client = createClient();
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("heading", { name: "设置" });
+    await user.click(screen.getByRole("button", { name: "导出诊断" }));
+
+    expect(client.exportDiagnostics).toHaveBeenCalledOnce();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "诊断文件已保存到下载目录：yamstore-diagnostics-1.json",
+    );
+  });
+
   it("renders loading, empty, and localized safe error states", async () => {
     const user = userEvent.setup();
     let finishSearch: ((value: never[]) => void) | undefined;
