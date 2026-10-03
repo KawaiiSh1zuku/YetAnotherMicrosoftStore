@@ -12,8 +12,9 @@
 - [x] 编写正式设计规格
 - [x] 用户审阅并批准正式设计规格
 - [x] 基于获批规格编写实现计划并完成自检
-- [ ] 用户审阅实施计划
-- [ ] 获批后在当前会话连续执行重构、验证和暂存
+- [x] 用户审阅实施计划
+- [x] 在当前会话连续执行重构与 E0/E1 验证
+- [x] 审阅并暂存范围内文件，向用户交付 commit 命令
 
 ## 已确认决策
 
@@ -33,13 +34,13 @@
 - 新的 `task_plan.md`、`findings.md`、`progress.md`
 - `docs/archive/2026-10-03-pre-admin-runtime-redesign/`
 
-## 实现前门槛
+## 实现结果
 
-1. 用户审阅并批准文件级实施计划。
-2. 使用测试驱动顺序执行计划，不创建中间提交。
-3. 在修改生产代码前先添加失败回归测试。
-4. 不把构建、fixture 或静态 manifest 检查描述为真实 Store、CDN、部署或更新验收。
-5. 完成后显式暂存范围内文件，只提供 commit 命令而不提交。
+1. 主 EXE manifest 已静态提取并确认 `requireAdministrator`；Broker 源码、crate、IPC、sidecar 和构建路径已删除。
+2. 4 个旧 migration 已合并为唯一 `0001_initial.sql`，schema version 为 1。
+3. 搜索/详情、统一选包、机器范围清单、结构化更新扫描和 React 页面已经同步。
+4. E1：Rust 167 passed / 8 ignored，Clippy、Vitest 11/11、Playwright 2/2、前端 build 和 Tauri debug no-bundle 通过。
+5. E2/E3 未执行；历史 Broker 验收不继承到新架构。
 
 ## 已知风险
 

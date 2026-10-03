@@ -19,7 +19,6 @@ pub enum ErrorCode {
     DownloadUrlExpired,
     HashMismatch,
     SignatureInvalid,
-    ElevationCancelled,
     DeploymentDenied,
     DeploymentFailed,
     PackageInUse,
@@ -45,7 +44,6 @@ impl ErrorCode {
             Self::DownloadUrlExpired => "errors.downloadUrlExpired",
             Self::HashMismatch => "errors.hashMismatch",
             Self::SignatureInvalid => "errors.signatureInvalid",
-            Self::ElevationCancelled => "errors.elevationCancelled",
             Self::DeploymentDenied => "errors.deploymentDenied",
             Self::DeploymentFailed => "errors.deploymentFailed",
             Self::PackageInUse => "errors.packageInUse",
@@ -66,7 +64,6 @@ pub enum RetryAdvice {
     Never,
     Retry,
     ReResolve,
-    RequestElevation,
     ReconcileInventory,
 }
 
@@ -307,19 +304,8 @@ impl From<&ValidationError> for AppErrorDto {
 impl From<&CoordinatorError> for AppErrorDto {
     fn from(error: &CoordinatorError) -> Self {
         match error.code.as_str() {
-            "uac_cancelled" => {
-                Self::new(ErrorCode::ElevationCancelled, RetryAdvice::RequestElevation)
-            }
-            "inventory_access_denied"
-            | "caller_context_mismatch"
-            | "broker_rejected"
-            | "broker_invalid_request" => {
-                Self::new(ErrorCode::DeploymentDenied, RetryAdvice::Never)
-            }
-            "postcondition_missing"
-            | "postcondition_residual"
-            | "incomplete_inventory"
-            | "broker_invalid_snapshot" => {
+            "inventory_access_denied" => Self::new(ErrorCode::DeploymentDenied, RetryAdvice::Never),
+            "postcondition_missing" | "postcondition_residual" | "incomplete_inventory" => {
                 Self::new(ErrorCode::DeploymentFailed, RetryAdvice::ReconcileInventory)
             }
             "signature_invalid" => Self::new(ErrorCode::SignatureInvalid, RetryAdvice::Never),

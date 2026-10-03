@@ -21,10 +21,29 @@
 - 已取消 `git mv` 自动产生的本轮暂存状态；原先用户暂存的 `README.md` 保持不变。
 - 尚未修改产品代码、依赖、迁移或构建脚本。
 
-## 验证状态
+## 2026-10-03 实施阶段
+
+- 合并最终 schema 为 `src-tauri/migrations/0001_initial.sql`，删除旧 migration 和 elevation 字段。
+- 嵌入主 EXE `requireAdministrator` manifest，删除 Broker crate、协议、launcher、sidecar、复制脚本和任务级提升状态。
+- 将 CurrentUser/AllUsers 都路由到提升主进程的原生部署路径。
+- 增加统一 SelectionPreview、兼容架构回退和封闭拒绝原因。
+- 扩展目录 DTO、跨 SKU 格式汇总、搜索有界补全和精确图标白名单。
+- 扩展机器范围清单名称字段、稳定合并、partial 语义和更新范围推导。
+- 把更新扫描改为结构化结果，并加入 PFN 回查和 identity/publisher/PFN 核验。
+- 同步 React 搜索、详情、已安装、更新反馈与窄屏来源 badge；删除二次 UAC 文案。
+- 同步 README、support matrix、release、diagnostics，并为历史归档增加只读说明。
+
+## 最终验证状态
 
 - 归档完整性：6 份旧 superpowers 文档和 3 份根规划记录均已核对，行数合计 2012，归档正文未修改。
 - 文档占位符检查：通过；没有未决占位标记。
-- 实施计划状态：待用户审阅；按 `superpowers:writing-plans` 的强制门禁，批准前不修改生产代码。
-- 产品测试与构建：本阶段未修改产品代码，不在设计审阅前运行完整质量门。
-- 真实 Store/CDN/Windows 部署：本阶段未执行。
+- Rust 格式检查通过。
+- Rust `cargo test --lib --tests`：167 passed / 8 ignored；忽略项均要求显式 E2/E3 环境。
+- `cargo clippy --all-targets -- -D warnings` 通过。
+- Vitest 11/11、Playwright 2/2、TypeScript/Vite production build 通过。
+- `pnpm exec tauri build --debug --no-bundle` 通过；`mt.exe` 提取的主 EXE manifest 为 `requireAdministrator`。
+- 首次实际启动发现 `TaskDialogIndirect` 入口缺失；核对 Tauri 2.7.1 默认 manifest 后确认自定义 manifest 遗漏 Common Controls v6。添加回归测试和依赖声明、重建后，PE 资源同时包含 Common Controls 6.0.0.0 与 `requireAdministrator`。
+- 修复后的 debug EXE 实际启动并保持 8 秒响应，进程 `Responding=True`；非提升验证 shell 无权结束提升进程，需从应用窗口正常关闭。
+- 生产路径静态检索无 Broker/elevation 旧契约；migration 目录只有 `0001_initial.sql`；`git diff --check` 通过（仅行尾转换提示）。
+- `cargo test --all-targets` 因 Windows 拒绝直接启动要求提升的 bin test harness 返回 740；使用 `--lib --tests` 覆盖全部实际 Rust 测试，binary 编译由 Clippy/Tauri build 覆盖。
+- 真实 Store/CDN、UAC 取消、CurrentUser/AllUsers 可逆部署和 ARM64 验收未执行，不声明 E2/E3 通过。

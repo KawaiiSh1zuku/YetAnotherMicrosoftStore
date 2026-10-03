@@ -1,10 +1,8 @@
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    broker_launcher::{BrokerLaunchError, BrokerLauncher},
-    broker_protocol::{AllUsersRemovalRequest, BrokerOperation, BrokerPayload, BrokerRequest},
     deployment::{DeploymentScope, WindowsDeploymentBackend},
     inventory::{InventorySnapshot, WindowsInventory},
     package_validation::{verify_package_request, ValidationError, VerifiedPackageSet},
@@ -13,13 +11,13 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeploymentRoute {
     CurrentUserDirect,
-    AllUsersBroker,
+    AllUsersDirect,
 }
 
 pub fn route_for_scope(scope: DeploymentScope) -> DeploymentRoute {
     match scope {
         DeploymentScope::CurrentUser => DeploymentRoute::CurrentUserDirect,
-        DeploymentScope::AllUsers => DeploymentRoute::AllUsersBroker,
+        DeploymentScope::AllUsers => DeploymentRoute::AllUsersDirect,
     }
 }
 
@@ -45,13 +43,8 @@ impl DeploymentCoordinator {
             DeploymentRoute::CurrentUserDirect => {
                 WindowsInventory::scan_current_user().map_err(inventory_error)
             }
-            DeploymentRoute::AllUsersBroker => {
-                let response =
-                    BrokerLauncher::scan_all_users(scan_request()).map_err(broker_error)?;
-                serde_json::from_str(&response.message).map_err(|error| CoordinatorError {
-                    code: "broker_invalid_snapshot".to_owned(),
-                    message: error.to_string(),
-                })
+            DeploymentRoute::AllUsersDirect => {
+                WindowsInventory::scan_all_users().map_err(inventory_error)
             }
         }
     }
@@ -69,20 +62,12 @@ impl DeploymentCoordinator {
                 WindowsDeploymentBackend::install_current_user(package)
                     .map_err(deployment_error)?;
             }
-            DeploymentRoute::AllUsersBroker => {
-                let mut packages = Vec::with_capacity(1 + package.dependencies.len());
-                packages.push(package.main.clone());
-                packages.extend(package.dependencies.clone());
-                let request = BrokerRequest {
-                    protocol_version: crate::broker_protocol::BROKER_PROTOCOL_VERSION,
-                    request_id: uuid::Uuid::new_v4().to_string(),
-                    operation: BrokerOperation::InstallAllUsers,
-                    parent_pid: current_pid(),
-                    session_id: current_session(),
-                    nonce: uuid::Uuid::new_v4().to_string(),
-                    payload: BrokerPayload::Install { packages },
-                };
-                BrokerLauncher::install_all_users(request).map_err(broker_error)?;
+            DeploymentRoute::AllUsersDirect => {
+                let root = protected_root();
+                let result =
+                    WindowsDeploymentBackend::stage_and_provision_all_users(package, &root);
+                let _ = std::fs::remove_dir_all(&root);
+                result.map_err(deployment_error)?;
             }
         }
         let snapshot = Self::scan(scope)?;
@@ -121,22 +106,12 @@ impl DeploymentCoordinator {
                         .map_err(deployment_error)?;
                 }
             }
-            DeploymentRoute::AllUsersBroker => {
-                let request = BrokerRequest {
-                    protocol_version: crate::broker_protocol::BROKER_PROTOCOL_VERSION,
-                    request_id: uuid::Uuid::new_v4().to_string(),
-                    operation: BrokerOperation::UninstallAllUsers,
-                    parent_pid: current_pid(),
-                    session_id: current_session(),
-                    nonce: uuid::Uuid::new_v4().to_string(),
-                    payload: BrokerPayload::Uninstall {
-                        target: AllUsersRemovalRequest {
-                            package_family_name: package_family_name.to_owned(),
-                            package_full_names: package_full_names.to_vec(),
-                        },
-                    },
-                };
-                BrokerLauncher::uninstall_all_users(request).map_err(broker_error)?;
+            DeploymentRoute::AllUsersDirect => {
+                WindowsDeploymentBackend::deprovision_and_remove_all_users(
+                    package_family_name,
+                    package_full_names,
+                )
+                .map_err(deployment_error)?;
             }
         }
         let snapshot = Self::scan(scope)?;
@@ -154,15 +129,6 @@ impl DeploymentCoordinator {
     }
 }
 
-fn scan_request() -> BrokerRequest {
-    BrokerRequest::scan(
-        uuid::Uuid::new_v4().to_string(),
-        current_pid(),
-        current_session(),
-        uuid::Uuid::new_v4().to_string(),
-    )
-}
-
 fn ensure_complete(snapshot: &InventorySnapshot) -> Result<(), CoordinatorError> {
     if snapshot.complete {
         Ok(())
@@ -174,30 +140,13 @@ fn ensure_complete(snapshot: &InventorySnapshot) -> Result<(), CoordinatorError>
     }
 }
 
-fn current_pid() -> u32 {
-    #[cfg(windows)]
-    {
-        unsafe { windows::Win32::System::Threading::GetCurrentProcessId() }
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::id()
-    }
-}
-
-fn current_session() -> u32 {
-    #[cfg(windows)]
-    {
-        let mut session = 0;
-        if unsafe {
-            windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(current_pid(), &mut session)
-        }
-        .is_ok()
-        {
-            return session;
-        }
-    }
-    1
+fn protected_root() -> PathBuf {
+    let base = std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+    base.join("YetAnotherMicrosoftStore")
+        .join("Staging")
+        .join(format!("{}-{}", std::process::id(), uuid::Uuid::new_v4()))
 }
 
 fn inventory_error(error: crate::inventory::InventoryError) -> CoordinatorError {
@@ -215,23 +164,6 @@ fn inventory_error(error: crate::inventory::InventoryError) -> CoordinatorError 
 fn deployment_error(error: crate::deployment::DeploymentError) -> CoordinatorError {
     CoordinatorError {
         code: "deployment_failed".to_owned(),
-        message: error.to_string(),
-    }
-}
-
-fn broker_error(error: BrokerLaunchError) -> CoordinatorError {
-    CoordinatorError {
-        code: match error {
-            BrokerLaunchError::UacCancelled => "uac_cancelled",
-            BrokerLaunchError::CallerContextMismatch => "caller_context_mismatch",
-            BrokerLaunchError::Timeout => "broker_timeout",
-            BrokerLaunchError::UnsupportedPlatform => "unsupported_platform",
-            BrokerLaunchError::InvalidRequest(_) => "broker_invalid_request",
-            BrokerLaunchError::BrokerRejected => "broker_rejected",
-            BrokerLaunchError::BrokerUnavailable => "broker_unavailable",
-            BrokerLaunchError::PipeFailure => "broker_pipe_failure",
-        }
-        .to_owned(),
         message: error.to_string(),
     }
 }

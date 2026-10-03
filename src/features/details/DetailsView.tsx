@@ -21,6 +21,7 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
   const [scope, setScope] = useState<DeploymentScope>("current_user");
   const [status, setStatus] = useState<"loading" | "ready" | "starting" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [iconFailed, setIconFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -61,10 +62,12 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
         <ArrowLeft aria-hidden="true" size={18} /> 返回搜索结果
       </Button>
       <header className="details-header">
-        <div className="app-glyph app-glyph--large" aria-hidden="true">{product.title.slice(0, 2).toUpperCase()}</div>
+        {(details?.iconUrl ?? product.iconUrl) && !iconFailed
+          ? <img className="app-glyph app-glyph--large app-icon" src={details?.iconUrl ?? product.iconUrl ?? ""} alt="" onError={() => setIconFailed(true)} />
+          : <div className="app-glyph app-glyph--large" aria-hidden="true">{product.appName.slice(0, 2).toUpperCase()}</div>}
         <div>
           <p className="eyebrow">应用详情</p>
-          <h1 id="details-heading">{product.title}</h1>
+          <h1 id="details-heading">{details?.appName ?? product.appName}</h1>
           <p>{product.publisher ?? "发布者未提供"}</p>
         </div>
       </header>
@@ -76,17 +79,25 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
           <div className="fact-strip" aria-label="应用安装信息">
             <div><span>市场</span><strong>{details.market}</strong></div>
             <div><span>语言</span><strong>{details.language}</strong></div>
-            <div><span>架构</span><strong>{details.supportedArchitectures.join(", ") || "自动"}</strong></div>
-            <div><span>格式</span><strong>{details.packageFormats.join(", ") || "待解析"}</strong></div>
+            <div><span>架构</span><strong>{details.selectionPreview.main?.architecture ?? "不可用"}</strong></div>
+            <div><span>格式</span><strong>{details.selectionPreview.main?.format ?? (details.packageFormats.join(", ") || "待解析")}</strong></div>
           </div>
+
+          <div className="identity-grid" aria-label="应用身份">
+            <div><span>应用名</span><strong title={details.appName}>{details.appName}</strong></div>
+            <div><span>包名</span><strong title={details.packageName ?? ""}>{details.packageName ?? "待解析"}</strong></div>
+            <div><span>PFN</span><strong title={details.packageFamilyName ?? ""}>{details.packageFamilyName ?? "待解析"}</strong></div>
+            <div><span>发布者</span><strong title={details.publisher ?? ""}>{details.publisher ?? "未提供"}</strong></div>
+          </div>
+          {!details.selectionPreview.installable && <div className="inline-alert" role="status">{selectionRejection(details.selectionPreview.rejectionReason)}</div>}
 
           <section className="details-section" aria-labelledby="install-options-heading">
             <div>
               <h2 id="install-options-heading">安装范围</h2>
-              <p>当前用户安装不会更改其他 Windows 账户。</p>
+              <p>当前管理员账户安装不会更改其他 Windows 账户。</p>
             </div>
             <div className="segmented-control" aria-label="安装范围">
-              <button type="button" aria-pressed={scope === "current_user"} onClick={() => setScope("current_user")}>当前用户</button>
+              <button type="button" aria-pressed={scope === "current_user"} onClick={() => setScope("current_user")}>当前管理员账户</button>
               <button type="button" aria-pressed={scope === "all_users"} onClick={() => setScope("all_users")}>所有用户</button>
             </div>
           </section>
@@ -98,16 +109,31 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
 
           <div className="details-actions">
             <ConfirmDialog
-              trigger={<Button variant="primary" disabled={status === "starting"}><Download aria-hidden="true" size={18} />安装</Button>}
-              title={`安装 ${product.title}`}
-              description={scope === "all_users" ? "Windows 将请求管理员授权，并为所有用户部署此应用。" : "应用将安装到当前 Windows 用户。下载与验证会在后台继续。"}
+              trigger={<Button variant="primary" disabled={status === "starting" || !details.selectionPreview.installable}><Download aria-hidden="true" size={18} />安装</Button>}
+              title={`安装 ${product.appName}`}
+              description={scope === "all_users" ? "应用将为所有用户部署。" : "应用将安装到当前管理员账户。下载与验证会在后台继续。"}
               confirmLabel="确认安装"
               onConfirm={install}
             />
-            {scope === "all_users" && <Badge>需要管理员授权</Badge>}
+            {scope === "all_users" && <Badge>所有用户</Badge>}
           </div>
         </>
       )}
     </section>
   );
+}
+
+function selectionRejection(reason: AppDetails["selectionPreview"]["rejectionReason"]): string {
+  const labels = {
+    market: "当前市场不可用。",
+    operating_system: "当前 Windows 版本不满足要求。",
+    format: "当前系统不支持此包格式。",
+    architecture: "没有与当前设备兼容的架构。",
+    language_resource: "缺少可用的语言资源。",
+    dependency: "缺少必需依赖。",
+    package_not_installed: "未找到可更新的已安装包。",
+    version: "已安装版本不低于目录版本。",
+    no_compatible_package: "没有可用的兼容安装包。",
+  } as const;
+  return reason ? labels[reason] : "没有可用的兼容安装包。";
 }

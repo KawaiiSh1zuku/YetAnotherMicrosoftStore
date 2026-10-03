@@ -3,7 +3,7 @@ use std::{fmt, path::Path};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    broker_protocol::PackageIdentity,
+    package::PackageIdentity,
     package_validation::{
         copy_and_verify_to_protected_root, verify_package_signature, VerifiedPackageSet,
     },
@@ -18,7 +18,6 @@ pub enum DeploymentScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CapabilityStatus {
     Available,
-    RequiresElevation,
     Unsupported,
 }
 
@@ -74,12 +73,11 @@ impl WindowsDeploymentBackend {
             Ok(DeploymentProbe {
                 package_manager: CapabilityStatus::Available,
                 current_user: CapabilityStatus::Available,
-                all_users: CapabilityStatus::RequiresElevation,
+                all_users: CapabilityStatus::Available,
                 notes: vec![
                     "PackageManager activation succeeded; no package was installed by the probe."
                         .to_owned(),
-                    "All-users deployment remains gated behind a reviewed broker/UAC path."
-                        .to_owned(),
+                    "The elevated application process can perform all-users deployment.".to_owned(),
                 ],
             })
         }

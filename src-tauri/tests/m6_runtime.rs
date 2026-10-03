@@ -75,7 +75,7 @@ impl RuntimeFixture {
             .upsert_product(&ProductRecord {
                 product_id: "9NBLGGH4NNS1".to_owned(),
                 package_family_name: Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned()),
-                title: Some("Windows Terminal".to_owned()),
+                app_name: Some("Windows Terminal".to_owned()),
                 publisher: Some("Microsoft Corporation".to_owned()),
                 market: "US".to_owned(),
                 languages: vec!["en-US".to_owned()],
@@ -351,12 +351,16 @@ fn detail_architectures_reuse_os_format_and_architecture_applicability() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn update_scan_skips_unassociated_system_packages_without_network_access() {
+#[ignore = "requires live Store catalog access for PFN association"]
+async fn update_scan_associates_machine_packages_by_pfn() {
     let fixture = RuntimeFixture::new();
     let updates = fixture
         .backend()
         .scan_updates()
         .await
         .expect("unassociated packages are not update candidates");
-    assert!(updates.is_empty());
+    assert!(updates.candidates.is_empty());
+    assert!(updates.scanned_main_packages > 0);
+    assert!(!updates.skipped.is_empty());
+    assert!(!updates.complete);
 }

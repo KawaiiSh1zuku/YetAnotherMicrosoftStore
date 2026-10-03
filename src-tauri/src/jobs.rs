@@ -18,7 +18,6 @@ pub enum JobStage {
     Downloading,
     Paused,
     Verifying,
-    AwaitingElevation,
     Deploying,
     Interrupted,
     NeedsReconciliation,
@@ -70,7 +69,6 @@ pub struct Job {
     pub version: Option<String>,
     pub architecture: Option<Architecture>,
     pub language: Option<String>,
-    pub requires_elevation: bool,
     pub error: Option<AppErrorDto>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -104,8 +102,7 @@ impl Job {
             JobStage::Resolving
             | JobStage::Selecting
             | JobStage::Downloading
-            | JobStage::Verifying
-            | JobStage::AwaitingElevation => (JobStage::Interrupted, RecoveryAction::ReResolve),
+            | JobStage::Verifying => (JobStage::Interrupted, RecoveryAction::ReResolve),
             JobStage::Deploying => (
                 JobStage::NeedsReconciliation,
                 RecoveryAction::ReconcileInventory,
@@ -139,16 +136,11 @@ impl JobStage {
             }
             Self::Verifying => matches!(
                 next,
-                Self::AwaitingElevation
-                    | Self::Deploying
+                Self::Deploying
                     | Self::Completed
                     | Self::Failed
                     | Self::Cancelled
                     | Self::Interrupted
-            ),
-            Self::AwaitingElevation => matches!(
-                next,
-                Self::Deploying | Self::Failed | Self::Cancelled | Self::Interrupted
             ),
             Self::Deploying => matches!(
                 next,

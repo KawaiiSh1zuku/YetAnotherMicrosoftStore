@@ -5582,16 +5582,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yet-another-microsoft-store-deployment-broker"
-version = "0.1.0"
-dependencies = [
- "embed-resource",
- "serde_json",
- "windows",
- "yet-another-microsoft-store",
-]
-
-[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

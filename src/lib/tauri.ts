@@ -11,7 +11,7 @@ import type {
   JobControl,
   JobEventPage,
   JobSnapshot,
-  UpdateCandidate,
+  UpdateScanResult,
 } from "./types";
 
 export interface SearchRequest {
@@ -46,7 +46,7 @@ export interface StoreClient {
   searchApps(request: SearchRequest): Promise<CatalogProduct[]>;
   getAppDetails(request: DetailsRequest): Promise<AppDetails>;
   scanInstalledPackages(scope: DeploymentScope): Promise<InventorySnapshot>;
-  scanUpdates(): Promise<UpdateCandidate[]>;
+  scanUpdates(): Promise<UpdateScanResult>;
   startInstall(request: StartJobRequest): Promise<JobSnapshot>;
   startUpdate(request: StartJobRequest): Promise<JobSnapshot>;
   requestJobControl(request: JobControlRequest): Promise<JobSnapshot>;

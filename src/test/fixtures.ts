@@ -11,8 +11,11 @@ import type { StoreClient } from "../lib/tauri";
 export const catalogProduct: CatalogProduct = {
   productId: "9NBLGGH4NNS1",
   packageFamilyName: "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
-  title: "Windows Terminal",
+  appName: "Windows Terminal",
+  packageName: "Microsoft.WindowsTerminal",
   publisher: "Microsoft Corporation",
+  iconUrl: "https://store-images.s-microsoft.com/image.png",
+  metadataState: "complete",
   packageFormats: ["msixbundle"],
   frameworkDependencies: [],
 };
@@ -22,6 +25,12 @@ export const appDetails: AppDetails = {
   market: "US",
   language: "en-US",
   supportedArchitectures: ["x64", "arm64"],
+  selectionPreview: {
+    installable: true,
+    main: { version: "1.2.3.4", architecture: "x64", format: "msix_bundle", language: "en-US" },
+    dependencyCount: 1,
+    rejectionReason: null,
+  },
 };
 
 export const job: JobSnapshot = {
@@ -29,14 +38,13 @@ export const job: JobSnapshot = {
   sequence: 4,
   productId: catalogProduct.productId,
   packageFamilyName: catalogProduct.packageFamilyName,
-  title: catalogProduct.title,
+  title: catalogProduct.appName,
   stage: "downloading",
   bytesDone: 25,
   bytesTotal: 100,
   version: null,
   architecture: "x64",
   language: "en-US",
-  requiresElevation: false,
   allowedControls: ["pause", "cancel"],
   error: null,
   updatedAt: 20,
@@ -74,7 +82,13 @@ export function createClient(overrides: Partial<StoreClient> = {}): StoreClient 
     searchApps: vi.fn().mockResolvedValue([catalogProduct]),
     getAppDetails: vi.fn().mockResolvedValue(appDetails),
     scanInstalledPackages: vi.fn().mockResolvedValue(inventory),
-    scanUpdates: vi.fn().mockResolvedValue([]),
+    scanUpdates: vi.fn().mockResolvedValue({
+      scannedMainPackages: 0,
+      associatedPackages: 0,
+      candidates: [],
+      skipped: [],
+      complete: true,
+    }),
     startInstall: vi.fn().mockResolvedValue(job),
     startUpdate: vi.fn().mockResolvedValue(job),
     requestJobControl: vi.fn().mockResolvedValue(job),

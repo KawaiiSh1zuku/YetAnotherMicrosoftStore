@@ -21,13 +21,8 @@ use crate::{
     jobs::{Job, JobKind, JobSnapshot, JobStage, RecoveryAction},
 };
 
-const CURRENT_SCHEMA_VERSION: i64 = 4;
-const MIGRATIONS: &[(i64, &str)] = &[
-    (1, include_str!("../migrations/0001_m2.sql")),
-    (2, include_str!("../migrations/0002_m3_applicability.sql")),
-    (3, include_str!("../migrations/0003_m5_identity.sql")),
-    (4, include_str!("../migrations/0004_m6_job_events.sql")),
-];
+const CURRENT_SCHEMA_VERSION: i64 = 1;
+const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_initial.sql"))];
 
 #[derive(Debug)]
 pub enum PersistenceError {
@@ -114,11 +109,11 @@ impl Persistence {
         let languages = serde_json::to_string(&product.languages)?;
         self.connection.execute(
             "INSERT INTO products (
-                product_id, package_family_name, title, publisher, market, languages_json, updated_at
+                product_id, package_family_name, app_name, publisher, market, languages_json, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(product_id) DO UPDATE SET
                 package_family_name = excluded.package_family_name,
-                title = excluded.title,
+                app_name = excluded.app_name,
                 publisher = excluded.publisher,
                 market = excluded.market,
                 languages_json = excluded.languages_json,
@@ -126,7 +121,7 @@ impl Persistence {
             params![
                 product.product_id,
                 product.package_family_name,
-                product.title,
+                product.app_name,
                 product.publisher,
                 product.market,
                 languages,
@@ -149,7 +144,7 @@ impl Persistence {
         let row: Option<Row> = self
             .connection
             .query_row(
-                "SELECT product_id, package_family_name, title, publisher, market,
+                "SELECT product_id, package_family_name, app_name, publisher, market,
                         languages_json, updated_at
                  FROM products WHERE product_id = ?1",
                 [product_id],
@@ -167,11 +162,19 @@ impl Persistence {
             )
             .optional()?;
         row.map(
-            |(product_id, package_family_name, title, publisher, market, languages, updated_at)| {
+            |(
+                product_id,
+                package_family_name,
+                app_name,
+                publisher,
+                market,
+                languages,
+                updated_at,
+            )| {
                 Ok(ProductRecord {
                     product_id,
                     package_family_name,
-                    title,
+                    app_name,
                     publisher,
                     market,
                     languages: serde_json::from_str(&languages)?,
@@ -510,7 +513,7 @@ impl Persistence {
             "SELECT job_id, kind, product_id, requested_market,
                     requested_architectures_json, requested_languages_json, deployment_scope,
                     selected_update_id, package_family_name, stage, bytes_done, bytes_total,
-                    version, architecture, language, requires_elevation, error_json,
+                    version, architecture, language, error_json,
                     created_at, updated_at
              FROM jobs ORDER BY job_id",
         )?;
@@ -886,47 +889,8 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
     {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(sql)?;
-        if *migration_version == 4 {
-            backfill_job_events(&transaction)?;
-        }
         transaction.pragma_update(None, "user_version", migration_version)?;
         transaction.commit()?;
-    }
-    Ok(())
-}
-
-fn backfill_job_events(connection: &Connection) -> Result<(), PersistenceError> {
-    let mut statement = connection.prepare(
-        "SELECT job_id, kind, product_id, requested_market,
-                requested_architectures_json, requested_languages_json, deployment_scope,
-                selected_update_id, package_family_name, stage, bytes_done, bytes_total,
-                version, architecture, language, requires_elevation, error_json,
-                created_at, updated_at FROM jobs ORDER BY job_id",
-    )?;
-    let rows = statement
-        .query_map([], read_job_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    for row in rows {
-        let job = Job::try_from(row)?;
-        let event = JobEvent::Imported { job: job.clone() };
-        event.fold(None, job.updated_at, true)?;
-        connection.execute(
-            "INSERT INTO job_events
-             (job_id, sequence, event_kind, payload_json, projection_json, occurred_at)
-             VALUES (?1, 1, 'imported', ?2, ?3, ?4)",
-            params![
-                job.job_id,
-                serde_json::to_string(&event)?,
-                serde_json::to_string(&job)?,
-                job.updated_at
-            ],
-        )?;
-        save_job_projection(connection, &job)?;
-        connection.execute(
-            "UPDATE jobs SET event_sequence = 1 WHERE job_id = ?1",
-            [&job.job_id],
-        )?;
     }
     Ok(())
 }
@@ -943,10 +907,10 @@ pub(crate) fn save_job_projection(
             job_id, kind, product_id, requested_market, requested_architectures_json,
             requested_languages_json, deployment_scope, selected_update_id,
             package_family_name, stage, bytes_done, bytes_total, version, architecture,
-            language, requires_elevation, error_json, created_at, updated_at
+            language, error_json, created_at, updated_at
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-            ?17, ?18, ?19
+            ?17, ?18
          )
          ON CONFLICT(job_id) DO UPDATE SET
             kind = excluded.kind,
@@ -963,7 +927,6 @@ pub(crate) fn save_job_projection(
             version = excluded.version,
             architecture = excluded.architecture,
             language = excluded.language,
-            requires_elevation = excluded.requires_elevation,
             error_json = excluded.error_json,
             updated_at = excluded.updated_at",
         params![
@@ -984,7 +947,6 @@ pub(crate) fn save_job_projection(
             job.version,
             job.architecture.map(enum_text).transpose()?,
             job.language,
-            i64::from(job.requires_elevation),
             error_json,
             job.created_at,
             job.updated_at
@@ -1002,7 +964,7 @@ pub(crate) fn load_job(
             "SELECT job_id, kind, product_id, requested_market,
                 requested_architectures_json, requested_languages_json, deployment_scope,
                 selected_update_id, package_family_name, stage, bytes_done, bytes_total,
-                version, architecture, language, requires_elevation, error_json,
+                version, architecture, language, error_json,
                 created_at, updated_at FROM jobs WHERE job_id = ?1",
             [job_id],
             read_job_row,
@@ -1167,7 +1129,6 @@ struct JobRow {
     version: Option<String>,
     architecture: Option<String>,
     language: Option<String>,
-    requires_elevation: i64,
     error_json: Option<String>,
     created_at: i64,
     updated_at: i64,
@@ -1190,10 +1151,9 @@ fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         version: row.get(12)?,
         architecture: row.get(13)?,
         language: row.get(14)?,
-        requires_elevation: row.get(15)?,
-        error_json: row.get(16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
+        error_json: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 
@@ -1226,15 +1186,6 @@ impl TryFrom<JobRow> for Job {
                 .map(|value| parse_enum::<Architecture>(&value, "job.architecture"))
                 .transpose()?,
             language: row.language,
-            requires_elevation: match row.requires_elevation {
-                0 => false,
-                1 => true,
-                _ => {
-                    return Err(PersistenceError::InvalidStoredValue(
-                        "job.requires_elevation",
-                    ))
-                }
-            },
             error: row
                 .error_json
                 .map(|value| serde_json::from_str::<AppErrorDto>(&value))

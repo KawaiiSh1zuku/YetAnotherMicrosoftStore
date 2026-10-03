@@ -63,10 +63,21 @@ impl From<DeviceFamily> for storelib_rs::DeviceFamily {
 pub struct CatalogProduct {
     pub product_id: String,
     pub package_family_name: Option<String>,
-    pub title: Option<String>,
+    pub app_name: Option<String>,
+    pub package_name: Option<String>,
     pub publisher: Option<String>,
+    pub package_publisher: Option<String>,
+    pub icon_url: Option<String>,
+    pub metadata_state: CatalogMetadataState,
     pub package_formats: Vec<String>,
     pub framework_dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogMetadataState {
+    Complete,
+    Partial,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,19 +258,19 @@ fn normalize_product(product: &storelib_rs::Product) -> Result<CatalogProduct, C
         .filter(|id| !id.trim().is_empty())
         .ok_or(CatalogError::MissingField("productId"))?;
 
-    let sku_properties = product
+    let packages = product
         .display_sku_availabilities
         .as_deref()
-        .and_then(|availabilities| availabilities.first())
-        .and_then(|availability| availability.sku.as_ref())
-        .and_then(|sku| sku.properties.as_ref());
-    let packages = sku_properties
-        .and_then(|properties| properties.packages.as_deref())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|availability| availability.sku.as_ref())
+        .filter_map(|sku| sku.properties.as_ref())
+        .flat_map(|properties| properties.packages.as_deref().unwrap_or_default())
+        .collect::<Vec<_>>();
 
     let mut package_formats = Vec::new();
     let mut framework_dependencies = Vec::new();
-    for package in packages {
+    for package in &packages {
         if let Some(url) = package.package_uri.as_deref() {
             validate_download_url(url, "packageUri")?;
         }
@@ -286,31 +297,105 @@ fn normalize_product(product: &storelib_rs::Product) -> Result<CatalogProduct, C
         }
     }
 
+    let package_family_name = product
+        .properties
+        .as_ref()
+        .and_then(|properties| properties.package_family_name.clone())
+        .or_else(|| {
+            packages
+                .iter()
+                .find_map(|package| package.package_family_name.clone())
+        });
+    let package_name = product
+        .properties
+        .as_ref()
+        .and_then(|properties| properties.package_identity_name.clone())
+        .or_else(|| {
+            package_family_name
+                .as_deref()
+                .and_then(|family| family.rsplit_once('_').map(|(name, _)| name.to_owned()))
+        });
+    let app_name = product
+        .localized_properties
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find_map(|property| nonempty(property.product_title.as_deref()))
+        .map(str::to_owned)
+        .or_else(|| nonempty(product.title.as_deref()).map(str::to_owned));
+    let publisher = product
+        .localized_properties
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find_map(|property| nonempty(property.publisher_name.as_deref()))
+        .map(str::to_owned);
+    let package_publisher = product
+        .properties
+        .as_ref()
+        .and_then(|properties| properties.publisher_certificate_name.clone());
+    let icon_url = product
+        .icon
+        .as_deref()
+        .and_then(|url| normalize_catalog_icon_url(url).ok())
+        .or_else(|| {
+            product
+                .localized_properties
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|property| property.images.as_deref().unwrap_or_default())
+                .filter_map(|image| image.uri.as_deref())
+                .find_map(|url| normalize_catalog_icon_url(url).ok())
+        });
+    let metadata_state = if app_name.is_some()
+        && package_name.is_some()
+        && package_family_name.is_some()
+        && publisher.is_some()
+        && !package_formats.is_empty()
+    {
+        CatalogMetadataState::Complete
+    } else {
+        CatalogMetadataState::Partial
+    };
+
     Ok(CatalogProduct {
         product_id,
-        package_family_name: product
-            .properties
-            .as_ref()
-            .and_then(|properties| properties.package_family_name.clone())
-            .or_else(|| {
-                packages
-                    .iter()
-                    .find_map(|package| package.package_family_name.clone())
-            }),
-        title: product
-            .localized_properties
-            .as_deref()
-            .and_then(|properties| properties.first())
-            .and_then(|property| property.product_title.clone())
-            .or_else(|| product.title.clone()),
-        publisher: product
-            .localized_properties
-            .as_deref()
-            .and_then(|properties| properties.first())
-            .and_then(|property| property.publisher_name.clone()),
+        package_family_name,
+        app_name,
+        package_name,
+        publisher,
+        package_publisher,
+        icon_url,
+        metadata_state,
         package_formats,
         framework_dependencies,
     })
+}
+
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+pub fn normalize_catalog_icon_url(value: &str) -> Result<String, CatalogError> {
+    let candidate = if value.starts_with("//") {
+        format!("https:{value}")
+    } else {
+        value.to_owned()
+    };
+    let parsed = reqwest::Url::parse(&candidate)
+        .map_err(|_| CatalogError::InvalidUrl { field: "iconUrl" })?;
+    let valid = parsed.scheme() == "https"
+        && parsed.host_str() == Some("store-images.s-microsoft.com")
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.port().is_none()
+        && parsed.fragment().is_none();
+    if valid {
+        Ok(parsed.into())
+    } else {
+        Err(CatalogError::InvalidUrl { field: "iconUrl" })
+    }
 }
 
 fn validate_download_url(value: &str, field: &'static str) -> Result<(), CatalogError> {

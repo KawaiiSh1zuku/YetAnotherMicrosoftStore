@@ -51,17 +51,37 @@ function Assert-TargetMachine([string]$Path, [string]$Arch) {
     if ($actual -ne $expected) { throw "Unexpected PE machine 0x$($actual.ToString('x4')) for $Path" }
 }
 
+function Find-ManifestTool {
+    $command = Get-Command mt.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+    $candidate = Get-ChildItem -LiteralPath $kits -Filter mt.exe -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\x64\\mt\.exe$' } |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1
+    if (-not $candidate) { throw 'Windows manifest tool mt.exe was not found' }
+    return $candidate.FullName
+}
+
+function Assert-RequireAdministrator([string]$Path) {
+    $manifestPath = Join-Path $env:TEMP ("yamstore-manifest-{0}.xml" -f [guid]::NewGuid().ToString('N'))
+    try {
+        Invoke-Checked (Find-ManifestTool) @('-nologo', "-inputresource:$Path;#1", "-out:$manifestPath")
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw
+        if ($manifest -notmatch 'requestedExecutionLevel\s+level="requireAdministrator"\s+uiAccess="false"') {
+            throw "Main executable does not require administrator privileges: $Path"
+        }
+    } finally {
+        Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Build-Architecture([string]$Arch) {
     $target = $targetByArchitecture[$Arch]
     $installedTargets = & rustup target list --installed
     if ($installedTargets -notcontains $target) {
         throw "Rust target $target is not installed. Run: rustup target add $target"
     }
-
-    Invoke-Checked cargo @('build', '--locked', '--release', '--target', $target, '--manifest-path', 'src-tauri/broker/Cargo.toml')
-    $brokerSource = Join-Path $repoRoot "src-tauri/target/$target/release/deployment-broker.exe"
-    Assert-TargetMachine $brokerSource $Arch
-    & (Join-Path $PSScriptRoot 'copy-broker.ps1') -TargetTriple $target -Profile release
 
     $previousTauriConfig = $env:TAURI_CONFIG
     try {
@@ -75,10 +95,12 @@ function Build-Architecture([string]$Arch) {
     }
 
     $mainExecutable = Join-Path $repoRoot "src-tauri/target/$target/release/yet-another-microsoft-store.exe"
-    $sidecar = Join-Path $repoRoot "src-tauri/broker/deployment-broker-$target.exe"
     Assert-TargetMachine $mainExecutable $Arch
-    Assert-TargetMachine $sidecar $Arch
+    Assert-RequireAdministrator $mainExecutable
     $bundleRoot = Join-Path $repoRoot "src-tauri/target/$target/release/bundle/nsis"
+    $brokerArtifacts = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -File |
+        Where-Object { $_.Name -match 'broker' })
+    if ($brokerArtifacts.Count -ne 0) { throw 'Release bundle contains a Broker artifact' }
     $installers = @(Get-ChildItem -LiteralPath $bundleRoot -Filter '*-setup.exe' -File |
         Where-Object { $_.LastWriteTime -ge $buildStarted })
     if ($installers.Count -ne 1) { throw "Expected one fresh NSIS installer for $Arch, found $($installers.Count)" }

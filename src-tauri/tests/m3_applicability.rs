@@ -1,7 +1,7 @@
 use yet_another_microsoft_store_lib::{
     applicability::{
-        select_packages, ApplicabilityError, DecisionReason, HostCapabilities, InstalledPackage,
-        SelectionMode, SelectionPreferences,
+        preview_packages, select_packages, ApplicabilityError, DecisionReason, HostCapabilities,
+        InstalledPackage, SelectionMode, SelectionPreferences, SelectionRejectionReason,
     },
     domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
     error::{AppErrorDto, ErrorCode, RetryAdvice},
@@ -102,6 +102,57 @@ fn preferred_compatible_architecture_wins_at_the_same_version() {
     .expect("compatible package should be selected");
 
     assert_eq!(result.packages[0].update_id, "x64");
+}
+
+#[test]
+fn architecture_preference_does_not_exclude_compatible_fallbacks() {
+    let packages = graph(vec![package(
+        "x86",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::X86,
+        PackageFormat::Msix,
+        PackageKind::Main,
+    )]);
+    let mut preferences = preferences(SelectionMode::Install);
+    preferences.preferred_architectures = vec![Architecture::X64];
+
+    let preview = preview_packages(&packages, &x64_host(), &preferences, &[]);
+
+    assert!(preview.installable);
+    let main = preview
+        .main
+        .expect("x86 should remain a compatible fallback");
+    assert_eq!(main.architecture, Architecture::X86);
+    assert_eq!(main.version, PackageVersion::new(2, 0, 0, 0));
+    assert_eq!(main.format, PackageFormat::Msix);
+    assert_eq!(preview.dependency_count, 0);
+    assert_eq!(preview.rejection_reason, None);
+}
+
+#[test]
+fn preview_uses_closed_rejection_reasons() {
+    let mut too_new = package(
+        "too-new",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::X64,
+        PackageFormat::Msix,
+        PackageKind::Main,
+    );
+    too_new.minimum_os_version = Some(PackageVersion::new(10, 0, 22000, 0));
+
+    let preview = preview_packages(
+        &graph(vec![too_new]),
+        &x64_host(),
+        &preferences(SelectionMode::Install),
+        &[],
+    );
+
+    assert!(!preview.installable);
+    assert_eq!(
+        preview.rejection_reason,
+        Some(SelectionRejectionReason::OperatingSystem)
+    );
+    assert!(preview.main.is_none());
 }
 
 #[test]

@@ -1,17 +1,14 @@
-#[cfg(not(feature = "broker-dependency"))]
 struct RuntimeState {
     backend: app_runtime::ProductionApiBackend,
     diagnostics: diagnostics::DiagnosticService,
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 fn api(
     state: &tauri::State<'_, RuntimeState>,
 ) -> tauri_api::TauriApi<app_runtime::ProductionApiBackend> {
     tauri_api::TauriApi::new(state.backend.clone())
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn search_apps(
     state: tauri::State<'_, RuntimeState>,
@@ -20,7 +17,6 @@ async fn search_apps(
     api(&state).search_apps(request).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn get_app_details(
     state: tauri::State<'_, RuntimeState>,
@@ -29,7 +25,6 @@ async fn get_app_details(
     api(&state).get_app_details(request).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn scan_installed_packages(
     state: tauri::State<'_, RuntimeState>,
@@ -38,15 +33,13 @@ async fn scan_installed_packages(
     api(&state).scan_installed_packages(scope).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn scan_updates(
     state: tauri::State<'_, RuntimeState>,
-) -> Result<Vec<tauri_api::ApiUpdateCandidate>, error::AppErrorDto> {
+) -> Result<tauri_api::ApiUpdateScanResult, error::AppErrorDto> {
     api(&state).scan_updates().await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn start_install(
     state: tauri::State<'_, RuntimeState>,
@@ -55,7 +48,6 @@ async fn start_install(
     api(&state).start_install(request).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn start_update(
     state: tauri::State<'_, RuntimeState>,
@@ -64,7 +56,6 @@ async fn start_update(
     api(&state).start_update(request).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn request_job_control(
     state: tauri::State<'_, RuntimeState>,
@@ -73,7 +64,6 @@ async fn request_job_control(
     api(&state).request_job_control(request).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn get_job(
     state: tauri::State<'_, RuntimeState>,
@@ -82,7 +72,6 @@ async fn get_job(
     api(&state).get_job(job_id).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn list_jobs(
     state: tauri::State<'_, RuntimeState>,
@@ -90,7 +79,6 @@ async fn list_jobs(
     api(&state).list_jobs().await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn list_job_events(
     state: tauri::State<'_, RuntimeState>,
@@ -99,7 +87,6 @@ async fn list_job_events(
     api(&state).list_job_events(request).await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn get_settings(
     state: tauri::State<'_, RuntimeState>,
@@ -107,7 +94,6 @@ async fn get_settings(
     api(&state).get_settings().await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn update_settings(
     state: tauri::State<'_, RuntimeState>,
@@ -128,13 +114,11 @@ async fn update_settings(
     }
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 async fn clear_cache(state: tauri::State<'_, RuntimeState>) -> Result<(), error::AppErrorDto> {
     api(&state).clear_cache().await
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
 fn export_diagnostics(
     state: tauri::State<'_, RuntimeState>,
@@ -142,7 +126,6 @@ fn export_diagnostics(
     state.diagnostics.export().map_err(|_| diagnostics_error())
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 fn diagnostics_error() -> error::AppErrorDto {
     error::AppErrorDto::new(
         error::ErrorCode::DeploymentFailed,
@@ -150,7 +133,6 @@ fn diagnostics_error() -> error::AppErrorDto {
     )
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 fn start_runtime_tasks(
     app: tauri::AppHandle,
     backend: app_runtime::ProductionApiBackend,
@@ -223,7 +205,6 @@ fn start_runtime_tasks(
     Ok(())
 }
 
-#[cfg(not(feature = "broker-dependency"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use tauri::Manager;
@@ -290,9 +271,6 @@ pub fn run() {
 }
 pub mod app_runtime;
 pub mod applicability;
-pub mod broker;
-pub mod broker_launcher;
-pub mod broker_protocol;
 pub mod cache;
 pub mod catalog;
 pub mod deployment;
@@ -309,6 +287,7 @@ pub mod job_events;
 pub mod job_store;
 pub mod job_worker;
 pub mod jobs;
+pub mod package;
 pub mod package_validation;
 pub mod persistence;
 pub mod resolver;

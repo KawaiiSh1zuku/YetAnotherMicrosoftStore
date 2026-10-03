@@ -16,7 +16,7 @@ Yet Another Microsoft Store 是一个 Windows 桌面客户端，用于搜索 Mic
 - 发布工件面向 Windows x64 和 Windows ARM64。
 - 在已记录的软件包、身份、架构和授权边界内，支持 `.msix`、`.appx`、`.msixbundle` 和 `.appxbundle`。
 - `.eappx` 和 `.eappxbundle` 仍为条件支持；不支持 MSIXVC/Xbox、EXE 和 MSI 软件包。
-- 默认执行当前用户部署。全用户操作通过一次性 UAC Broker 完成，主应用始终保持 `asInvoker`。
+- 主程序通过 `requireAdministrator` 强制以管理员身份启动。仍可选择“当前管理员账户”或“所有用户”；两种范围都由同一主进程直接调用 Windows 包 API。
 - NSIS 安装器配置为当前用户安装、阻止降级，并使用 Microsoft WebView2 下载引导程序。这些行为仍需通过干净机器验收；首次安装可能需要网络连接。
 
 已记录的 Sysinternals Suite 往返验证仅证明特定产品、市场、语言、主机、时间和 CurrentUser 场景，不代表普遍兼容，也不保证可通过官方 Store 更新。
@@ -27,7 +27,7 @@ Yet Another Microsoft Store 是一个 Windows 桌面客户端，用于搜索 Mic
 2. 使用相邻的 `SHA256SUMS.txt` 校验安装器的 SHA-256。
 3. 运行 NSIS 安装器。安装器配置为安装到当前 Windows 用户；就地升级时是否完整保留应用数据仍属于干净机器发布检查项。
 
-安装器、主程序和 Broker 均无代码签名。提权 Broker 仍会校验命名管道对端的 PID、会话和 nonce、调用方映像路径、受保护的暂存路径、软件包身份、哈希以及 Microsoft 软件包签名；它不要求调用方可执行文件具备 Authenticode 签名。
+安装器和主程序均无代码签名。启动主程序时 Windows 会显示 UAC；拒绝 UAC 后应用不会启动。删除独立提权进程没有削弱软件包验证：下载内容仍须通过哈希、manifest identity 和 Microsoft 签名检查后才能进入部署。
 
 ## 隐私与网络边界
 
@@ -37,6 +37,7 @@ Yet Another Microsoft Store 是一个 Windows 桌面客户端，用于搜索 Mic
 - `fe3.delivery.mp.microsoft.com`
 - `dl.delivery.mp.microsoft.com`
 - `tlu.dl.delivery.mp.microsoft.com`
+- `store-images.s-microsoft.com`（仅用于应用图标）
 
 带签名的下载 URL 和代理凭据不会被持久化。诊断导出仅包含封闭事件名、时间戳、版本与架构信息、崩溃恢复状态和主机白名单，不包含 URL、令牌、代理凭据、原始服务响应、HRESULT 或本地路径。可在 **Settings > Export diagnostics**（设置 > 导出诊断）中将 JSON 报告导出到当前用户的“下载”目录。
 
@@ -52,7 +53,7 @@ Yet Another Microsoft Store 是一个 Windows 桌面客户端，用于搜索 Mic
 ```powershell
 pnpm install --frozen-lockfile
 pnpm test
-cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+cargo test --manifest-path src-tauri/Cargo.toml --lib --tests
 pnpm build:release
 ```
 
@@ -63,7 +64,7 @@ pnpm build:release
 ./scripts/build-release.ps1 -Architecture arm64 -SkipChecks
 ```
 
-构建脚本会验证主程序和 Broker 的 PE machine 类型，并将安装器、`SHA256SUMS.txt`、`BUILD-METADATA.json` 和 `THIRD_PARTY_LICENSES.json` 写入 `release-artifacts/<architecture>/`。
+构建脚本会验证主程序的 PE machine 类型和 `requireAdministrator` manifest，并确认安装包不含旧 sidecar；随后将安装器、`SHA256SUMS.txt`、`BUILD-METADATA.json` 和 `THIRD_PARTY_LICENSES.json` 写入 `release-artifacts/<architecture>/`。
 
 双架构 CI、哈希发布以及升级/卸载验收流程见[发布指南](docs/release.md)；诊断导出契约见[诊断与恢复](docs/diagnostics.md)。
 
@@ -74,9 +75,8 @@ pnpm test
 pnpm exec playwright test
 pnpm build
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+cargo test --manifest-path src-tauri/Cargo.toml --lib --tests
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo check --manifest-path src-tauri/broker/Cargo.toml
 pnpm exec tauri build --debug --no-bundle
 ```
 

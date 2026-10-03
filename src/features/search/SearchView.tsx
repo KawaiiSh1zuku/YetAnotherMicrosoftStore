@@ -1,5 +1,5 @@
 import { ArrowRight, Search } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -126,9 +126,10 @@ export function SearchView({
                 data-product-id={product.productId}
                 onClick={() => onOpen(product)}
               >
-                <span className="app-glyph" aria-hidden="true">{initials(product.title)}</span>
+                <AppIcon product={product} />
                 <span className="result-item__copy">
-                  <strong>{product.title}</strong>
+                  <strong title={product.appName}>{product.appName}</strong>
+                  <span title={product.packageName ?? product.packageFamilyName ?? product.productId}>{product.packageName ?? product.packageFamilyName ?? "包名待解析"}</span>
                   <span>{product.publisher ?? "发布者未提供"}</span>
                   <span className="result-formats">{product.packageFormats.length ? product.packageFormats.join(" · ") : "包格式待解析"}</span>
                 </span>
@@ -140,6 +141,14 @@ export function SearchView({
       </div>
     </section>
   );
+}
+
+function AppIcon({ product }: { product: CatalogProduct }) {
+  const [failed, setFailed] = useState(false);
+  if (product.iconUrl && !failed) {
+    return <img className="app-glyph app-icon" src={product.iconUrl} alt="" onError={() => setFailed(true)} />;
+  }
+  return <span className="app-glyph" aria-hidden="true">{initials(product.appName)}</span>;
 }
 
 function initials(title: string): string {

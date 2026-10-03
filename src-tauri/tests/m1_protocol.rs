@@ -4,7 +4,7 @@ use yet_another_microsoft_store_lib::applicability::{
     select_packages, HostCapabilities, SelectionMode, SelectionPreferences,
 };
 use yet_another_microsoft_store_lib::catalog::{
-    CatalogError, CatalogProvider, DeviceFamily, StoreLibCatalogAdapter,
+    normalize_catalog_icon_url, CatalogError, CatalogProvider, DeviceFamily, StoreLibCatalogAdapter,
 };
 use yet_another_microsoft_store_lib::domain::{
     Architecture, PackageFormat, PackageKind, PackageVersion,
@@ -63,7 +63,7 @@ fn dcat_fixtures_normalize_search_and_product_identity() {
         products[0].package_family_name.as_deref(),
         Some("Contoso.Notes_abc")
     );
-    assert_eq!(products[0].title.as_deref(), Some("Contoso Notes"));
+    assert_eq!(products[0].app_name.as_deref(), Some("Contoso Notes"));
 
     let product =
         StoreLibCatalogAdapter::parse_product_fixture(include_str!("fixtures/dcat-product.json"))
@@ -79,6 +79,24 @@ fn dcat_fixtures_normalize_search_and_product_identity() {
         product.framework_dependencies,
         vec!["Microsoft.VCLibs.140.00"]
     );
+}
+
+#[test]
+fn catalog_icons_use_an_exact_https_allowlist() {
+    assert_eq!(
+        normalize_catalog_icon_url("//store-images.s-microsoft.com/image.png")
+            .expect("protocol-relative Store image should be upgraded"),
+        "https://store-images.s-microsoft.com/image.png"
+    );
+    for invalid in [
+        "http://store-images.s-microsoft.com/image.png",
+        "https://user:secret@store-images.s-microsoft.com/image.png",
+        "https://store-images.s-microsoft.com:444/image.png",
+        "https://store-images.s-microsoft.com/image.png#fragment",
+        "https://example.invalid/image.png",
+    ] {
+        assert!(normalize_catalog_icon_url(invalid).is_err(), "{invalid}");
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # 管理员运行时与包管理重构实施计划
 
-> 状态：待用户审阅
+> 状态：已实施；E0/E1 完成，E2/E3 门保留
 >
 > 依据：`docs/superpowers/specs/2026-10-03-admin-runtime-package-management-redesign.md`
 >
@@ -351,7 +351,7 @@ pnpm exec playwright test
 
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+cargo test --manifest-path src-tauri/Cargo.toml --lib --tests
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 pnpm test
 pnpm build

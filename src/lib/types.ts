@@ -10,7 +10,6 @@ export type JobStage =
   | "downloading"
   | "paused"
   | "verifying"
-  | "awaiting_elevation"
   | "deploying"
   | "interrupted"
   | "needs_reconciliation"
@@ -29,7 +28,6 @@ export type ErrorCode =
   | "download_url_expired"
   | "hash_mismatch"
   | "signature_invalid"
-  | "elevation_cancelled"
   | "deployment_denied"
   | "deployment_failed"
   | "package_in_use"
@@ -44,7 +42,7 @@ export type ErrorCode =
 export interface SafeError {
   code: ErrorCode;
   messageKey: string;
-  retry?: "never" | "retry" | "re_resolve" | "request_elevation" | "reconcile_inventory";
+  retry?: "never" | "retry" | "re_resolve" | "reconcile_inventory";
   jobId?: string;
   details?: ReadonlyArray<{ kind: "field"; field: string } | { kind: "redacted" }>;
 }
@@ -52,8 +50,11 @@ export interface SafeError {
 export interface CatalogProduct {
   productId: string;
   packageFamilyName: string | null;
-  title: string;
+  appName: string;
+  packageName: string | null;
   publisher: string | null;
+  iconUrl: string | null;
+  metadataState: "complete" | "partial";
   packageFormats: string[];
   frameworkDependencies: string[];
 }
@@ -62,6 +63,19 @@ export interface AppDetails extends CatalogProduct {
   market: string;
   language: string;
   supportedArchitectures: Architecture[];
+  selectionPreview: SelectionPreview;
+}
+
+export interface SelectionPreview {
+  installable: boolean;
+  main: {
+    version: string;
+    architecture: Architecture;
+    format: string;
+    language: string | null;
+  } | null;
+  dependencyCount: number;
+  rejectionReason: "market" | "operating_system" | "format" | "architecture" | "language_resource" | "dependency" | "package_not_installed" | "version" | "no_compatible_package" | null;
 }
 
 export interface JobSnapshot {
@@ -76,7 +90,6 @@ export interface JobSnapshot {
   version: string | null;
   architecture: Architecture | null;
   language: string | null;
-  requiresElevation: boolean;
   allowedControls: JobControl[];
   error: SafeError | null;
   updatedAt: number;
@@ -101,6 +114,8 @@ export interface JobEventPage {
 }
 
 export interface PackageInventoryRecord {
+  appName: string;
+  packageName: string;
   identityName: string;
   publisher: string;
   packageFamilyName: string;
@@ -141,10 +156,25 @@ export interface AppSettings {
 }
 
 export interface UpdateCandidate {
+  appName: string;
+  packageName: string;
+  publisher: string;
   packageFamilyName: string;
   currentVersion: string;
   availableVersion: string;
   productId: string | null;
+  deploymentScope: DeploymentScope;
+}
+
+export interface UpdateScanResult {
+  scannedMainPackages: number;
+  associatedPackages: number;
+  candidates: UpdateCandidate[];
+  skipped: Array<{
+    packageFamilyName: string;
+    reason: "missing_association" | "source_identity_mismatch" | "catalog_unavailable" | "selection_rejected";
+  }>;
+  complete: boolean;
 }
 
 export interface DiagnosticExport {

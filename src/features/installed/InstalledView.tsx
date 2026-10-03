@@ -5,7 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { localizeError } from "../../lib/i18n";
 import type { StoreClient } from "../../lib/tauri";
-import type { AppSettings, InventorySnapshot, JobSnapshot, UpdateCandidate } from "../../lib/types";
+import type { AppSettings, InventorySnapshot, JobSnapshot, UpdateCandidate, UpdateScanResult } from "../../lib/types";
 
 interface InstalledViewProps {
   client: StoreClient;
@@ -15,7 +15,7 @@ interface InstalledViewProps {
 
 export function InstalledView({ client, settings, onJobStarted }: InstalledViewProps) {
   const [snapshot, setSnapshot] = useState<InventorySnapshot | null>(null);
-  const [updates, setUpdates] = useState<UpdateCandidate[]>([]);
+  const [updateResult, setUpdateResult] = useState<UpdateScanResult | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [scanning, setScanning] = useState(false);
@@ -24,7 +24,7 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
   async function loadInventory() {
     setStatus("loading");
     try {
-      setSnapshot(await client.scanInstalledPackages("current_user"));
+      setSnapshot(await client.scanInstalledPackages("all_users"));
       setStatus("ready");
     } catch (value) {
       setError(localizeError(value));
@@ -37,7 +37,7 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
   async function scanUpdates() {
     setScanning(true);
     setError(null);
-    try { setUpdates(await client.scanUpdates()); }
+    try { setUpdateResult(await client.scanUpdates()); }
     catch (value) { setError(localizeError(value)); }
     finally { setScanning(false); }
   }
@@ -49,7 +49,7 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
         productId: candidate.productId,
         market: settings?.market ?? "US",
         language: settings?.preferredLanguages[0] ?? "en-US",
-        scope: "current_user",
+        scope: candidate.deploymentScope,
       });
       onJobStarted(job);
     } catch (value) { setError(localizeError(value)); }
@@ -57,7 +57,8 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
 
   const records = useMemo(() => snapshot?.records.filter((record) => {
     const needle = query.trim().toLocaleLowerCase();
-    return !needle || record.identityName.toLocaleLowerCase().includes(needle) || record.publisher.toLocaleLowerCase().includes(needle);
+    return !needle || [record.appName, record.packageName, record.packageFamilyName, record.publisher]
+      .some((value) => value.toLocaleLowerCase().includes(needle));
   }) ?? [], [query, snapshot]);
 
   return (
@@ -70,6 +71,11 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
         </div>
       </header>
       {snapshot && <div className="inventory-meta"><Badge>{snapshot.complete ? "完整清单" : "部分清单"}</Badge><span>Windows build {snapshot.osBuild}</span><span>{snapshot.records.length} 个包</span></div>}
+      {updateResult && <div className={updateResult.complete ? "success-message" : "warning-list"} role="status">
+        扫描完成：{updateResult.scannedMainPackages} 个主包，{updateResult.associatedPackages} 个已关联，
+        {updateResult.candidates.length ? `发现 ${updateResult.candidates.length} 个更新。` : "未发现更新。"}
+        {!updateResult.complete && ` ${updateResult.skipped.length} 个包被跳过。`}
+      </div>}
       <label className="table-search"><span className="sr-only">筛选已安装应用</span><Search aria-hidden="true" size={17} /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选名称或发布者" /></label>
       {error && <div className="inline-alert" role="alert">{error}</div>}
       {status === "loading" && <div role="status">正在读取本机包清单...</div>}
@@ -78,11 +84,11 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
         <div className="table-wrap">
           <table><thead><tr><th>应用包</th><th>版本</th><th>架构</th><th>来源</th><th><span className="sr-only">操作</span></th></tr></thead>
             <tbody>{records.map((record) => {
-              const candidate = updates.find((item) => item.packageFamilyName === record.packageFamilyName);
+              const candidate = updateResult?.candidates.find((item) => item.packageFamilyName === record.packageFamilyName);
               return <tr key={record.packageFullName}>
-                <td data-label="应用包"><strong>{record.identityName}</strong><span>{record.publisher}</span></td>
+                <td data-label="应用包"><strong title={record.appName}>{record.appName}</strong><span title={record.packageName}>{record.packageName || record.packageFamilyName}</span><span title={record.publisher}>{record.publisher}</span></td>
                 <td data-label="版本">{record.version.join(".")}</td><td data-label="架构">{record.architecture}</td>
-                <td data-label="来源"><Badge>{record.installedForCurrentUser ? "当前用户" : "其他用户"}</Badge></td>
+                <td data-label="来源"><Badge className="source-badge">{record.hasOtherUsers || record.provisionedForFutureUsers ? "所有用户" : "当前管理员账户"}</Badge></td>
                 <td>{candidate && <Button compact variant="primary" disabled={!candidate.productId} onClick={() => void update(candidate)}>更新至 {candidate.availableVersion}</Button>}</td>
               </tr>;
             })}</tbody>

@@ -6,7 +6,6 @@ param(
     [string]$CertificateThumbprint = $env:M0_CERT_THUMBPRINT,
     [string[]]$CertificateStoreLocations = @($env:M0_CERT_STORE_LOCATIONS -split ';' | Where-Object { $_ }),
     [string]$CertificateFile = $env:M0_CERT_FILE,
-    [string]$BrokerPath = $env:M0_BROKER_PATH,
     [switch]$WhatIf
 )
 
@@ -102,12 +101,10 @@ function Assert-CertificateRemoved([string]$Thumbprint, [string[]]$Stores) {
 Require-Input 'M0_PACKAGE_PATH' $PackagePath
 Require-Input 'M0_PACKAGE_FULL_NAME' $PackageFullName
 Require-Input 'M0_PACKAGE_FAMILY_NAME' $PackageFamilyName
-Require-Input 'M0_BROKER_PATH' $BrokerPath
 if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) { throw 'M0_PACKAGE_PATH does not exist' }
-if (-not (Test-Path -LiteralPath $BrokerPath -PathType Leaf)) { throw 'M0_BROKER_PATH does not exist' }
 
 $isAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if ($isAdministrator -and -not $WhatIf) { throw 'run the acceptance script from a non-elevated process' }
+if (-not $isAdministrator -and -not $WhatIf) { throw 'run the acceptance script from an elevated process' }
 
 $evidence = [ordered]@{
     startedAt = (Get-Date).ToUniversalTime().ToString('o')
@@ -125,7 +122,6 @@ try {
         $evidence.currentUser = 'preflight-only'
         $evidence.allUsers = 'preflight-only'
     } else {
-        $env:M0_BROKER_PATH = $BrokerPath
         $env:M0_PACKAGE_PATH = $PackagePath
         $env:M0_PACKAGE_FULL_NAME = $PackageFullName
         $env:M0_PACKAGE_FAMILY_NAME = $PackageFamilyName

@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    catalog::CatalogProduct,
+    catalog::{normalize_catalog_icon_url, CatalogProduct},
     deployment::DeploymentScope,
     domain::{AppSettings, Architecture, ProxyCredentialPolicy, ProxyMode, ThemeMode},
     error::{AppErrorDto, ErrorCode, RetryAdvice},
@@ -88,6 +88,7 @@ pub struct ListJobEventsRequest {
 pub struct AppDetailsSource {
     pub product: CatalogProduct,
     pub supported_architectures: Vec<Architecture>,
+    pub selection_preview: crate::applicability::SelectionPreview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +104,7 @@ pub trait ApiBackend: Send + Sync {
 
     fn scan_installed_packages(&self, scope: DeploymentScope) -> ApiFuture<'_, InventorySnapshot>;
 
-    fn scan_updates(&self) -> ApiFuture<'_, Vec<ApiUpdateCandidate>>;
+    fn scan_updates(&self) -> ApiFuture<'_, ApiUpdateScanResult>;
 
     fn start_install(&self, request: StartJobSpec) -> ApiFuture<'_, JobView>;
 
@@ -179,6 +180,7 @@ where
             market,
             language,
             source.supported_architectures,
+            source.selection_preview,
         )
     }
 
@@ -194,15 +196,22 @@ where
         ApiInventorySnapshot::from_domain(snapshot)
     }
 
-    pub async fn scan_updates(&self) -> Result<Vec<ApiUpdateCandidate>, AppErrorDto> {
-        let updates = self.backend.scan_updates().await.map_err(sanitize_error)?;
-        if updates.len() > 1000 {
+    pub async fn scan_updates(&self) -> Result<ApiUpdateScanResult, AppErrorDto> {
+        let mut result = self.backend.scan_updates().await.map_err(sanitize_error)?;
+        if result.candidates.len() > 1000 || result.skipped.len() > 1000 {
             return Err(boundary_error(ErrorCode::DeploymentFailed));
         }
-        updates
+        result.candidates = result
+            .candidates
             .into_iter()
             .map(ApiUpdateCandidate::validated)
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        for skipped in &result.skipped {
+            if !safe_package_identity(&skipped.package_family_name) {
+                return Err(boundary_error(ErrorCode::DeploymentFailed));
+            }
+        }
+        Ok(result)
     }
 
     pub async fn start_install(
@@ -438,6 +447,8 @@ pub enum ApiInventoryWarning {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApiPackageInventoryRecord {
+    pub app_name: String,
+    pub package_name: String,
     pub identity_name: String,
     pub publisher: String,
     pub package_family_name: String,
@@ -452,7 +463,9 @@ pub struct ApiPackageInventoryRecord {
 
 impl ApiPackageInventoryRecord {
     fn from_domain(record: PackageInventoryRecord) -> Result<Self, AppErrorDto> {
-        if !safe_package_identity(&record.identity_name)
+        if !safe_text(&record.app_name, 512)
+            || !safe_package_identity(&record.package_name)
+            || !safe_package_identity(&record.identity_name)
             || !safe_text(&record.publisher, 512)
             || !safe_package_identity(&record.package_family_name)
             || !safe_package_identity(&record.package_full_name)
@@ -461,6 +474,8 @@ impl ApiPackageInventoryRecord {
             return Err(boundary_error(ErrorCode::DeploymentFailed));
         }
         Ok(Self {
+            app_name: record.app_name,
+            package_name: record.package_name,
             identity_name: record.identity_name,
             publisher: record.publisher,
             package_family_name: record.package_family_name,
@@ -526,25 +541,42 @@ impl ApiInventorySnapshot {
 pub struct ApiCatalogProduct {
     pub product_id: String,
     pub package_family_name: Option<String>,
-    pub title: String,
+    pub app_name: String,
+    pub package_name: Option<String>,
     pub publisher: Option<String>,
+    pub icon_url: Option<String>,
+    pub metadata_state: crate::catalog::CatalogMetadataState,
     pub package_formats: Vec<String>,
     pub framework_dependencies: Vec<String>,
 }
 
 impl ApiCatalogProduct {
     pub fn from_domain(product: CatalogProduct) -> Result<Self, AppErrorDto> {
-        let title = product.title.unwrap_or_else(|| product.product_id.clone());
+        let app_name = product
+            .app_name
+            .unwrap_or_else(|| product.product_id.clone());
         if !safe_identifier(&product.product_id)
             || product
                 .package_family_name
                 .as_deref()
                 .is_some_and(|value| !safe_identifier(value))
-            || !safe_text(&title, 512)
+            || !safe_text(&app_name, 512)
+            || product
+                .package_name
+                .as_deref()
+                .is_some_and(|value| !safe_identifier(value))
             || product
                 .publisher
                 .as_deref()
                 .is_some_and(|value| !safe_text(value, 512))
+            || product
+                .package_publisher
+                .as_deref()
+                .is_some_and(|value| !safe_text(value, 512))
+            || product
+                .icon_url
+                .as_deref()
+                .is_some_and(|value| normalize_catalog_icon_url(value).as_deref() != Ok(value))
             || product.package_formats.len() > 32
             || product
                 .package_formats
@@ -561,8 +593,11 @@ impl ApiCatalogProduct {
         Ok(Self {
             product_id: product.product_id,
             package_family_name: product.package_family_name,
-            title,
+            app_name,
+            package_name: product.package_name,
             publisher: product.publisher,
+            icon_url: product.icon_url,
+            metadata_state: product.metadata_state,
             package_formats: product.package_formats,
             framework_dependencies: product.framework_dependencies,
         })
@@ -574,13 +609,17 @@ impl ApiCatalogProduct {
 pub struct ApiAppDetails {
     pub product_id: String,
     pub package_family_name: Option<String>,
-    pub title: String,
+    pub app_name: String,
+    pub package_name: Option<String>,
     pub publisher: Option<String>,
+    pub icon_url: Option<String>,
+    pub metadata_state: crate::catalog::CatalogMetadataState,
     pub package_formats: Vec<String>,
     pub framework_dependencies: Vec<String>,
     pub market: String,
     pub language: String,
     pub supported_architectures: Vec<Architecture>,
+    pub selection_preview: crate::applicability::SelectionPreview,
 }
 
 impl ApiAppDetails {
@@ -589,6 +628,7 @@ impl ApiAppDetails {
         market: String,
         language: String,
         supported_architectures: Vec<Architecture>,
+        selection_preview: crate::applicability::SelectionPreview,
     ) -> Result<Self, AppErrorDto> {
         if !safe_market(&market) || !safe_language(&language) || supported_architectures.len() > 16
         {
@@ -598,13 +638,17 @@ impl ApiAppDetails {
         Ok(Self {
             product_id: product.product_id,
             package_family_name: product.package_family_name,
-            title: product.title,
+            app_name: product.app_name,
+            package_name: product.package_name,
             publisher: product.publisher,
+            icon_url: product.icon_url,
+            metadata_state: product.metadata_state,
             package_formats: product.package_formats,
             framework_dependencies: product.framework_dependencies,
             market,
             language,
             supported_architectures,
+            selection_preview,
         })
     }
 }
@@ -612,15 +656,22 @@ impl ApiAppDetails {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApiUpdateCandidate {
+    pub app_name: String,
+    pub package_name: String,
+    pub publisher: String,
     pub package_family_name: String,
     pub current_version: String,
     pub available_version: String,
     pub product_id: Option<String>,
+    pub deployment_scope: ApiDeploymentScope,
 }
 
 impl ApiUpdateCandidate {
     fn validated(self) -> Result<Self, AppErrorDto> {
-        if !safe_package_identity(&self.package_family_name)
+        if !safe_text(&self.app_name, 512)
+            || !safe_package_identity(&self.package_name)
+            || !safe_text(&self.publisher, 512)
+            || !safe_package_identity(&self.package_family_name)
             || !safe_identifier(&self.current_version)
             || !safe_identifier(&self.available_version)
             || self
@@ -632,6 +683,32 @@ impl ApiUpdateCandidate {
         }
         Ok(self)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiUpdateSkipReason {
+    MissingAssociation,
+    SourceIdentityMismatch,
+    CatalogUnavailable,
+    SelectionRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApiUpdateSkipped {
+    pub package_family_name: String,
+    pub reason: ApiUpdateSkipReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApiUpdateScanResult {
+    pub scanned_main_packages: usize,
+    pub associated_packages: usize,
+    pub candidates: Vec<ApiUpdateCandidate>,
+    pub skipped: Vec<ApiUpdateSkipped>,
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -649,7 +726,6 @@ pub struct ApiJobSnapshot {
     pub version: Option<String>,
     pub architecture: Option<Architecture>,
     pub language: Option<String>,
-    pub requires_elevation: bool,
     pub allowed_controls: Vec<JobControl>,
     pub error: Option<AppErrorDto>,
     pub updated_at: i64,
@@ -688,7 +764,6 @@ impl ApiJobSnapshot {
             version: job.version,
             architecture: job.architecture,
             language: job.language,
-            requires_elevation: job.requires_elevation,
             allowed_controls: allowed_controls(job.stage),
             error: job.error.map(sanitize_error),
             updated_at: job.updated_at,
@@ -807,11 +882,9 @@ fn allowed_controls(stage: JobStage) -> Vec<JobControl> {
         JobStage::Paused | JobStage::Interrupted | JobStage::Failed => {
             vec![JobControl::Resume, JobControl::Cancel]
         }
-        JobStage::Queued
-        | JobStage::Resolving
-        | JobStage::Selecting
-        | JobStage::Verifying
-        | JobStage::AwaitingElevation => vec![JobControl::Cancel],
+        JobStage::Queued | JobStage::Resolving | JobStage::Selecting | JobStage::Verifying => {
+            vec![JobControl::Cancel]
+        }
         JobStage::Deploying
         | JobStage::NeedsReconciliation
         | JobStage::Completed

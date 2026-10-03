@@ -79,6 +79,38 @@ pub struct SelectionResult {
     pub decisions: Vec<PackageDecision>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionRejectionReason {
+    Market,
+    OperatingSystem,
+    Format,
+    Architecture,
+    LanguageResource,
+    Dependency,
+    PackageNotInstalled,
+    Version,
+    NoCompatiblePackage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedMainPackage {
+    pub version: PackageVersion,
+    pub architecture: Architecture,
+    pub format: PackageFormat,
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionPreview {
+    pub installable: bool,
+    pub main: Option<SelectedMainPackage>,
+    pub dependency_count: usize,
+    pub rejection_reason: Option<SelectionRejectionReason>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplicabilityError {
     MarketMismatch,
@@ -121,6 +153,90 @@ impl fmt::Display for ApplicabilityError {
 }
 
 impl std::error::Error for ApplicabilityError {}
+
+pub fn preview_packages(
+    graph: &PackageGraph,
+    host: &HostCapabilities,
+    preferences: &SelectionPreferences,
+    installed: &[InstalledPackage],
+) -> SelectionPreview {
+    match select_packages(graph, host, preferences, installed) {
+        Ok(selection) => {
+            let main = selection
+                .packages
+                .iter()
+                .find(|package| package.package_kind == PackageKind::Main)
+                .map(|package| SelectedMainPackage {
+                    version: package.version,
+                    architecture: package.architecture,
+                    format: package.format,
+                    language: package.language.clone(),
+                });
+            let dependency_count = selection
+                .packages
+                .iter()
+                .filter(|package| package.package_kind == PackageKind::Framework)
+                .count();
+            SelectionPreview {
+                installable: main.is_some(),
+                main,
+                dependency_count,
+                rejection_reason: None,
+            }
+        }
+        Err(error) => SelectionPreview {
+            installable: false,
+            main: None,
+            dependency_count: 0,
+            rejection_reason: Some(closed_rejection_reason(&error, graph, host, preferences)),
+        },
+    }
+}
+
+fn closed_rejection_reason(
+    error: &ApplicabilityError,
+    graph: &PackageGraph,
+    host: &HostCapabilities,
+    preferences: &SelectionPreferences,
+) -> SelectionRejectionReason {
+    match error {
+        ApplicabilityError::MarketMismatch => SelectionRejectionReason::Market,
+        ApplicabilityError::PackageNotInstalled { .. } => {
+            SelectionRejectionReason::PackageNotInstalled
+        }
+        ApplicabilityError::VersionAheadOfCatalog { .. } => SelectionRejectionReason::Version,
+        ApplicabilityError::DependencyCycle { .. } => SelectionRejectionReason::Dependency,
+        ApplicabilityError::DependencyUnresolved { update_id } => graph
+            .packages
+            .iter()
+            .find(|package| package.update_id == *update_id)
+            .and_then(|package| incompatibility_reason(package, host, preferences, true))
+            .map(selection_rejection_from_decision)
+            .unwrap_or(SelectionRejectionReason::Dependency),
+        ApplicabilityError::NoCompatiblePackage => graph
+            .packages
+            .iter()
+            .filter(|package| package.package_kind == PackageKind::Main)
+            .filter_map(|package| incompatibility_reason(package, host, preferences, false))
+            .map(selection_rejection_from_decision)
+            .next()
+            .unwrap_or(SelectionRejectionReason::NoCompatiblePackage),
+    }
+}
+
+fn selection_rejection_from_decision(reason: DecisionReason) -> SelectionRejectionReason {
+    match reason {
+        DecisionReason::MinimumOsNotMet => SelectionRejectionReason::OperatingSystem,
+        DecisionReason::UnsupportedFormat => SelectionRejectionReason::Format,
+        DecisionReason::ArchitectureIncompatible => SelectionRejectionReason::Architecture,
+        DecisionReason::LanguageNotPreferred => SelectionRejectionReason::LanguageResource,
+        DecisionReason::PackageNotInstalled => SelectionRejectionReason::PackageNotInstalled,
+        DecisionReason::VersionNotNewer | DecisionReason::VersionAheadOfCatalog => {
+            SelectionRejectionReason::Version
+        }
+        _ => SelectionRejectionReason::NoCompatiblePackage,
+    }
+}
 
 pub fn select_packages(
     graph: &PackageGraph,

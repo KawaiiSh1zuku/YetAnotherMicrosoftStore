@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fmt,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -24,6 +24,8 @@ pub enum PackageKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageInventoryRecord {
+    pub app_name: String,
+    pub package_name: String,
     pub identity_name: String,
     pub publisher: String,
     pub package_family_name: String,
@@ -71,6 +73,14 @@ impl std::error::Error for InventoryError {}
 
 pub struct WindowsInventory;
 
+pub fn derive_update_scope(record: &PackageInventoryRecord) -> crate::deployment::DeploymentScope {
+    if record.has_other_users || record.provisioned_for_future_users {
+        crate::deployment::DeploymentScope::AllUsers
+    } else {
+        crate::deployment::DeploymentScope::CurrentUser
+    }
+}
+
 impl WindowsInventory {
     pub fn scan_current_user() -> Result<InventorySnapshot, InventoryError> {
         #[cfg(windows)]
@@ -88,7 +98,7 @@ impl WindowsInventory {
             Ok(snapshot(
                 InventorySource::CurrentUser,
                 true,
-                records,
+                normalize_records(records),
                 Vec::new(),
             ))
         }
@@ -110,9 +120,16 @@ impl WindowsInventory {
                 .collect::<HashSet<_>>();
             let manager = windows::Management::Deployment::PackageManager::new()
                 .map_err(map_windows_error)?;
-            let packages = manager.FindPackages().map_err(map_windows_error)?;
             let mut warnings = Vec::new();
             let mut complete = true;
+            let packages = match manager.FindPackages() {
+                Ok(packages) => packages.into_iter().collect::<Vec<_>>(),
+                Err(error) => {
+                    complete = false;
+                    warnings.push(format!("FindPackages failed: {error}"));
+                    Vec::new()
+                }
+            };
             let provisioned_names = match manager.FindProvisionedPackages() {
                 Ok(provisioned) => provisioned
                     .into_iter()
@@ -126,7 +143,7 @@ impl WindowsInventory {
                 }
             };
 
-            let mut records = Vec::new();
+            let mut records = current.records;
             for package in packages {
                 let id = package.Id().map_err(map_windows_error)?;
                 let full_name = id.FullName().map_err(map_windows_error)?.to_string_lossy();
@@ -164,7 +181,7 @@ impl WindowsInventory {
             Ok(snapshot(
                 InventorySource::AllUsersElevated,
                 complete,
-                records,
+                normalize_records(records),
                 warnings,
             ))
         }
@@ -174,6 +191,30 @@ impl WindowsInventory {
             Err(InventoryError::UnsupportedPlatform)
         }
     }
+}
+
+fn normalize_records(records: Vec<PackageInventoryRecord>) -> Vec<PackageInventoryRecord> {
+    let mut merged = BTreeMap::new();
+    for record in records {
+        let key = (
+            record.package_family_name.clone(),
+            record.version,
+            record.architecture.clone(),
+            record.resource_id.clone(),
+        );
+        merged
+            .entry(key)
+            .and_modify(|existing: &mut PackageInventoryRecord| {
+                existing.installed_for_current_user |= record.installed_for_current_user;
+                existing.installed_user_count = existing
+                    .installed_user_count
+                    .max(record.installed_user_count);
+                existing.has_other_users |= record.has_other_users;
+                existing.provisioned_for_future_users |= record.provisioned_for_future_users;
+            })
+            .or_insert(record);
+    }
+    merged.into_values().collect()
 }
 
 fn snapshot(
@@ -212,8 +253,17 @@ fn package_record(
         PackageKind::Main
     };
     let full_name = id.FullName().map_err(map_windows_error)?.to_string_lossy();
+    let identity_name = id.Name().map_err(map_windows_error)?.to_string_lossy();
+    let display_name = package
+        .DisplayName()
+        .ok()
+        .map(|name| name.to_string_lossy())
+        .filter(|name| !name.trim().is_empty() && !name.starts_with("ms-resource:"))
+        .unwrap_or_else(|| identity_name.clone());
     Ok(PackageInventoryRecord {
-        identity_name: id.Name().map_err(map_windows_error)?.to_string_lossy(),
+        app_name: display_name,
+        package_name: identity_name.clone(),
+        identity_name,
         publisher: id.Publisher().map_err(map_windows_error)?.to_string_lossy(),
         package_family_name: id
             .FamilyName()

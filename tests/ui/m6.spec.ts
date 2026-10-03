@@ -6,8 +6,11 @@ test.beforeEach(async ({ page }) => {
     const product = {
       productId: "9NBLGGH4NNS1",
       packageFamilyName: "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
-      title: "Windows Terminal",
+      appName: "Windows Terminal",
+      packageName: "Microsoft.WindowsTerminal",
       publisher: "Microsoft Corporation",
+      iconUrl: null,
+      metadataState: "complete",
       packageFormats: ["msixbundle"],
       frameworkDependencies: [],
     };
@@ -19,14 +22,14 @@ test.beforeEach(async ({ page }) => {
     };
     const job = {
       jobId: "job-browser", sequence: 1, productId: product.productId, packageFamilyName: product.packageFamilyName,
-      title: product.title, stage: "queued", bytesDone: 0, bytesTotal: null, version: null, architecture: "x64",
-      language: "en-US", requiresElevation: false, allowedControls: ["cancel"], error: null, updatedAt: 1,
+      title: product.appName, stage: "queued", bytesDone: 0, bytesTotal: null, version: null, architecture: "x64",
+      language: "en-US", allowedControls: ["cancel"], error: null, updatedAt: 1,
     };
     window.__YAMS_TEST_CLIENT__ = {
       searchApps: async () => [product],
-      getAppDetails: async () => ({ ...product, market: "US", language: "en-US", supportedArchitectures: ["x64", "arm64"] }),
-      scanInstalledPackages: async () => ({ source: "current_user", capturedAt: "2026-10-03T00:00:00Z", osBuild: "19045", complete: true, records: [], warnings: [] }),
-      scanUpdates: async () => [], startInstall: async () => job, startUpdate: async () => job,
+      getAppDetails: async () => ({ ...product, market: "US", language: "en-US", supportedArchitectures: ["x64"], selectionPreview: { installable: true, main: { version: "1.2.3.4", architecture: "x64", format: "msix_bundle", language: "en-US" }, dependencyCount: 1, rejectionReason: null } }),
+      scanInstalledPackages: async () => ({ source: "all_users_elevated", capturedAt: "2026-10-03T00:00:00Z", osBuild: "19045", complete: true, records: [], warnings: [] }),
+      scanUpdates: async () => ({ scannedMainPackages: 0, associatedPackages: 0, candidates: [], skipped: [], complete: true }), startInstall: async () => job, startUpdate: async () => job,
       requestJobControl: async () => job, getJob: async () => job, listJobs: async () => [job],
       listJobEvents: async () => ({ events: [], nextCursor: null }), getSettings: async () => settings,
       updateSettings: async (next) => next, clearCache: async () => undefined,

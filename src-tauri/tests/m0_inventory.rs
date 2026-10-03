@@ -1,12 +1,15 @@
 #![cfg(windows)]
 
+use yet_another_microsoft_store_lib::deployment::DeploymentScope;
 use yet_another_microsoft_store_lib::inventory::{
-    InventoryError, InventorySnapshot, InventorySource, PackageInventoryRecord, PackageKind,
-    WindowsInventory,
+    derive_update_scope, InventoryError, InventorySnapshot, InventorySource,
+    PackageInventoryRecord, PackageKind, WindowsInventory,
 };
 
 fn sample_record() -> PackageInventoryRecord {
     PackageInventoryRecord {
+        app_name: "Contoso Notes".to_owned(),
+        package_name: "Contoso.Notes".to_owned(),
         identity_name: "Contoso.Notes".to_owned(),
         publisher: "CN=Contoso".to_owned(),
         package_family_name: "Contoso.Notes_abc".to_owned(),
@@ -43,6 +46,8 @@ fn inventory_snapshot_serializes_identity_and_scope_fields() {
     );
     assert_eq!(json["records"][0]["package_kind"], "Main");
     assert_eq!(json["records"][0]["resource_id"], "");
+    assert_eq!(json["records"][0]["app_name"], "Contoso Notes");
+    assert_eq!(json["records"][0]["package_name"], "Contoso.Notes");
     assert_eq!(json["records"][0]["installed_user_count"], 1);
 }
 
@@ -60,6 +65,19 @@ fn incomplete_snapshot_is_explicit_and_not_an_empty_success() {
     assert!(!snapshot.complete);
     assert_eq!(snapshot.records.len(), 0);
     assert_eq!(snapshot.warnings.len(), 1);
+}
+
+#[test]
+fn update_scope_preserves_machine_wide_installation_semantics() {
+    let mut record = sample_record();
+    assert_eq!(derive_update_scope(&record), DeploymentScope::CurrentUser);
+
+    record.has_other_users = true;
+    assert_eq!(derive_update_scope(&record), DeploymentScope::AllUsers);
+
+    record.has_other_users = false;
+    record.provisioned_for_future_users = true;
+    assert_eq!(derive_update_scope(&record), DeploymentScope::AllUsers);
 }
 
 #[test]

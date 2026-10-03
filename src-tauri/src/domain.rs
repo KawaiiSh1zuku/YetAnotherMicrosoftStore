@@ -154,7 +154,7 @@ pub struct PackageRecord {
 pub struct ProductRecord {
     pub product_id: String,
     pub package_family_name: Option<String>,
-    pub title: Option<String>,
+    pub app_name: Option<String>,
     pub publisher: Option<String>,
     pub market: String,
     pub languages: Vec<String>,

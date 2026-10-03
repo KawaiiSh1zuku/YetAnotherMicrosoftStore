@@ -1,12 +1,12 @@
 # 管理员运行时与包管理重构发现
 
-## 当前实现事实
+## 重构前基线事实
 
 - 搜索 DTO 没有图标字段；UI 只能用标题首字母生成占位图标。
 - `normalize_product` 只读取第一个本地化属性和第一个 SKU availability，稀疏搜索结果会丢失发布者、PFN 和包格式。
 - 详情命令已经解析 FE3 包图，但返回值仍主要来自 DCAT 产品对象，没有用包图补齐包身份、发布者和格式。
 - 详情页的兼容架构预览与后台任务的完整 `select_packages` 不是同一条决策路径，界面可显示存在兼容架构，任务仍可能返回 `no_compatible_package`。
-- 用户架构设置当前作为硬过滤条件传给选择器；其产品语义应改为偏好顺序，主机兼容性才是硬门。
+- 用户架构设置在核心选择器中已经作为排序权重；实际分裂点是详情页绕过核心选择器，只统计兼容主包架构。重构后详情与 worker 均走统一入口。
 - 更新扫描固定读取 `CurrentUser`，且只处理数据库中已有可信 PFN/Product ID 关联的主包；未关联包被静默跳过。
 - 已安装页固定调用 `scan_installed_packages("current_user")`，因此不可能显示其他用户或预配包。
 - 已安装 DTO 只有 identity name，没有 Windows `Package.DisplayName`；UI 因而把包身份名当作应用名。
@@ -42,3 +42,14 @@
 - `CatalogProvider` 已支持 `PackageFamilyName` lookup，可复用为未关联已安装包的 PFN 查询入口，不需要猜测 Product ID 或创造旁路协议。
 - `scan_all_users` 已具备 FindPackages/FindUsers/FindProvisionedPackages 基础能力，重构应直接复用并补齐 DisplayName、局部 warning 与稳定去重，而不是另写系统扫描器。
 - README 已有用户暂存内容；最终文档同步必须基于当前暂存版本合并并分别审阅 staged/unstaged diff。
+
+## 重构后实现事实
+
+- 主程序资源 manifest 为 `requireAdministrator`；生产源码、迁移、前端契约和 Tauri 配置中已无 Broker、`AwaitingElevation`、`requiresElevation` 或 `elevation_cancelled`。
+- 唯一初始 migration 直接创建最终 schema version 1；旧开发数据库不提供升级兼容。
+- `SelectionPreview` 由 `select_packages` 的结果投影，不包含 URL；worker 和详情共享同一选择算法，架构设置只影响排序。
+- 搜索最多补全 20 项、最多 4 并发；图标仅接受 `https://store-images.s-microsoft.com`。
+- 机器清单 DTO 包含 appName、packageName、PFN 和 publisher，并按 PFN/version/architecture/resource ID 稳定合并。
+- 更新扫描返回计数、候选、跳过原因和 complete；候选冻结由安装事实推导的 deployment scope。
+- `cargo test --all-targets` 会显式运行带提升 manifest 的零测试 binary harness，并在非提升 runner 返回 Windows 740；最终测试门改为 `cargo test --lib --tests`，binary 由严格 Clippy 和 Tauri build 覆盖。
+- 自定义 elevation manifest 会完全替换 Tauri 默认 manifest；若不保留 `Microsoft.Windows.Common-Controls` v6 依赖，运行库静态导入的 `TaskDialogIndirect` 会在进程装载时失败。当前 manifest 已合并该依赖并由 release 测试固定。

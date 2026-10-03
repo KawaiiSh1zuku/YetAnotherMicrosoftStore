@@ -624,7 +624,6 @@ where
         already_resolving: bool,
     ) -> Result<RunOnceOutcome, WorkerError> {
         let job_id = snapshot.job.job_id.clone();
-        let requires_elevation = snapshot.job.deployment_scope == DeploymentScope::AllUsers;
         if !already_resolving {
             snapshot = self.append(
                 lease,
@@ -711,7 +710,6 @@ where
                 version: main.version.to_string(),
                 architecture: main.architecture,
                 language: main.language.clone(),
-                requires_elevation,
                 targets,
             },
         )?;
@@ -798,15 +796,6 @@ where
             let completed = self.append(lease, snapshot, JobEvent::Completed)?;
             return Ok(processed(completed));
         };
-        if snapshot.job.deployment_scope == DeploymentScope::AllUsers {
-            snapshot = self.append(
-                lease,
-                snapshot,
-                JobEvent::StageChanged {
-                    stage: JobStage::AwaitingElevation,
-                },
-            )?;
-        }
         snapshot = self.append(
             lease,
             snapshot,
@@ -1023,7 +1012,6 @@ fn process_pending_commands<C: Clock>(
                 | JobStage::Downloading
                 | JobStage::Paused
                 | JobStage::Verifying
-                | JobStage::AwaitingElevation
                 | JobStage::Interrupted
                 | JobStage::Failed,
             ) => Some(JobEvent::Cancelled),

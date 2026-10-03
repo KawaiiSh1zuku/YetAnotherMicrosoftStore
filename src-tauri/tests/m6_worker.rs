@@ -359,7 +359,6 @@ fn queued_job(job_id: &str, now: i64) -> Job {
         version: None,
         architecture: None,
         language: None,
-        requires_elevation: false,
         error: None,
         created_at: now,
         updated_at: now,
@@ -394,7 +393,6 @@ fn seed_active_job(store: &Persistence, job_id: &str, active_stages: &[JobStage]
                 version: "1.0.0.0".to_owned(),
                 architecture: Architecture::X64,
                 language: None,
-                requires_elevation: false,
                 targets: vec![JobTarget {
                     role: yet_another_microsoft_store_lib::job_events::JobTargetRole::Main,
                     update_id: "main-update".to_owned(),
@@ -565,6 +563,43 @@ async fn happy_path_freezes_safe_targets_and_persists_deploying_before_commit() 
     assert!(!json.contains("secret.msix"));
     assert!(!json.contains("verified"));
     assert_eq!(store.job_targets("job-safe").expect("targets").len(), 1);
+}
+
+#[tokio::test]
+async fn all_users_moves_directly_from_verifying_to_deploying() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("store");
+    let mut job = queued_job("job-all-users", 100);
+    job.deployment_scope = DeploymentScope::AllUsers;
+    store
+        .append_job_event("job-all-users", 0, JobEvent::Created { job }, 100)
+        .expect("create");
+
+    let calls = Arc::new(Mutex::new(DeploymentCalls::default()));
+    let mut worker = worker(&database, "worker", calls);
+    worker.run_once().await.expect("run");
+
+    let stages = store
+        .list_job_events(0, 100)
+        .expect("events")
+        .into_iter()
+        .filter_map(|stored| match stored.event {
+            JobEvent::StageChanged { stage } => Some(stage),
+            JobEvent::Completed => Some(JobStage::Completed),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stages,
+        vec![
+            JobStage::Resolving,
+            JobStage::Selecting,
+            JobStage::Downloading,
+            JobStage::Verifying,
+            JobStage::Deploying,
+            JobStage::Completed,
+        ]
+    );
 }
 
 #[tokio::test]

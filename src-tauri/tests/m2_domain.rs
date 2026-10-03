@@ -44,7 +44,6 @@ fn downloading_job() -> Job {
         version: Some("1.2.3.4".to_owned()),
         architecture: Some(Architecture::X64),
         language: Some("zh-CN".to_owned()),
-        requires_elevation: false,
         error: None,
         created_at: 100,
         updated_at: 200,
@@ -167,7 +166,6 @@ fn documented_error_code_set_is_stable() {
         ErrorCode::DownloadUrlExpired,
         ErrorCode::HashMismatch,
         ErrorCode::SignatureInvalid,
-        ErrorCode::ElevationCancelled,
         ErrorCode::DeploymentDenied,
         ErrorCode::DeploymentFailed,
         ErrorCode::PackageInUse,
@@ -193,7 +191,6 @@ fn documented_error_code_set_is_stable() {
             "download_url_expired",
             "hash_mismatch",
             "signature_invalid",
-            "elevation_cancelled",
             "deployment_denied",
             "deployment_failed",
             "package_in_use",
@@ -206,6 +203,13 @@ fn documented_error_code_set_is_stable() {
             "package_not_installed"
         ])
     );
+}
+
+#[test]
+fn awaiting_elevation_is_not_a_valid_persisted_job_stage() {
+    let parsed = serde_json::from_str::<JobStage>(r#""awaiting_elevation""#);
+
+    assert!(parsed.is_err());
 }
 
 #[test]

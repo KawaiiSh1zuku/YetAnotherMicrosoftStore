@@ -3,9 +3,9 @@
 use std::{env, path::PathBuf};
 
 use yet_another_microsoft_store_lib::{
-    broker_protocol::{PackageFileRequest, PackageIdentity},
     deployment::{DeploymentScope, WindowsDeploymentBackend},
     deployment_coordinator::DeploymentCoordinator,
+    package::{PackageFileRequest, PackageIdentity},
     package_validation::VerifiedPackageSet,
 };
 
@@ -49,7 +49,7 @@ fn current_user_install_and_uninstall_round_trip() {
 }
 
 #[test]
-#[ignore = "requires an elevated broker package and M0 all-users environment variables"]
+#[ignore = "requires an elevated process and M0 all-users environment variables"]
 fn all_users_stage_provision_deprovision_and_remove_round_trip() {
     let package_path = PathBuf::from(
         env::var_os("M0_PACKAGE_PATH").expect("M0_PACKAGE_PATH must point to a signed .msix"),
@@ -84,13 +84,13 @@ fn all_users_stage_provision_deprovision_and_remove_round_trip() {
     };
 
     DeploymentCoordinator::install(DeploymentScope::AllUsers, &package)
-        .expect("all-users broker stage and provision should succeed");
+        .expect("all-users direct stage and provision should succeed");
     DeploymentCoordinator::uninstall(
         DeploymentScope::AllUsers,
         &package_family_name,
         std::slice::from_ref(&package_full_name),
     )
-    .expect("all-users broker deprovision and removal should succeed");
+    .expect("all-users direct deprovision and removal should succeed");
 }
 
 #[test]

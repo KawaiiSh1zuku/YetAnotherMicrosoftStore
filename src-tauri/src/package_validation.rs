@@ -8,7 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::broker_protocol::{PackageFileRequest, PackageIdentity};
+use crate::package::{PackageFileRequest, PackageIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtectedPackageFile {

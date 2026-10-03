@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     applicability::SelectionResult,
-    broker_protocol::{PackageFileRequest, PackageIdentity},
     domain::{Architecture, CacheEntry, CacheState, PackageFormat, PackageKind, PackageVersion},
+    package::{PackageFileRequest, PackageIdentity},
     package_validation::VerifiedPackageSet,
     resolver::{PackageGraph, ResolvedPackage},
 };

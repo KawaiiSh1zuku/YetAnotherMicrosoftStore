@@ -2,7 +2,6 @@ use std::{fs, path::PathBuf};
 
 use yet_another_microsoft_store_lib::{
     applicability::SelectionMode,
-    broker_protocol::{PackageFileRequest, PackageIdentity},
     deployment::DeploymentScope,
     deployment_coordinator::CoordinatorError,
     deployment_orchestrator::{
@@ -12,6 +11,7 @@ use yet_another_microsoft_store_lib::{
     domain::{InstallSource, PackageVersion},
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     inventory::{InventorySnapshot, InventorySource, PackageInventoryRecord, PackageKind},
+    package::{PackageFileRequest, PackageIdentity},
     package_validation::{ValidationError, VerifiedPackageSet},
     persistence::Persistence,
 };
@@ -130,6 +130,8 @@ fn record_with_provisioning(
     provisioned_for_future_users: bool,
 ) -> PackageInventoryRecord {
     PackageInventoryRecord {
+        app_name: "Example App".to_owned(),
+        package_name: "Example.App".to_owned(),
         identity_name: "Example.App".to_owned(),
         publisher: "CN=Example".to_owned(),
         package_family_name: "Example.App_abc".to_owned(),
@@ -508,16 +510,6 @@ fn downgrade_signature_failure_and_postcondition_mismatch_never_record_source() 
 
 #[test]
 fn m0_internal_errors_map_to_closed_frontend_errors_without_message_leakage() {
-    let uac = AppErrorDto::from(&CoordinatorError {
-        code: "uac_cancelled".to_owned(),
-        message: "sensitive broker detail".to_owned(),
-    });
-    assert_eq!(uac.code, ErrorCode::ElevationCancelled);
-    assert_eq!(uac.retry, RetryAdvice::RequestElevation);
-    assert!(!serde_json::to_string(&uac)
-        .expect("serialize error")
-        .contains("sensitive broker detail"));
-
     let postcondition = AppErrorDto::from(&CoordinatorError {
         code: "postcondition_missing".to_owned(),
         message: "raw HRESULT 0x80000000".to_owned(),

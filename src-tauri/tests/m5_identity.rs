@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::Connection;
 use yet_another_microsoft_store_lib::{
     domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
     identity::{
@@ -42,6 +41,8 @@ impl Drop for TestDatabase {
 
 fn inventory(version: [u16; 4]) -> PackageInventoryRecord {
     PackageInventoryRecord {
+        app_name: "Example App".to_owned(),
+        package_name: "Example.App".to_owned(),
         identity_name: "Example.App".to_owned(),
         publisher: "CN=Example".to_owned(),
         package_family_name: "Example.App_abc".to_owned(),
@@ -218,21 +219,9 @@ fn fresh_catalog_comparison_distinguishes_update_current_ahead_and_identity_mism
 }
 
 #[test]
-fn schema_v2_upgrades_through_v3_and_round_trips_association_confidence() {
-    let database = TestDatabase::new("m5-v2-upgrade");
-    let connection = Connection::open(database.path()).expect("create v2 database");
-    connection
-        .execute_batch(include_str!("../migrations/0001_m2.sql"))
-        .expect("apply v1 schema");
-    connection
-        .execute_batch(include_str!("../migrations/0002_m3_applicability.sql"))
-        .expect("apply v2 schema");
-    connection
-        .pragma_update(None, "user_version", 2)
-        .expect("mark v2 schema");
-    drop(connection);
-
-    let store = Persistence::open(database.path()).expect("upgrade v2 database");
+fn initial_schema_round_trips_association_confidence() {
+    let database = TestDatabase::new("m5-initial-schema");
+    let store = Persistence::open(database.path()).expect("create initial database");
     let association = PackageAssociation {
         package_family_name: "Example.App_abc".to_owned(),
         product_id: Some("product".to_owned()),
@@ -246,7 +235,7 @@ fn schema_v2_upgrades_through_v3_and_round_trips_association_confidence() {
         .upsert_package_association(&association)
         .expect("persist association");
 
-    assert_eq!(store.schema_version().expect("schema version"), 4);
+    assert_eq!(store.schema_version().expect("schema version"), 1);
     assert_eq!(
         store
             .package_association("Example.App_abc")

@@ -66,7 +66,6 @@ pub enum JobEvent {
         version: String,
         architecture: Architecture,
         language: Option<String>,
-        requires_elevation: bool,
         targets: Vec<JobTarget>,
     },
     Failed {
@@ -112,7 +111,6 @@ impl JobEvent {
                     && job.version.is_none()
                     && job.architecture.is_none()
                     && job.language.is_none()
-                    && !job.requires_elevation
                     && job.error.is_none() =>
             {
                 validate_job(job)?;
@@ -150,7 +148,6 @@ impl JobEvent {
                             next.version = None;
                             next.architecture = None;
                             next.language = None;
-                            next.requires_elevation = false;
                             next.error = None;
                         }
                     }
@@ -175,7 +172,6 @@ impl JobEvent {
                         version,
                         architecture,
                         language,
-                        requires_elevation,
                         targets,
                     } => {
                         if old.stage != JobStage::Selecting || old.selected_update_id.is_some() {
@@ -209,7 +205,6 @@ impl JobEvent {
                         next.version = Some(version.clone());
                         next.architecture = Some(*architecture);
                         next.language = language.clone();
-                        next.requires_elevation = *requires_elevation;
                     }
                     Self::Failed { error } => {
                         if !old.stage.can_transition_to(JobStage::Failed)

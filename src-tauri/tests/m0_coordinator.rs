@@ -4,7 +4,7 @@ use yet_another_microsoft_store_lib::{
 };
 
 #[test]
-fn current_user_scope_never_routes_to_the_broker() {
+fn current_user_scope_routes_directly_in_the_elevated_process() {
     assert_eq!(
         route_for_scope(DeploymentScope::CurrentUser),
         DeploymentRoute::CurrentUserDirect
@@ -12,9 +12,9 @@ fn current_user_scope_never_routes_to_the_broker() {
 }
 
 #[test]
-fn all_users_scope_always_routes_to_the_broker() {
+fn all_users_scope_routes_directly_in_the_elevated_process() {
     assert_eq!(
         route_for_scope(DeploymentScope::AllUsers),
-        DeploymentRoute::AllUsersBroker
+        DeploymentRoute::AllUsersDirect
     );
 }

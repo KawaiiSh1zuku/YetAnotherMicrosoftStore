@@ -1,30 +1,34 @@
 # Diagnostics and recovery
 
-M8 diagnostics are deliberately closed and local. The frontend cannot supply arbitrary log text, paths, URLs, or service responses.
+Diagnostics remain closed and local. The frontend cannot submit arbitrary log text, paths, URLs, service responses, SIDs, or HRESULTs.
 
 ## Export contents
 
-`Settings > Export diagnostics` writes `yamstore-diagnostics-<timestamp>-<random-id>.json` to the current user's Downloads directory. The random component prevents rapid consecutive exports from overwriting each other. The Tauri response exposes only the file name and the fixed destination label, not the absolute path.
+`Settings > Export diagnostics` writes `yamstore-diagnostics-<timestamp>-<random-id>.json` to the current administrator account's Downloads directory. The Tauri response exposes only the file name and fixed destination label.
 
-When **Save redacted diagnostics** is off (the default), the application removes the event log and session marker and does not persist runtime, worker, or panic events. A user-requested export still contains the static version, architecture, and host-audit fields, but its event list is empty. Enabling the setting starts a new diagnostic session; disabling it clears the persisted diagnostic files.
-
-The report contains:
+The export may contain:
 
 - schema version, application version, and target architecture;
-- whether the previous session ended without the clean shutdown marker;
+- unclean-session state;
 - the audited production host allowlist;
-- at most 200 fixed diagnostic events with Unix timestamps.
+- at most 200 closed diagnostic events with Unix timestamps.
 
-Allowed event names are `runtime_started`, `previous_session_unclean`, `worker_failure`, `panic`, and `diagnostics_exported`. Unknown or malformed stored event lines are not copied into exports. The event log rotates at 64 KiB and exports retain at most 200 valid events.
+Allowed runtime event names remain `runtime_started`, `previous_session_unclean`, `worker_failure`, `panic`, and `diagnostics_exported`. Inventory and update UI summaries expose only closed counters, completeness, and reason enums; raw Windows or Store errors are never copied into the public result.
 
-The report never contains signed download URLs, proxy credentials, tokens, package paths, database paths, raw Store responses, or raw panic/error strings. Automated tests reject URL schemes and Windows drive paths in the exported JSON.
+The report never contains signed download URLs, proxy credentials, tokens, package paths, database paths, raw Store responses, raw panic strings, SIDs, or HRESULTs. The event log rotates at 64 KiB.
 
-## Crash recovery boundary
+## Recovery boundary
 
-The application holds a per-session Windows mutex so only one process can own the fixed session marker. The marker detects an unclean prior exit and records a fixed recovery event on the next launch. The existing M6 durable event store and generation-fenced worker remain authoritative for job recovery; the marker does not retry deployments or infer package state. Interrupted deployment still requires inventory reconciliation.
+The application owns a per-session Windows mutex and a clean-shutdown marker. The durable event store and generation-fenced worker remain authoritative for job recovery. Interrupted deployment requires inventory reconciliation; diagnostics do not retry deployment or infer success.
 
-The panic hook records only the closed `panic` event and then invokes the previous hook so normal crash reporting behavior is preserved. A clean application exit removes the session marker.
+The main executable is already elevated before Tauri starts. There is no Broker lifecycle, IPC event, `AwaitingElevation` stage, or task-level UAC cancellation event to diagnose. UAC cancellation happens before the application process exists.
+
+## Partial scans
+
+- Inventory results set `complete = false` when machine enumeration, user registration, or provisioned-package queries are incomplete.
+- Update scans return scanned and associated counts, candidates, skipped PFNs with closed reason codes, and `complete`.
+- Partial results remain displayable and do not expose underlying raw errors.
 
 ## Network audit
 
-The report lists the two production catalog/FE3 hosts and the two package delivery hosts. A Rust regression test keeps this list aligned with the production download allowlist. Redirects remain subject to the M4 per-hop host, scheme, credential, fragment, and port checks.
+Catalog/FE3 and package delivery hosts remain explicitly allowlisted. Application images use a separate CSP-only allowlist for `https://store-images.s-microsoft.com`; this does not widen `connect-src` or package download hosts.

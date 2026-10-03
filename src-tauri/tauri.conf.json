@@ -20,7 +20,7 @@
     "security": {
       "csp": {
         "default-src": ["'self'"],
-        "img-src": ["'self'", "data:"],
+        "img-src": ["'self'", "data:", "https://store-images.s-microsoft.com"],
         "style-src": ["'self'", "'unsafe-inline'"],
         "script-src": ["'self'"],
         "connect-src": ["ipc:", "http://ipc.localhost"],
@@ -41,7 +41,6 @@
     "resources": {
       "resources/THIRD_PARTY_LICENSES.json": "THIRD_PARTY_LICENSES.json"
     },
-    "externalBin": ["broker/deployment-broker"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

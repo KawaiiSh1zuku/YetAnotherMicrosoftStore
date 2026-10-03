@@ -1,5 +1,5 @@
 pub use yet_another_microsoft_store_lib::{
-    catalog, deployment, domain, error, inventory, job_events, jobs,
+    applicability, catalog, deployment, domain, error, inventory, job_events, jobs,
 };
 
 #[path = "../src/tauri_api.rs"]
@@ -7,14 +7,19 @@ mod tauri_api;
 
 use tauri_api::{
     ApiAppDetails, ApiAppSettings, ApiBackend, ApiCatalogProduct, ApiDeploymentScope, ApiFuture,
-    ApiInventorySnapshot, ApiJobSnapshot, ApiUpdateCandidate, AppDetailsSource, DetailsRequest,
-    JobChangedHint, JobControlRequest, JobView, ListJobEventsRequest, SearchRequest,
-    StartJobRequest, StartJobSpec, TauriApi, JOB_CHANGED_EVENT,
+    ApiInventorySnapshot, ApiJobSnapshot, ApiUpdateCandidate, ApiUpdateScanResult,
+    AppDetailsSource, DetailsRequest, JobChangedHint, JobControlRequest, JobView,
+    ListJobEventsRequest, SearchRequest, StartJobRequest, StartJobSpec, TauriApi,
+    JOB_CHANGED_EVENT,
 };
 use yet_another_microsoft_store_lib::{
-    catalog::CatalogProduct,
+    applicability::{SelectedMainPackage, SelectionPreview},
+    catalog::{CatalogMetadataState, CatalogProduct},
     deployment::DeploymentScope,
-    domain::{AppSettings, Architecture, ProxyCredentialPolicy, ProxyMode, ThemeMode},
+    domain::{
+        AppSettings, Architecture, PackageFormat, PackageVersion, ProxyCredentialPolicy, ProxyMode,
+        ThemeMode,
+    },
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     inventory::{
         InventorySnapshot, InventorySource, PackageInventoryRecord,
@@ -28,8 +33,12 @@ fn catalog_product() -> CatalogProduct {
     CatalogProduct {
         product_id: "9NBLGGH4NNS1".to_owned(),
         package_family_name: Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned()),
-        title: Some("Windows Terminal".to_owned()),
+        app_name: Some("Windows Terminal".to_owned()),
+        package_name: Some("Microsoft.WindowsTerminal".to_owned()),
         publisher: Some("Microsoft Corporation".to_owned()),
+        package_publisher: Some("CN=Microsoft Corporation".to_owned()),
+        icon_url: Some("https://store-images.s-microsoft.com/image.png".to_owned()),
+        metadata_state: CatalogMetadataState::Complete,
         package_formats: vec!["msixbundle".to_owned()],
         framework_dependencies: vec!["Microsoft.VCLibs.140.00".to_owned()],
     }
@@ -75,7 +84,6 @@ fn downloading_job() -> JobSnapshot {
             version: Some("1.2.3.4".to_owned()),
             architecture: Some(Architecture::X64),
             language: Some("en-US".to_owned()),
-            requires_elevation: false,
             error: None,
             created_at: 10,
             updated_at: 20,
@@ -103,7 +111,6 @@ fn job_snapshot_serialization_flattens_domain_state_and_derives_controls() {
             "version": "1.2.3.4",
             "architecture": "x64",
             "language": "en-US",
-            "requiresElevation": false,
             "allowedControls": ["pause", "cancel"],
             "error": null,
             "updatedAt": 20
@@ -120,6 +127,7 @@ fn catalog_and_details_serialization_match_the_frontend_contract() {
         "US".to_owned(),
         "en-US".to_owned(),
         vec![Architecture::X64, Architecture::Arm64],
+        selection_preview(),
     )
     .expect("safe details should map to the API");
 
@@ -128,8 +136,11 @@ fn catalog_and_details_serialization_match_the_frontend_contract() {
         serde_json::json!({
             "productId": "9NBLGGH4NNS1",
             "packageFamilyName": "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
-            "title": "Windows Terminal",
+            "appName": "Windows Terminal",
+            "packageName": "Microsoft.WindowsTerminal",
             "publisher": "Microsoft Corporation",
+            "iconUrl": "https://store-images.s-microsoft.com/image.png",
+            "metadataState": "complete",
             "packageFormats": ["msixbundle"],
             "frameworkDependencies": ["Microsoft.VCLibs.140.00"]
         })
@@ -139,13 +150,27 @@ fn catalog_and_details_serialization_match_the_frontend_contract() {
         serde_json::json!({
             "productId": "9NBLGGH4NNS1",
             "packageFamilyName": "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
-            "title": "Windows Terminal",
+            "appName": "Windows Terminal",
+            "packageName": "Microsoft.WindowsTerminal",
             "publisher": "Microsoft Corporation",
+            "iconUrl": "https://store-images.s-microsoft.com/image.png",
+            "metadataState": "complete",
             "packageFormats": ["msixbundle"],
             "frameworkDependencies": ["Microsoft.VCLibs.140.00"],
             "market": "US",
             "language": "en-US",
-            "supportedArchitectures": ["x64", "arm64"]
+            "supportedArchitectures": ["x64", "arm64"],
+            "selectionPreview": {
+                "installable": true,
+                "main": {
+                    "version": "1.2.3.4",
+                    "architecture": "x64",
+                    "format": "msix_bundle",
+                    "language": "en-US"
+                },
+                "dependencyCount": 1,
+                "rejectionReason": null
+            }
         })
     );
 }
@@ -158,6 +183,8 @@ fn inventory_serialization_omits_internal_windows_details_and_redacts_warnings()
         os_build: "19045".to_owned(),
         complete: false,
         records: vec![PackageInventoryRecord {
+            app_name: "Windows Terminal".to_owned(),
+            package_name: "Microsoft.WindowsTerminal".to_owned(),
             identity_name: "Microsoft.WindowsTerminal".to_owned(),
             publisher: "CN=Microsoft Corporation".to_owned(),
             package_family_name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned(),
@@ -333,6 +360,7 @@ impl ApiBackend for FixtureBackend {
             Ok(AppDetailsSource {
                 product: catalog_product(),
                 supported_architectures: vec![Architecture::X64, Architecture::Arm64],
+                selection_preview: selection_preview(),
             })
         })
     }
@@ -341,14 +369,24 @@ impl ApiBackend for FixtureBackend {
         Box::pin(async { Ok(raw_inventory()) })
     }
 
-    fn scan_updates(&self) -> ApiFuture<'_, Vec<ApiUpdateCandidate>> {
+    fn scan_updates(&self) -> ApiFuture<'_, ApiUpdateScanResult> {
         Box::pin(async {
-            Ok(vec![ApiUpdateCandidate {
-                package_family_name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned(),
-                current_version: "1.0.0.0".to_owned(),
-                available_version: "1.2.3.4".to_owned(),
-                product_id: Some("9NBLGGH4NNS1".to_owned()),
-            }])
+            Ok(ApiUpdateScanResult {
+                scanned_main_packages: 1,
+                associated_packages: 1,
+                candidates: vec![ApiUpdateCandidate {
+                    app_name: "Windows Terminal".to_owned(),
+                    package_name: "Microsoft.WindowsTerminal".to_owned(),
+                    publisher: "Microsoft Corporation".to_owned(),
+                    package_family_name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned(),
+                    current_version: "1.0.0.0".to_owned(),
+                    available_version: "1.2.3.4".to_owned(),
+                    product_id: Some("9NBLGGH4NNS1".to_owned()),
+                    deployment_scope: ApiDeploymentScope::CurrentUser,
+                }],
+                skipped: Vec::new(),
+                complete: true,
+            })
         })
     }
 
@@ -428,6 +466,20 @@ impl ApiBackend for FixtureBackend {
     }
 }
 
+fn selection_preview() -> SelectionPreview {
+    SelectionPreview {
+        installable: true,
+        main: Some(SelectedMainPackage {
+            version: PackageVersion::new(1, 2, 3, 4),
+            architecture: Architecture::X64,
+            format: PackageFormat::MsixBundle,
+            language: Some("en-US".to_owned()),
+        }),
+        dependency_count: 1,
+        rejection_reason: None,
+    }
+}
+
 fn details_request() -> DetailsRequest {
     DetailsRequest {
         product_id: "9NBLGGH4NNS1".to_owned(),
@@ -457,7 +509,7 @@ async fn facade_exposes_the_complete_closed_command_set() {
         })
         .await
         .expect("search should succeed");
-    assert_eq!(products[0].title, "Windows Terminal");
+    assert_eq!(products[0].app_name, "Windows Terminal");
     assert_eq!(
         api.get_app_details(details_request())
             .await
@@ -475,6 +527,7 @@ async fn facade_exposes_the_complete_closed_command_set() {
         api.scan_updates()
             .await
             .expect("update scan should succeed")
+            .candidates
             .len(),
         1
     );

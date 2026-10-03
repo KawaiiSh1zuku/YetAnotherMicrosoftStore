@@ -10,7 +10,6 @@
     "test:watch": "vitest",
     "test:ui": "playwright test",
     "generate:licenses": "node scripts/generate-license-manifest.mjs",
-    "build:broker": "cargo build --manifest-path src-tauri/broker/Cargo.toml --target x86_64-pc-windows-msvc && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/copy-broker.ps1 -TargetTriple x86_64-pc-windows-msvc -Profile debug",
     "build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Architecture all",
     "preview": "vite preview",
     "tauri": "tauri"

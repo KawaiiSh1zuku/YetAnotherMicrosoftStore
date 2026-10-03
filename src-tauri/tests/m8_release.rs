@@ -124,6 +124,23 @@ fn diagnostic_network_audit_matches_production_endpoints() {
 }
 
 #[test]
+fn elevated_runtime_configuration_has_no_broker_sidecar() {
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/windows/app.manifest"))
+        .expect("main executable manifest");
+    assert!(manifest.contains("level=\"requireAdministrator\""));
+    assert!(manifest.contains("name=\"Microsoft.Windows.Common-Controls\""));
+    assert!(manifest.contains("version=\"6.0.0.0\""));
+
+    let tauri: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).expect("parse tauri config");
+    assert!(tauri["bundle"].get("externalBin").is_none());
+
+    let package: serde_json::Value =
+        serde_json::from_str(include_str!("../../package.json")).expect("parse package scripts");
+    assert!(package["scripts"].get("build:broker").is_none());
+}
+
+#[test]
 fn single_instance_guard_rejects_a_second_owner_and_recovers_after_drop() {
     let first = SingleInstanceGuard::acquire().expect("first instance");
     let error = match SingleInstanceGuard::acquire() {

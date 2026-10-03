@@ -9,7 +9,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use yet_another_microsoft_store_lib::{
-    broker_protocol::PackageFileRequest,
+    package::PackageFileRequest,
     package_validation::{
         copy_and_verify_to_protected_root, ProtectedPackageFile, ValidationError,
     },

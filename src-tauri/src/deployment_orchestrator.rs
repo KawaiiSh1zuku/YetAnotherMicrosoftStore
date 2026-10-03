@@ -1,6 +1,5 @@
 use crate::{
     applicability::SelectionMode,
-    broker_protocol::PackageIdentity,
     deployment::DeploymentScope,
     deployment_coordinator::{CoordinatorError, DeploymentCoordinator},
     deployment_plan::DeploymentPlan,
@@ -8,6 +7,7 @@ use crate::{
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     identity::{AssociationConfidence, PackageAssociation},
     inventory::{InventorySnapshot, PackageInventoryRecord},
+    package::PackageIdentity,
     package_validation::{verify_package_request, ValidationError, VerifiedPackageSet},
     persistence::Persistence,
 };

@@ -46,7 +46,7 @@ fn product() -> ProductRecord {
     ProductRecord {
         product_id: "9WZDNCRFJ3Q8".to_owned(),
         package_family_name: Some("Example.App_123".to_owned()),
-        title: Some("Example".to_owned()),
+        app_name: Some("Example".to_owned()),
         publisher: Some("CN=Example".to_owned()),
         market: "CN".to_owned(),
         languages: vec!["zh-CN".to_owned(), "en-US".to_owned()],
@@ -95,7 +95,6 @@ fn job(job_id: &str) -> Job {
         version: None,
         architecture: None,
         language: None,
-        requires_elevation: false,
         error: None,
         created_at: 200,
         updated_at: 200,
@@ -121,11 +120,21 @@ fn schema_migration_is_replayable() {
     let database = TestDatabase::new("migration-replay");
 
     let first = Persistence::open(database.path()).expect("first migration should succeed");
-    assert_eq!(first.schema_version().expect("schema version"), 4);
+    assert_eq!(first.schema_version().expect("schema version"), 1);
     drop(first);
 
     let reopened = Persistence::open(database.path()).expect("migration replay should succeed");
-    assert_eq!(reopened.schema_version().expect("schema version"), 4);
+    assert_eq!(reopened.schema_version().expect("schema version"), 1);
+
+    let connection = rusqlite::Connection::open(database.path()).expect("inspect schema");
+    let elevation_columns: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'requires_elevation'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("inspect jobs columns");
+    assert_eq!(elevation_columns, 0);
 }
 
 #[test]
@@ -370,7 +379,6 @@ fn job_request_context_survives_settings_changes_and_restart() {
                 version: "1.2.3.4".to_owned(),
                 architecture: Architecture::X64,
                 language: Some("zh-CN".to_owned()),
-                requires_elevation: false,
                 targets: vec![JobTarget {
                     role: JobTargetRole::Main,
                     update_id: "update-main".to_owned(),

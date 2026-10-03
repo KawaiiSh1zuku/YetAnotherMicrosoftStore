@@ -3,9 +3,9 @@ use std::{fs, io::Write, path::PathBuf};
 use sha2::{Digest, Sha256};
 use yet_another_microsoft_store_lib::{
     applicability::SelectionResult,
-    broker_protocol::{PackageFileRequest, PackageIdentity},
     deployment_plan::{build_deployment_plan, DeploymentPlanError},
     domain::{Architecture, CacheEntry, CacheState, PackageFormat, PackageKind, PackageVersion},
+    package::{PackageFileRequest, PackageIdentity},
     package_validation::{verify_package_request, verify_package_signature, ValidationError},
     resolver::{DependencyEdge, DependencyKind, PackageGraph, ResolvedPackage},
 };

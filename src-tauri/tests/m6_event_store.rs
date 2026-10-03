@@ -46,7 +46,6 @@ fn job(job_id: &str) -> Job {
         version: None,
         architecture: None,
         language: None,
-        requires_elevation: false,
         error: None,
         created_at: 100,
         updated_at: 100,
@@ -57,48 +56,6 @@ fn created(store: &Persistence, job_id: &str) {
     store
         .append_job_event(job_id, 0, JobEvent::Created { job: job(job_id) }, 100)
         .expect("create job event");
-}
-
-#[test]
-fn v3_job_is_seeded_as_the_first_event_during_v4_migration() {
-    let database = TestDatabase::new();
-    let connection = Connection::open(&database.0).expect("create v3 database");
-    for sql in [
-        include_str!("../migrations/0001_m2.sql"),
-        include_str!("../migrations/0002_m3_applicability.sql"),
-        include_str!("../migrations/0003_m5_identity.sql"),
-    ] {
-        connection
-            .execute_batch(sql)
-            .expect("apply historical migration");
-    }
-    connection
-        .execute(
-            "INSERT INTO jobs (job_id, kind, product_id, requested_market,
-             requested_architectures_json, requested_languages_json, deployment_scope,
-             stage, bytes_done, requires_elevation, created_at, updated_at)
-             VALUES ('legacy', 'install', '9WZDNCRFJ3Q8', 'CN', '[\"x64\"]',
-             '[\"zh-CN\"]', 'CurrentUser', 'downloading', 0, 0, 100, 200)",
-            [],
-        )
-        .expect("seed legacy job");
-    connection
-        .pragma_update(None, "user_version", 3)
-        .expect("mark v3");
-    drop(connection);
-
-    let store = Persistence::open(&database.0).expect("upgrade database");
-    assert_eq!(store.schema_version().expect("schema version"), 4);
-    let connection = Connection::open(&database.0).expect("inspect migration");
-    let (sequence, event_count): (i64, i64) = connection
-        .query_row(
-            "SELECT j.event_sequence, COUNT(e.sequence) FROM jobs j
-             LEFT JOIN job_events e ON e.job_id = j.job_id WHERE j.job_id = 'legacy'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("inspect event baseline");
-    assert_eq!((sequence, event_count), (1, 1));
 }
 
 #[test]
@@ -504,7 +461,6 @@ fn caller_cannot_replace_selection_error_or_import_a_snapshot() {
                 version: "1.2.3.4".to_owned(),
                 architecture: Architecture::X64,
                 language: Some("zh-CN".to_owned()),
-                requires_elevation: false,
                 targets: Vec::new(),
             },
             200
@@ -854,7 +810,6 @@ fn selection_freezes_safe_targets_in_the_event_transaction() {
         version: "1.2.3.4".to_owned(),
         architecture: Architecture::X64,
         language: Some("zh-CN".to_owned()),
-        requires_elevation: false,
         targets: vec![target.clone()],
     };
     let mut mismatched = selected.clone();
@@ -1153,7 +1108,6 @@ fn job_snapshot_list_fails_if_any_projection_or_target_diverges() {
                 version: "1.2.3.4".to_owned(),
                 architecture: Architecture::X64,
                 language: None,
-                requires_elevation: false,
                 targets: vec![JobTarget {
                     role: JobTargetRole::Main,
                     update_id: "update-main".to_owned(),
