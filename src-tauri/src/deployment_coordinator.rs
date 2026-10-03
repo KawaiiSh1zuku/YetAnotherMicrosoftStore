@@ -7,7 +7,7 @@ use crate::{
     broker_protocol::{AllUsersRemovalRequest, BrokerOperation, BrokerPayload, BrokerRequest},
     deployment::{DeploymentScope, WindowsDeploymentBackend},
     inventory::{InventorySnapshot, WindowsInventory},
-    package_validation::VerifiedPackageSet,
+    package_validation::{verify_package_request, ValidationError, VerifiedPackageSet},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +60,10 @@ impl DeploymentCoordinator {
         scope: DeploymentScope,
         package: &VerifiedPackageSet,
     ) -> Result<InventorySnapshot, CoordinatorError> {
+        verify_package_request(&package.main).map_err(validation_error)?;
+        for dependency in &package.dependencies {
+            verify_package_request(dependency).map_err(validation_error)?;
+        }
         match route_for_scope(scope) {
             DeploymentRoute::CurrentUserDirect => {
                 WindowsDeploymentBackend::install_current_user(package)
@@ -226,6 +230,23 @@ fn broker_error(error: BrokerLaunchError) -> CoordinatorError {
             BrokerLaunchError::BrokerRejected => "broker_rejected",
             BrokerLaunchError::BrokerUnavailable => "broker_unavailable",
             BrokerLaunchError::PipeFailure => "broker_pipe_failure",
+        }
+        .to_owned(),
+        message: error.to_string(),
+    }
+}
+
+fn validation_error(error: ValidationError) -> CoordinatorError {
+    CoordinatorError {
+        code: match error {
+            ValidationError::HashMismatch => "hash_mismatch",
+            ValidationError::IdentityMismatch => "source_identity_mismatch",
+            ValidationError::SignatureInvalid => "signature_invalid",
+            ValidationError::UnsupportedPackageFormat => "unsupported_package_type",
+            ValidationError::InvalidPath
+            | ValidationError::RootEscape
+            | ValidationError::Io(_)
+            | ValidationError::Manifest(_) => "deployment_failed",
         }
         .to_owned(),
         message: error.to_string(),

@@ -16,8 +16,9 @@
 - M2：领域 DTO、安全错误契约、可恢复任务状态机、SQLite schema v1 和 repository 已完成
 - M3：schema v2、强类型版本、封闭错误详情、适用性与资源选择器已完成
 - M4：受控 DCAT/FE3 在线 smoke、静态 Windows/自定义代理、续传下载、流式校验、缓存恢复与淘汰已完成
-- M0-M4 计划匹配审查：已完成；M0 为受控 Windows E2，M1-M3 为自动化 E1，M4 为 E1 加受控在线协议 smoke
-- 产品代码：Tauri/Rust/React 基线以及 M1-M4 协议、持久化、选择、下载/缓存边界已建立；M5 尚未开始
+- M5：schema v3、verified 包图、WinTrust 预检、身份关联、严格版本决策与部署后收敛已完成 E1
+- M0-M5 计划匹配审查：已完成；M0 为受控 Windows E2，M1-M3/M5 为自动化 E1，M4 为 E1 加受控在线协议 smoke
+- 产品代码：Tauri/Rust/React 基线以及 M1-M5 协议、持久化、选择、下载/缓存、安装/更新编排边界已建立；M6 Tauri API 与前端主流程为下一门槛
 
 ## 已确认决策
 
@@ -36,12 +37,20 @@
 
 ## 下一步门槛
 
-1. M5：把 M3 选定、M4 已验证的本地包图接入既有 M0 `DeploymentCoordinator`/Broker/Inventory。
-2. M5：完成 PFN/Product ID/Content ID 关联、严格版本差异、防降级、部署后清单重扫和稳定错误映射。
-3. M5 不重复实现 Broker，不把 M4 在线协议 smoke 当作真实 CDN 下载或跨渠道互操作证据。
+1. M6：移除脚手架命令并冻结封闭的 Tauri 命令、事件、取消/恢复和错误 DTO。
+2. M6：把搜索、详情、队列、已安装和设置主流程接入 M1-M5 后端，完成进度、恢复与可访问性验证。
+3. M5 真实签名 Microsoft 包图/UAC 成功路径继续保留为显式环境门，不把 M0 单包 E2 与 M5 E1 拼接成新实机结论。
 4. PAC/WPAD 保留为独立代理能力门；M4 system 模式只承诺 WinHTTP 当前用户静态代理配置。
 
-## 当前代码验证（2026-10-02）
+## M5 实施结果（2026-10-03）
+
+1. schema v3 与身份关联：保存 PFN/Product ID/Content ID、关联证据和置信状态，纯函数输出更新可用/最新/高于目录/无法关联。
+2. verified 包图装配：只消费 M3 `SelectionResult` 与 M4 `CacheState::Verified` 条目，生成 M0 `VerifiedPackageSet`，按依赖图稳定排序并在部署前复核哈希、manifest identity 与 Windows 签名。
+3. 部署与收敛：以 trait 隔离自动化测试，生产 adapter 只调用 M0 `DeploymentCoordinator`；部署后按 identity/publisher/version/architecture/PFN 完整重扫，成功后记录 `ThisClient`，失败映射为封闭 `AppErrorDto`。
+
+验证边界：默认测试提供 E1 领域/持久化/编排证据；真实签名包、UAC 与 Microsoft CDN 仍使用显式 ignored 环境门，不能由 E1 推断。
+
+## 当前代码验证（2026-10-03）
 
 - 工作区扫描基线为 `master` / `86cae46`；本轮文档修改前工作区干净，未发现未跟踪的证书、私钥、Broker 二进制或临时验收证据。
 - 实际代码边界包括 `catalog.rs`/`resolver.rs` 的 M1 adapter，以及 `deployment.rs`、`broker_protocol.rs`、`broker_launcher.rs`、`deployment_coordinator.rs`、`inventory.rs` 和 `package_validation.rs` 的 M0 部署路径。
@@ -54,6 +63,8 @@
 - M3 证据只覆盖 schema v1→v2、本地 DTO/选择算法和脱敏 FE3 fixture；没有执行实时 Store、下载或部署。
 - M4 新增 Windows 静态系统代理、HTTP(S)/SOCKS5、host/redirect allowlist、Range+ETag/长度变化、取消、并发/限速、URL 刷新、大小/SHA-256、verified/partial 恢复与 retention/LRU 测试；独立审查修复后最终全目标结果为 91 项通过、4 项 ignored。
 - 显式开关下的受控在线 smoke 于 2026-10-02 对 `9WZDNCRFJ3TJ`、`US`、`en` 成功观察到 20 个包和 81 条依赖；未保存临时 URL，未下载真实包，未改变安装状态。
+- M5 新增 schema v3、身份关联、verified 包图计划、WinTrust 预检、严格版本决策和编排收敛；独立审查修复五项 Important 后，全目标结果为 110 项通过、5 项真实环境测试 ignored。
+- M5 最终格式检查、默认特性严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建通过；本轮未执行真实 Microsoft CDN 下载、签名包图部署、UAC 或跨渠道 Store 更新。
 
 ## 约束
 

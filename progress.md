@@ -116,6 +116,8 @@
 | M2 Important 修复的跨文件补丁因 `persistence.rs` 格式化上下文不匹配而拒绝 | 1 | 确认补丁未部分应用，拆为 Job、migration、repository 的小型文件级补丁 |
 | 最终文件统计循环中的 `$f` 被 PowerShell 在传给 Bash 前展开 | 1 | 改为不含 shell 变量的显式 `wc -l` 文件列表 |
 | M0、M1、M2 三个只读审查子代理均返回 `429 Too Many Requests` | 1 | 不采用任何子代理结论，不重复相同并发请求；由主线直接读取实现、测试和证据文档完成审查 |
+| M5 schema v3 首次全量回归使 M2/M3 的当前版本硬编码断言失败 | 1 | 确认迁移注册表与失败位置后，将“升级到当前版本”的历史测试期望从 2 更新为 3；不修改迁移事务逻辑 |
+| M5 首次严格 Clippy 报 `package_association` 查询元组 `type_complexity` | 1 | 按既有 `PackageRow` 模式抽出私有 `PackageAssociationRow` 与 `TryFrom`，不添加 lint allow |
 
 ## M4 下载、缓存与代理（2026-10-02）
 
@@ -130,3 +132,13 @@
 - 独立只读审查提出 7 类 Important：缓存重解析点约束、校验期取消、空闲限速额度、共享内容计费/淘汰、同 key 并发、chunked 超限和提升后未入库孤儿文件。已逐项补回归测试并修复；同时将 `DownloadRequest` 的 Debug URL 脱敏、禁止把 HTTP-only system proxy 复用于 HTTPS。
 - 修复后重跑格式、91 项通过/4 项 ignored 的全目标测试和默认特性严格 Clippy，均成功；M4 聚焦测试为下载 15、网络策略 6、缓存 7。
 - M4 文档明确区分：本地 fixture 是真实字节传输的 E1，在线 smoke 只证明指定时点协议适配；真实 Microsoft CDN 包下载、签名验证、代理服务器互操作、磁盘故障和部署编排仍未验收。
+
+## M5 安装/更新编排与身份关联（2026-10-03）
+
+- 从 `main` / `7cb8db7` 的干净工作区进入 M5；用户要求沿既有规划继续开发、完成后仅暂存并给出提交命令。
+- 改动前基线 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` 通过：91 项通过、4 项需要真实包/UAC/在线环境的测试 ignored；仅观察到既有 MSVC linker 提示。
+- M5 继续遵守总规格边界：复用 M0 `DeploymentCoordinator`/Broker/Inventory，消费 M3 选择结果和 M4 verified 缓存，不把本地自动化证据扩展为真实 Microsoft CDN、跨渠道更新或 Store 接管验收。
+- 完成 schema v3 关联缓存、PFN/Product ID/Content ID 置信状态、verified 包图拓扑计划、WinTrust 签名预检、严格 install/update/no-op、防降级、部署后清单收敛和稳定错误映射。
+- 独立只读审查发现 5 项 Important：canonical Windows 路径在 WinTrust 前被误拒绝、AllUsers 未预配却被判定 current、多版本清单依赖枚举顺序、no-op 降级 `VerifiedDeployment`、framework 被错误要求显式预配。已逐项补失败回归并修复；另移除重复 WinTrust feature。
+- 修复后 M5 聚焦测试为 19 项通过、1 项真实签名包测试 ignored；全目标为 110 项通过、5 项环境测试 ignored。格式检查、严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建通过。
+- 本轮 E1 结果未执行真实 Microsoft CDN 包下载、真实签名包图部署、新 UAC 回环或官方 Store 跨渠道更新；这些门保持未验收。

@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     broker_protocol::PackageIdentity,
-    package_validation::{copy_and_verify_to_protected_root, VerifiedPackageSet},
+    package_validation::{
+        copy_and_verify_to_protected_root, verify_package_signature, VerifiedPackageSet,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +182,12 @@ impl WindowsDeploymentBackend {
                         .map_err(|error| DeploymentError::InvalidPackagePath(error.to_string()))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            verify_package_signature(&main.path)
+                .map_err(|error| DeploymentError::InvalidPackagePath(error.to_string()))?;
+            for dependency in &dependencies {
+                verify_package_signature(&dependency.path)
+                    .map_err(|error| DeploymentError::InvalidPackagePath(error.to_string()))?;
+            }
             let package_uri = file_uri(&main.path)?;
             let dependency_uris: Vec<Option<windows::Foundation::Uri>> = dependencies
                 .iter()

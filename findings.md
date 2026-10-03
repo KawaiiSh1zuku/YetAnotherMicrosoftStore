@@ -156,3 +156,15 @@
 - 同一 `DownloadManager` 内相同 cache key 串行化，避免并发写同一 partial/sidecar；未知长度响应会在下一个 chunk 超出期望大小前终止，校验/rename 前重复检查取消。限速器只预留未来发送时隙，不积累无限空闲额度，也不持锁睡眠。
 - verified 内容提升后、SQLite 入库前崩溃会留下孤儿文件；无活动下载的启动协调会清理未索引 verified 文件。有活动任务时跳过该清理，避免删除刚提升但尚未入库的内容。
 - 受控在线 smoke 表明 `storelib_rs 0.1.11` 在指定输入和时间点仍能返回 DCAT/FE3 包图，但同时揭示 ARM32 moniker 是真实输入。该证据不覆盖付费/授权产品、其他市场、CDN 字节下载、包签名或 Windows 安装。
+
+## M5 编排与签名预检发现（2026-10-03）
+
+- Microsoft 的 MSIX 说明把 `AppxSignature.p7x` 与 `AppxBlockMap.xml` 作为签名和包内容完整性基础；所有可安装 MSIX 都必须签名，Windows 部署仍负责最终签名/依赖验证。
+- Microsoft 的 `WinVerifyTrustEx` 文档说明 `WINTRUST_ACTION_GENERIC_VERIFY_V2` 用默认 Authenticode policy 校验文件/对象，返回值虽声明为 HRESULT，实际必须按 Win32 error code 与零比较，不能用 `SUCCEEDED`/`FAILED`。
+- M5 签名预检应直接调用现有 `windows` crate 的 WinTrust API，禁止引入 SignTool/PowerShell/winget 子进程；真实受信任签名成功路径仍需要显式签名包环境，普通自动化只覆盖无签名/损坏载荷拒绝和接口契约。
+- M5 不扩展 M0 `DeploymentCoordinator`：新增编排端口负责 verified 包图装配、严格版本差异、身份关联和部署后收敛；实际 CurrentUser/AllUsers 执行仍唯一委托既有 M0 direct/Broker 路径。
+- Windows `canonicalize()` 返回本地磁盘 verbatim 路径；路径策略必须允许 `Prefix::VerbatimDisk`，同时继续拒绝 UNC、VerbatimUNC 和 DeviceNS。回归测试确认正确 manifest/hash 的无签名包能到达 WinTrust 并返回 `SignatureInvalid`。
+- AllUsers 的目标状态是 `provisioned_for_future_users`，不能用“任意用户已安装同版本”替代；当前用户与全用户分别使用 scope-aware 已安装/收敛谓词。
+- `ProvisionPackageForAllUsersAsync` 只显式预配主包，framework 可由已预配主包的依赖关系隐式保留且不出现在 `FindProvisionedPackages`。因此 AllUsers 后置条件要求主包显式预配，但允许完整机器清单中的足够版本 framework；optional/resource 仍不放宽。
+- 清单可能同时存在同一 identity 的多个版本。防降级必须检查全部 scope-relevant 记录，主包后置条件寻找精确目标版本，依赖允许不低于目标版本，均不得依赖枚举顺序。
+- 已验证部署关联是比 identity/publisher 推断更强的证据；相同 PFN/product/identity/publisher 的 no-op 只刷新观测，不得把 `VerifiedDeployment` 降级。

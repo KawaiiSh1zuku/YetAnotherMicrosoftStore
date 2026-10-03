@@ -106,11 +106,11 @@ fn schema_migration_is_replayable() {
     let database = TestDatabase::new("migration-replay");
 
     let first = Persistence::open(database.path()).expect("first migration should succeed");
-    assert_eq!(first.schema_version().expect("schema version"), 2);
+    assert_eq!(first.schema_version().expect("schema version"), 3);
     drop(first);
 
     let reopened = Persistence::open(database.path()).expect("migration replay should succeed");
-    assert_eq!(reopened.schema_version().expect("schema version"), 2);
+    assert_eq!(reopened.schema_version().expect("schema version"), 3);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端实现计划
 
-> 状态：已完成 M0-M4 对照审查。M0 为受控 Windows E2 完成，M1-M3 为自动化 E1 完成；M4 为自动化 E1 加指定产品/市场/语言的受控在线协议 smoke。真实 CDN 包下载、部署编排、跨渠道更新和发布能力仍按后续里程碑门控。
+> 状态：已完成 M0-M5 对照审查。M0 为受控 Windows E2 完成，M1-M3/M5 为自动化 E1 完成；M4 为自动化 E1 加指定产品/市场/语言的受控在线协议 smoke。真实 CDN 包下载、真实签名包图部署、跨渠道更新和发布能力仍按独立环境门与后续里程碑门控。
 
 ## 1. 执行范围
 
@@ -100,7 +100,7 @@ docs/
 | M2 领域模型与持久化 | 完成（E1） | 建立包/产品/任务/设置/缓存模型、schema v1 和重启恢复 | 13 项 M2 测试覆盖错误序列化、迁移重放/回滚、repository 往返、请求上下文和恢复语义 | M3 适用性字段与封闭错误详情尚未补齐 |
 | M3 适用性与资源选择 | 完成（E1） | 补齐 schema v2/领域字段，实现 OS、架构、市场、语言、资源和依赖选择 | 23 项 M3 测试覆盖强类型版本、封闭错误、v1→v2、旧错误任务兼容、x64/ARM64/x86/neutral、市场/语言、资源分组、依赖环/传递依赖、最低 OS、格式门和防降级；选择结果可解释 | 只验证本地逻辑和脱敏 fixture；不访问实时下载，不执行部署 |
 | M4 下载、缓存与代理 | 完成（E1 + 受控在线协议 smoke） | 实现受控实时协议 smoke、可续传下载、缓存和四种代理模式 | 91 项全目标测试通过、4 项环境测试 ignored；在线 smoke 记录产品/市场/语言/时间与包图计数；host/redirect、Range+ETag、URL 刷新、取消、限速/并发、缓存恢复和脱敏均有测试 | 在线 smoke 未下载真实包；system 仅静态当前用户代理，PAC/WPAD 未支持；不宣称跨渠道更新 |
-| M5 安装/更新编排与身份关联 | 未开始 | 复用 M0 部署原语接入适用包图、版本差异和 Store 产品关联 | 包图安装/更新、清单重扫、严格更新、防降级、PFN/Product ID 关联和稳定错误映射通过 | 不重复实现 Broker；官方 Store 接管仍待 M7 |
+| M5 安装/更新编排与身份关联 | 完成（E1；真实包图 E2 门待载荷） | 复用 M0 部署原语接入适用包图、版本差异和 Store 产品关联 | schema v3、verified 包图、签名预检接口、清单重扫、严格更新、防降级、PFN/Product ID/Content ID 关联和稳定错误映射通过自动化验证 | 不重复实现 Broker；真实签名 Microsoft 包图/UAC 未重跑；官方 Store 接管仍待 M7 |
 | M6 Tauri API 与前端主流程 | 未开始 | 冻结安全命令/事件 DTO，完成搜索、详情、队列、已安装和设置 UI | 移除脚手架接口；UI 完成主流程、进度/取消/恢复、键盘/焦点/窄窗口检查 | 静态 mock 不能代替 M5 后端集成 |
 | M7 更新与互操作验证 | 未开始 | 取得双渠道更新和冲突策略的 E3 证据 | 指定产品/市场/账户上完成官方 Store→第三方检测、第三方→官方 Store 手动更新、任一渠道领先不降级和重扫收敛 | 条件性兼容，不作普遍保证 |
 | M8 NSIS 与发布加固 | 未开始 | 形成可签名、可升级、可诊断的分发包 | 干净机 NSIS 安装/升级/卸载、Release Broker/安装器签名、WebView2、日志、网络白名单和可访问性回归通过 | 未签名 debug Broker 不能进入发布 |
@@ -193,13 +193,15 @@ M8 ──> M9（新范围审批后）
 
 ### M5：安装/更新编排与身份关联
 
-- 复用 M0 `DeploymentCoordinator`/Broker/Inventory，把 M3 选定且 M4 验证的本地包图转换成 `VerifiedPackageSet`。
-- 扩展包图部署和依赖 URI 顺序，不复制另一套提权/部署实现。
-- 建立 PFN/Product ID/Content ID 的关联缓存和置信状态；不能关联时返回明确状态，不猜测来源。
-- 实现安装清单与新鲜目录图的版本差异、严格更新、防降级和更新后重扫收敛。
-- 将 M0 字符串错误和 Broker 内部错误映射为稳定 `AppErrorDto`；原始 HRESULT 只进入脱敏诊断。
+- [x] 复用 M0 `DeploymentCoordinator`/Broker/Inventory，把 M3 选定且 M4 验证的本地包图转换成 `VerifiedPackageSet`。
+- [x] 扩展包图部署和依赖 URI 顺序，不复制另一套提权/部署实现。
+- [x] 建立 PFN/Product ID/Content ID 的关联缓存和置信状态；不能关联时返回明确状态，不猜测来源。
+- [x] 实现安装清单与新鲜目录图的版本差异、严格更新、防降级和更新后重扫收敛。
+- [x] 将 M0 字符串错误和 Broker 内部错误映射为稳定 `AppErrorDto`；原始 HRESULT 只进入脱敏诊断。
 
-退出条件：普通 MSIX/AppX 包图的 CurrentUser/AllUsers 安装/更新集成通过；官方 Store 已安装包能进入第三方扫描候选；Store 接管更新仍不在本里程碑宣称完成。
+退出条件：普通 MSIX/AppX 包图的 CurrentUser/AllUsers 安装/更新编排通过 E1 集成；官方 Store 已安装包能以精确或显式歧义状态进入第三方扫描候选；Store 接管更新仍不在本里程碑宣称完成。真实签名 Microsoft 包图的 E2 成功路径保持独立环境门。
+
+审查结论：M5 的实现与自动化验证达到 E1。production backend 唯一委托 M0 协调器，签名预检使用 WinTrust，部署后只有在 Windows 清单完整收敛时才事务记录关联与 `ThisClient`。本轮没有下载或安装真实 Microsoft CDN 包，也没有重新触发 UAC；M0 的既有单包 E2 证据不能替代 M5 包图 E2。
 
 ### M6：Tauri API 与前端主流程
 
@@ -232,7 +234,7 @@ M8 ──> M9（新范围审批后）
 - 单独记录 Xbox/MSIXVC API、服务、许可、磁盘和流式安装要求。
 - 未获得新的范围批准前，不修改第一阶段支持矩阵，也不实现下载、安装或更新。
 
-## 7. M0-M4 进度与计划匹配审查
+## 7. M0-M5 进度与计划匹配审查
 
 | 里程碑 | 原计划核心要求 | 当前实际证据 | 偏差与处置 | 结论 |
 |---|---|---|---|---|
@@ -241,6 +243,7 @@ M8 ──> M9（新范围审批后）
 | M2 | 领域 DTO、稳定错误码、任务状态机、SQLite schema/repository、迁移与恢复 | `domain.rs`、`error.rs`、`jobs.rs`、`persistence.rs`、`0001_m2.sql`；13 项 M2 测试 | publisher/resource ID/package kind/min OS 和封闭 error detail 尚缺；不属于原 M2 最低退出条件，已提升为 M3A 强制入口任务 | 匹配，完成（E1，本地） |
 | M3 | schema v2、适用性字段、强类型版本、封闭错误详情和可解释选择器 | `0002_m3_applicability.sql`、`applicability.rs`、resolver 映射；23 项 M3 测试和 1 项扩展 M1 fixture 测试 | production adapter 尚未实时验收；bundle/eAppx 只做本地选择，不等于下载或部署支持 | 匹配，完成（E1，本地） |
 | M4 | 受控在线协议 smoke、代理、可续传下载、校验、缓存恢复和 URL 安全边界 | `settings.rs`、`download.rs`、`verification.rs`、`cache.rs`；28 项 M4 自动化测试、1 项 ARM32 协议回归和 1 项 opt-in 在线 smoke | system 代理收敛为静态当前用户配置；PAC/WPAD 显式留后。在线 smoke 不等于真实 CDN 包下载 | 匹配，完成（E1 + 受控在线 smoke） |
+| M5 | verified 包图、身份关联、严格版本决策、签名预检、M0 部署委托和清单收敛 | `identity.rs`、`deployment_plan.rs`、`deployment_orchestrator.rs`、schema v3；19 项 M5 自动化测试通过，1 项真实签名包测试 ignored | 独立审查修复 canonical 路径误拒绝、AllUsers 未预配误判、framework 隐式预配、清单顺序依赖和 verified 关联降级；真实签名包图/UAC 未重跑 | 匹配，完成（E1；E2 环境门待载荷） |
 
 本轮可复现验证命令：
 
@@ -252,7 +255,7 @@ cargo check --manifest-path src-tauri/broker/Cargo.toml
 pnpm build
 ```
 
-当前结果：91 项 Rust 测试通过，4 项需要签名包/环境变量的 M0 真实部署或 M4 opt-in 在线 smoke 测试 ignored；格式、默认特性严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建均通过。ignored 测试不替代历史 E2 验收，也不构成真实 CDN 下载、部署或跨渠道证据。
+当前结果：110 项 Rust 测试通过，5 项需要签名包/环境变量的 M0 真实部署、M4 opt-in 在线 smoke 或 M5 真实签名包测试 ignored；格式、默认特性严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建均通过。ignored 测试不替代历史 E2 验收，也不构成真实 CDN 下载、真实签名包图部署或跨渠道证据。
 
 ## 8. 风险、回滚与停止条件
 
@@ -281,4 +284,4 @@ pnpm build
 
 ## 10. 当前执行点
 
-中文规格和本实现计划已获批准，M0-M4 的进度/代码/测试/证据与计划已完成对照审查。下一步进入 M5：复用 M0 部署原语，把 M3 选定且 M4 验证的本地包图接入安装/更新编排与身份关联。真实 Microsoft CDN 包下载、签名验证、包图部署、跨渠道更新、NSIS 发布和 MSIXVC 仍未验收，不得从协议 smoke、fixture、SQLite 或本地构建结果推断支持。
+中文规格和本实现计划已获批准，M0-M5 的进度/代码/测试/证据与计划已完成对照审查。下一步进入 M6：冻结安全 Tauri 命令/事件 DTO，并把搜索、详情、队列、已安装与设置主流程接入既有后端。真实 Microsoft CDN 包下载、真实签名包图部署、跨渠道更新、NSIS 发布和 MSIXVC 仍未验收，不得从协议 smoke、fixture、SQLite、mock-backed 编排或本地构建结果推断支持。

@@ -29,6 +29,7 @@ pub enum ValidationError {
     UnsupportedPackageFormat,
     HashMismatch,
     IdentityMismatch,
+    SignatureInvalid,
     RootEscape,
     Io(String),
     Manifest(String),
@@ -41,6 +42,7 @@ impl fmt::Display for ValidationError {
             Self::UnsupportedPackageFormat => formatter.write_str("unsupported package format"),
             Self::HashMismatch => formatter.write_str("package hash mismatch"),
             Self::IdentityMismatch => formatter.write_str("package identity mismatch"),
+            Self::SignatureInvalid => formatter.write_str("package signature is invalid"),
             Self::RootEscape => formatter.write_str("protected root escape"),
             Self::Io(message) | Self::Manifest(message) => formatter.write_str(message),
         }
@@ -120,6 +122,99 @@ pub fn copy_and_verify_to_protected_root(
     })
 }
 
+pub fn verify_package_request(source: &PackageFileRequest) -> Result<(), ValidationError> {
+    validate_source_path(&source.path)?;
+    let source_path = source
+        .path
+        .canonicalize()
+        .map_err(|error| ValidationError::Io(error.to_string()))?;
+    if !source_path.is_file() || has_reparse_component(&source_path)? {
+        return Err(ValidationError::InvalidPath);
+    }
+    let mut file =
+        File::open(&source_path).map_err(|error| ValidationError::Io(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| ValidationError::Io(error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual_hash = format!("{:x}", hasher.finalize());
+    if !actual_hash.eq_ignore_ascii_case(&source.sha256_hex) {
+        return Err(ValidationError::HashMismatch);
+    }
+    read_manifest_identity(&source_path, source.expected_identity.as_ref())?;
+    verify_package_signature(&source_path)
+}
+
+#[cfg(windows)]
+pub fn verify_package_signature(path: &Path) -> Result<(), ValidationError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::HWND,
+            Security::WinTrust::{
+                WinVerifyTrustEx, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA,
+                WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE,
+                WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
+            },
+        },
+    };
+
+    validate_source_path(path)?;
+    if !path.is_file() {
+        return Err(ValidationError::InvalidPath);
+    }
+    let wide_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut file_info = WINTRUST_FILE_INFO {
+        cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
+        pcwszFilePath: PCWSTR(wide_path.as_ptr()),
+        ..Default::default()
+    };
+    let mut trust_data = WINTRUST_DATA {
+        cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+        dwUIChoice: WTD_UI_NONE,
+        fdwRevocationChecks: WTD_REVOKE_NONE,
+        dwUnionChoice: WTD_CHOICE_FILE,
+        Anonymous: WINTRUST_DATA_0 {
+            pFile: &mut file_info,
+        },
+        dwStateAction: WTD_STATEACTION_VERIFY,
+        dwProvFlags: WTD_CACHE_ONLY_URL_RETRIEVAL,
+        ..Default::default()
+    };
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+
+    // SAFETY: The UTF-16 path and both WinTrust structures remain alive for both calls.
+    // Their size, tagged union choice, and file pointer are initialized as required by WinTrust.
+    let status = unsafe { WinVerifyTrustEx(HWND::default(), &mut action, &mut trust_data) };
+    trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
+    // SAFETY: This closes only the state handle created by the preceding verification call.
+    let _ = unsafe { WinVerifyTrustEx(HWND::default(), &mut action, &mut trust_data) };
+
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(ValidationError::SignatureInvalid)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn verify_package_signature(_path: &Path) -> Result<(), ValidationError> {
+    Err(ValidationError::SignatureInvalid)
+}
+
 fn validate_source_path(path: &Path) -> Result<(), ValidationError> {
     if !path.is_absolute() || is_unc_or_device_path(path) {
         return Err(ValidationError::InvalidPath);
@@ -139,6 +234,19 @@ fn validate_source_path(path: &Path) -> Result<(), ValidationError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn is_unc_or_device_path(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => {
+            !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        }
+        _ => true,
+    }
+}
+
+#[cfg(not(windows))]
 fn is_unc_or_device_path(path: &Path) -> bool {
     let value = path.to_string_lossy();
     value.starts_with(r"\\") || value.starts_with(r"\\?\") || value.starts_with(r"\\.\")

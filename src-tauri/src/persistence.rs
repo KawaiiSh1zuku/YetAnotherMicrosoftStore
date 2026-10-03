@@ -15,13 +15,15 @@ use crate::{
         PackageVersion, ProductRecord,
     },
     error::{AppErrorDto, ErrorCode},
+    identity::{AssociationConfidence, PackageAssociation},
     jobs::{Job, JobKind, JobStage, RecoveryAction},
 };
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_m2.sql")),
     (2, include_str!("../migrations/0002_m3_applicability.sql")),
+    (3, include_str!("../migrations/0003_m5_identity.sql")),
 ];
 
 #[derive(Debug)]
@@ -553,6 +555,107 @@ impl Persistence {
         .transpose()
     }
 
+    pub fn upsert_package_association(
+        &self,
+        association: &PackageAssociation,
+    ) -> Result<(), PersistenceError> {
+        self.connection.execute(
+            "INSERT INTO package_associations (
+                package_family_name, product_id, content_id, identity_name, publisher,
+                confidence, observed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(package_family_name) DO UPDATE SET
+                product_id = excluded.product_id,
+                content_id = excluded.content_id,
+                identity_name = excluded.identity_name,
+                publisher = excluded.publisher,
+                confidence = excluded.confidence,
+                observed_at = excluded.observed_at",
+            params![
+                association.package_family_name,
+                association.product_id,
+                association.content_id,
+                association.identity_name,
+                association.publisher,
+                enum_text(association.confidence)?,
+                association.observed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn package_association(
+        &self,
+        package_family_name: &str,
+    ) -> Result<Option<PackageAssociation>, PersistenceError> {
+        let row: Option<PackageAssociationRow> = self
+            .connection
+            .query_row(
+                "SELECT package_family_name, product_id, content_id, identity_name,
+                            publisher, confidence, observed_at
+                     FROM package_associations WHERE package_family_name = ?1",
+                [package_family_name],
+                read_package_association_row,
+            )
+            .optional()?;
+        row.map(PackageAssociation::try_from).transpose()
+    }
+
+    pub fn record_deployment_success(
+        &self,
+        association: &PackageAssociation,
+        observation: &InstallObservation,
+    ) -> Result<(), PersistenceError> {
+        if association.package_family_name != observation.package_family_name
+            || association.product_id != observation.product_id
+            || observation.source != InstallSource::ThisClient
+        {
+            return Err(PersistenceError::InvalidStoredValue(
+                "deployment_success.identity",
+            ));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO package_associations (
+                package_family_name, product_id, content_id, identity_name, publisher,
+                confidence, observed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(package_family_name) DO UPDATE SET
+                product_id = excluded.product_id,
+                content_id = excluded.content_id,
+                identity_name = excluded.identity_name,
+                publisher = excluded.publisher,
+                confidence = excluded.confidence,
+                observed_at = excluded.observed_at",
+            params![
+                association.package_family_name,
+                association.product_id,
+                association.content_id,
+                association.identity_name,
+                association.publisher,
+                enum_text(association.confidence)?,
+                association.observed_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO install_observations (
+                package_family_name, product_id, source, observed_at
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(package_family_name) DO UPDATE SET
+                product_id = excluded.product_id,
+                source = excluded.source,
+                observed_at = excluded.observed_at",
+            params![
+                observation.package_family_name,
+                observation.product_id,
+                enum_text(observation.source)?,
+                observation.observed_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn record_diagnostic(&self, diagnostic: &DiagnosticEvent) -> Result<(), PersistenceError> {
         self.connection.execute(
             "INSERT INTO diagnostics (
@@ -677,6 +780,49 @@ struct PackageRow {
     file_size: Option<i64>,
     sha256: Option<String>,
     install_source: String,
+}
+
+struct PackageAssociationRow {
+    package_family_name: String,
+    product_id: Option<String>,
+    content_id: Option<String>,
+    identity_name: String,
+    publisher: String,
+    confidence: String,
+    observed_at: i64,
+}
+
+fn read_package_association_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<PackageAssociationRow> {
+    Ok(PackageAssociationRow {
+        package_family_name: row.get(0)?,
+        product_id: row.get(1)?,
+        content_id: row.get(2)?,
+        identity_name: row.get(3)?,
+        publisher: row.get(4)?,
+        confidence: row.get(5)?,
+        observed_at: row.get(6)?,
+    })
+}
+
+impl TryFrom<PackageAssociationRow> for PackageAssociation {
+    type Error = PersistenceError;
+
+    fn try_from(row: PackageAssociationRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            package_family_name: row.package_family_name,
+            product_id: row.product_id,
+            content_id: row.content_id,
+            identity_name: row.identity_name,
+            publisher: row.publisher,
+            confidence: parse_enum::<AssociationConfidence>(
+                &row.confidence,
+                "association.confidence",
+            )?,
+            observed_at: row.observed_at,
+        })
+    }
 }
 
 fn read_package_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {

@@ -1,8 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    applicability::ApplicabilityError, catalog::CatalogError, download::DownloadError,
-    resolver::ResolverError,
+    applicability::ApplicabilityError, catalog::CatalogError,
+    deployment_coordinator::CoordinatorError, deployment_plan::DeploymentPlanError,
+    download::DownloadError, package_validation::ValidationError, resolver::ResolverError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,6 +250,88 @@ impl From<&DownloadError> for AppErrorDto {
             | DownloadError::InvalidNetworkPolicy
             | DownloadError::RedirectRejected
             | DownloadError::Cancelled => Self::new(ErrorCode::DownloadFailed, RetryAdvice::Never),
+        }
+    }
+}
+
+impl From<&DeploymentPlanError> for AppErrorDto {
+    fn from(error: &DeploymentPlanError) -> Self {
+        match error {
+            DeploymentPlanError::UnsupportedPackageFormat { .. } => {
+                Self::new(ErrorCode::UnsupportedPackageType, RetryAdvice::Never)
+            }
+            DeploymentPlanError::DependencyCycle { .. } => {
+                Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve)
+            }
+            DeploymentPlanError::MissingVerifiedCache { .. }
+            | DeploymentPlanError::CacheNotVerified { .. } => {
+                Self::new(ErrorCode::DownloadFailed, RetryAdvice::ReResolve)
+            }
+            DeploymentPlanError::MissingProductId
+            | DeploymentPlanError::MissingMainPackage
+            | DeploymentPlanError::AmbiguousMainPackage
+            | DeploymentPlanError::MissingPackageIdentity { .. }
+            | DeploymentPlanError::CacheMetadataMismatch { .. } => {
+                Self::new(ErrorCode::SourceIdentityMismatch, RetryAdvice::ReResolve)
+            }
+        }
+    }
+}
+
+impl From<&ValidationError> for AppErrorDto {
+    fn from(error: &ValidationError) -> Self {
+        match error {
+            ValidationError::HashMismatch => {
+                Self::new(ErrorCode::HashMismatch, RetryAdvice::ReResolve)
+            }
+            ValidationError::IdentityMismatch | ValidationError::Manifest(_) => {
+                Self::new(ErrorCode::SourceIdentityMismatch, RetryAdvice::ReResolve)
+            }
+            ValidationError::SignatureInvalid => {
+                Self::new(ErrorCode::SignatureInvalid, RetryAdvice::Never)
+            }
+            ValidationError::UnsupportedPackageFormat => {
+                Self::new(ErrorCode::UnsupportedPackageType, RetryAdvice::Never)
+            }
+            ValidationError::InvalidPath | ValidationError::RootEscape | ValidationError::Io(_) => {
+                Self::new(ErrorCode::DeploymentFailed, RetryAdvice::Retry)
+            }
+        }
+    }
+}
+
+impl From<&CoordinatorError> for AppErrorDto {
+    fn from(error: &CoordinatorError) -> Self {
+        match error.code.as_str() {
+            "uac_cancelled" => {
+                Self::new(ErrorCode::ElevationCancelled, RetryAdvice::RequestElevation)
+            }
+            "inventory_access_denied"
+            | "caller_context_mismatch"
+            | "broker_rejected"
+            | "broker_invalid_request" => {
+                Self::new(ErrorCode::DeploymentDenied, RetryAdvice::Never)
+            }
+            "postcondition_missing"
+            | "postcondition_residual"
+            | "incomplete_inventory"
+            | "broker_invalid_snapshot" => {
+                Self::new(ErrorCode::DeploymentFailed, RetryAdvice::ReconcileInventory)
+            }
+            "signature_invalid" => Self::new(ErrorCode::SignatureInvalid, RetryAdvice::Never),
+            "hash_mismatch" => Self::new(ErrorCode::HashMismatch, RetryAdvice::ReResolve),
+            "source_identity_mismatch" => {
+                Self::new(ErrorCode::SourceIdentityMismatch, RetryAdvice::ReResolve)
+            }
+            "unsupported_package_type" => {
+                Self::new(ErrorCode::UnsupportedPackageType, RetryAdvice::Never)
+            }
+            "package_in_use" => Self::new(ErrorCode::PackageInUse, RetryAdvice::Retry),
+            "package_not_installed" => Self::new(
+                ErrorCode::PackageNotInstalled,
+                RetryAdvice::ReconcileInventory,
+            ),
+            _ => Self::new(ErrorCode::DeploymentFailed, RetryAdvice::Retry),
         }
     }
 }

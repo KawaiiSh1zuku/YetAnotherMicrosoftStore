@@ -81,7 +81,7 @@ fn v1_database_upgrades_to_v2_without_inventing_applicability_metadata() {
         .expect("load migrated package")
         .expect("migrated package exists");
 
-    assert_eq!(store.schema_version().expect("schema version"), 2);
+    assert_eq!(store.schema_version().expect("schema version"), 3);
     assert_eq!(package.version, PackageVersion::new(1, 2, 3, 4));
     assert_eq!(package.package_kind, PackageKind::Unknown);
     assert_eq!(package.publisher, None);

@@ -1,8 +1,8 @@
 # 支持矩阵与里程碑证据记录
 
-> 记录日期：2026-10-02
+> 记录日期：2026-10-03
 >
-> 本文件记录 M0 基线、原生部署路径和 M4 网络边界证据；不把 fixture/协议 smoke 扩展为真实 CDN 下载、跨渠道更新或 MSIXVC 能力。
+> 本文件记录 M0 基线、原生部署路径、M4 网络边界和 M5 编排证据；不把 fixture/协议 smoke 扩展为真实 CDN 下载、真实签名包图部署、跨渠道更新或 MSIXVC 能力。
 
 ## 构建基线
 
@@ -51,6 +51,19 @@
 | 缓存恢复与淘汰 | SQLite/文件系统测试通过 | 恢复 partial sidecar，核对 verified 哈希，先 retention 后 LRU，保护活动任务且拒绝缓存根逃逸 |
 
 M4 没有执行 Microsoft CDN 真实包下载、包签名验证、磁盘空间故障、代理服务器互操作或 Windows 部署；这些结果不能从本地 HTTP fixture 或协议 smoke 推断。
+
+## M5 编排、身份与签名预检边界
+
+| 能力 | 当前结论 | 证据边界 |
+|---|---|---|
+| verified 包图计划 | 已实现并通过自动化测试 | 只接受 M3 选择结果和 M4 `CacheState::Verified`；核对 update ID、大小、SHA-256、绝对路径并按依赖拓扑稳定排序 |
+| 包身份关联 | schema v3 与纯关联逻辑已实现 | PFN 精确匹配优先，其次是已验证部署记录或唯一 identity/publisher；歧义与无法关联保持显式状态，不猜测来源 |
+| 版本决策 | 严格 install/update/no-op 与防降级通过测试 | Update 要求已安装目标；目录落后返回稳定错误；不把本客户端历史当作 Windows 清单 |
+| 部署前预检 | manifest、哈希与 WinTrust 检查已接入 | 普通测试覆盖拒绝路径；真实受信任签名成功路径保留为 ignored 环境门，Windows 部署仍是最终校验者 |
+| 部署执行 | production adapter 唯一委托 M0 `DeploymentCoordinator` | 自动化使用端口替身验证 CurrentUser/AllUsers 路由和依赖顺序；未重复实现 Broker |
+| 部署后收敛 | 已实现并通过自动化测试 | 重扫 identity/publisher/version/architecture/resource；AllUsers 主包要求显式预配，framework 允许由主包依赖关系隐式保留；成功后才事务写入关联与 `ThisClient` 来源 |
+
+M5 最终自动化结果包含 19 项聚焦测试；工作区全目标为 110 项通过、5 项环境测试 ignored。M5 达到本地 E1 编排证据，并复用 M0 已记录的单包 CurrentUser/AllUsers E2 原语证据。本轮未取得新的真实签名 Microsoft 包图、UAC、CDN 下载或官方 Store 跨渠道更新证据，不能把两层证据拼接成 M5 的 E2/E3 验收。
 
 ## M0 停止条件
 
