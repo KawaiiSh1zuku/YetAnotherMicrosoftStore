@@ -898,3 +898,30 @@ fn strict_update_requires_a_matching_installed_package() {
             if identity_name == "Example.App"
     ));
 }
+
+#[test]
+fn neutral_bundle_update_matches_an_installed_architecture_specific_package() {
+    let candidate = package(
+        "bundle",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::Neutral,
+        PackageFormat::MsixBundle,
+        PackageKind::Main,
+    );
+    let installed = [InstalledPackage {
+        identity_name: "Example.App".to_owned(),
+        publisher: Some("CN=Example".to_owned()),
+        version: PackageVersion::new(1, 0, 0, 0),
+        architecture: Architecture::X64,
+    }];
+
+    let result = select_packages(
+        &graph(vec![candidate]),
+        &x64_host(),
+        &preferences(SelectionMode::Update),
+        &installed,
+    )
+    .expect("neutral bundle should update its installed architecture-specific package");
+
+    assert_eq!(result.packages[0].update_id, "bundle");
+}

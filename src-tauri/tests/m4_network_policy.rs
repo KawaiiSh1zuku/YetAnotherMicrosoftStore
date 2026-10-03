@@ -24,6 +24,7 @@ fn settings(mode: ProxyMode, host: Option<&str>, port: Option<u16>) -> AppSettin
         retention_days: 7,
         keep_installed_payloads: false,
         max_concurrent_downloads: 2,
+        max_concurrent_update_scans: 16,
         theme: Default::default(),
         diagnostics_enabled: false,
     }

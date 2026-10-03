@@ -71,6 +71,24 @@ describe("M6 desktop workbench", () => {
     );
   });
 
+  it("saves an independent update scan concurrency up to sixty four", async () => {
+    const user = userEvent.setup();
+    const client = createClient();
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const concurrency = await screen.findByRole("spinbutton", { name: "更新扫描并发数" });
+    await user.clear(concurrency);
+    await user.type(concurrency, "64");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() =>
+      expect(client.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ maxConcurrentUpdateScans: 64 }),
+      ),
+    );
+  });
+
   it("renders loading, empty, and localized safe error states", async () => {
     const user = userEvent.setup();
     let finishSearch: ((value: never[]) => void) | undefined;

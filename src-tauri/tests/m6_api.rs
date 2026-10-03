@@ -60,6 +60,7 @@ fn domain_settings() -> AppSettings {
         retention_days: 30,
         keep_installed_payloads: false,
         max_concurrent_downloads: 2,
+        max_concurrent_update_scans: 16,
         theme: ThemeMode::Dark,
         diagnostics_enabled: true,
     }
@@ -232,6 +233,7 @@ fn settings_serialization_preserves_ui_preferences_without_exposing_cache_path()
     assert_eq!(value["diagnosticsEnabled"], true);
     assert_eq!(value["proxyCredentials"], "prompt_every_time");
     assert_eq!(value["maxCacheBytes"], 10_737_418_240_u64);
+    assert_eq!(value["maxConcurrentUpdateScans"], 16);
     assert!(value.get("cacheDirectory").is_none());
     assert!(!value.to_string().contains("AppData"));
 }
@@ -286,12 +288,35 @@ fn settings_mapping_preserves_current_fields_and_domain_legacy_defaults() {
         .expect("settings should serialize as an object");
     object.remove("theme");
     object.remove("diagnosticsEnabled");
+    object.remove("maxConcurrentUpdateScans");
     let legacy: AppSettings =
         serde_json::from_value(legacy).expect("legacy settings should use serde defaults");
     let legacy = ApiAppSettings::from_domain(legacy).expect("legacy settings should map to API");
 
     assert_eq!(legacy.theme, ThemeMode::System);
     assert!(!legacy.diagnostics_enabled);
+    assert_eq!(
+        serde_json::to_value(legacy).expect("legacy settings should serialize")
+            ["maxConcurrentUpdateScans"],
+        16
+    );
+}
+
+#[test]
+fn update_scan_concurrency_accepts_sixty_four_and_rejects_values_above_the_limit() {
+    let mut value = serde_json::to_value(
+        ApiAppSettings::from_domain(domain_settings()).expect("valid settings should map to API"),
+    )
+    .expect("settings should serialize");
+    value["maxConcurrentUpdateScans"] = serde_json::json!(64);
+    let accepted: ApiAppSettings =
+        serde_json::from_value(value.clone()).expect("64 concurrent update scans should parse");
+    assert!(accepted.validated().is_ok());
+
+    value["maxConcurrentUpdateScans"] = serde_json::json!(65);
+    let rejected: ApiAppSettings =
+        serde_json::from_value(value).expect("out-of-range value should reach validation");
+    assert!(rejected.validated().is_err());
 }
 
 #[derive(Debug, Clone, Copy, Default)]

@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Instant};
 
 use yet_another_microsoft_store_lib::{
     app_runtime::{
@@ -14,7 +14,9 @@ use yet_another_microsoft_store_lib::{
     job_events::{JobControl, JobEvent},
     persistence::Persistence,
     resolver::{PackageGraph, ResolvedPackage},
-    tauri_api::{ApiBackend, JobControlRequest, ListJobEventsRequest, StartJobSpec},
+    tauri_api::{
+        ApiBackend, DetailsRequest, JobControlRequest, ListJobEventsRequest, StartJobSpec,
+    },
 };
 
 fn detail_package(
@@ -354,13 +356,56 @@ fn detail_architectures_reuse_os_format_and_architecture_applicability() {
 #[ignore = "requires live Store catalog access for PFN association"]
 async fn update_scan_associates_machine_packages_by_pfn() {
     let fixture = RuntimeFixture::new();
-    let updates = fixture
-        .backend()
+    let backend = fixture.backend();
+    let mut settings = backend.get_settings().await.expect("default settings");
+    settings.max_concurrent_update_scans = 64;
+    backend
+        .update_settings(settings)
+        .await
+        .expect("64-way update scan setting");
+    let started = Instant::now();
+    let updates = backend
         .scan_updates()
         .await
-        .expect("unassociated packages are not update candidates");
-    assert!(updates.candidates.is_empty());
+        .expect("production update scan should complete");
+    println!(
+        "live update scan: elapsed_ms={} scanned={} associated={} candidates={} skipped={} complete={}",
+        started.elapsed().as_millis(),
+        updates.scanned_main_packages,
+        updates.associated_packages,
+        updates.candidates.len(),
+        updates.skipped.len(),
+        updates.complete,
+    );
+    for candidate in &updates.candidates {
+        println!(
+            "live update candidate: pfn={} current={} available={}",
+            candidate.package_family_name, candidate.current_version, candidate.available_version,
+        );
+    }
     assert!(updates.scanned_main_packages > 0);
-    assert!(!updates.skipped.is_empty());
-    assert!(!updates.complete);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires live Store catalog access and YAMSTORE_LIVE_DETAILS_PRODUCT_ID"]
+async fn live_details_expose_a_supported_architecture() {
+    let product_id = std::env::var("YAMSTORE_LIVE_DETAILS_PRODUCT_ID")
+        .expect("YAMSTORE_LIVE_DETAILS_PRODUCT_ID is required");
+    let fixture = RuntimeFixture::new();
+    let details = fixture
+        .backend()
+        .get_app_details(DetailsRequest {
+            product_id,
+            market: "US".to_owned(),
+            language: "en-US".to_owned(),
+        })
+        .await
+        .expect("production app details should resolve");
+
+    println!(
+        "live app details: architectures={:?}",
+        details.supported_architectures
+    );
+    assert!(!details.supported_architectures.is_empty());
 }

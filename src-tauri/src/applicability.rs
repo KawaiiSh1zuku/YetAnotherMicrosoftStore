@@ -678,7 +678,8 @@ fn matching_installed<'a>(
         .iter()
         .filter(|candidate| {
             candidate.identity_name.eq_ignore_ascii_case(identity_name)
-                && candidate.architecture == package.architecture
+                && (package.architecture == Architecture::Neutral
+                    || candidate.architecture == package.architecture)
                 && package.publisher.as_deref().is_none_or(|publisher| {
                     candidate
                         .publisher

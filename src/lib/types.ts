@@ -151,6 +151,7 @@ export interface AppSettings {
   retentionDays: number;
   keepInstalledPayloads: boolean;
   maxConcurrentDownloads: number;
+  maxConcurrentUpdateScans: number;
   theme: ThemeMode;
   diagnosticsEnabled: boolean;
 }

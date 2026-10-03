@@ -18,7 +18,7 @@ test.beforeEach(async ({ page }) => {
       region: "US", market: "US", preferredArchitectures: ["x64"], preferredLanguages: ["en-US"],
       proxyMode: "disabled", proxyHost: null, proxyPort: null, proxyCredentials: "prompt_every_time",
       cacheEnabled: true, maxCacheBytes: 10_737_418_240, retentionDays: 30,
-      keepInstalledPayloads: false, maxConcurrentDownloads: 2, theme: "light", diagnosticsEnabled: false,
+      keepInstalledPayloads: false, maxConcurrentDownloads: 2, maxConcurrentUpdateScans: 16, theme: "light", diagnosticsEnabled: false,
     };
     const job = {
       jobId: "job-browser", sequence: 1, productId: product.productId, packageFamilyName: product.packageFamilyName,

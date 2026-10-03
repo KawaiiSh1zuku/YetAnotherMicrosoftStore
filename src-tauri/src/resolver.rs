@@ -261,13 +261,7 @@ fn normalize_instances(
             format,
             PackageFormat::MsixBundle | PackageFormat::AppxBundle | PackageFormat::EappxBundle
         );
-        let is_resource = !is_bundle
-            && (instance.main_package == Some(false)
-                || instance
-                    .applicability_blob
-                    .as_ref()
-                    .and_then(|blob| blob.content_is_main)
-                    == Some(false));
+        let is_resource = !is_bundle && moniker.resource_id.is_some();
         let package_kind = if is_framework {
             PackageKind::Framework
         } else if is_resource {

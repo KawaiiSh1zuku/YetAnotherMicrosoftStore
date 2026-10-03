@@ -363,6 +363,7 @@ pub struct ApiAppSettings {
     pub retention_days: u32,
     pub keep_installed_payloads: bool,
     pub max_concurrent_downloads: u32,
+    pub max_concurrent_update_scans: u32,
     pub theme: ThemeMode,
     pub diagnostics_enabled: bool,
 }
@@ -383,6 +384,7 @@ impl ApiAppSettings {
             retention_days: settings.retention_days,
             keep_installed_payloads: settings.keep_installed_payloads,
             max_concurrent_downloads: settings.max_concurrent_downloads,
+            max_concurrent_update_scans: settings.max_concurrent_update_scans,
             theme: settings.theme,
             diagnostics_enabled: settings.diagnostics_enabled,
         }
@@ -413,6 +415,7 @@ impl ApiAppSettings {
             || self.max_cache_bytes == 0
             || !(1..=365).contains(&self.retention_days)
             || !(1..=8).contains(&self.max_concurrent_downloads)
+            || !(1..=64).contains(&self.max_concurrent_update_scans)
         {
             return Err(boundary_error(ErrorCode::DownloadFailed));
         }

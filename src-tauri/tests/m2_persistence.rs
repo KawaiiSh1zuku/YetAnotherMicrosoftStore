@@ -210,6 +210,7 @@ fn repositories_round_trip_domain_records() {
         retention_days: 30,
         keep_installed_payloads: false,
         max_concurrent_downloads: 3,
+        max_concurrent_update_scans: 16,
         theme: ThemeMode::Dark,
         diagnostics_enabled: true,
     };
@@ -431,6 +432,7 @@ fn job_request_context_survives_settings_changes_and_restart() {
             retention_days: 0,
             keep_installed_payloads: false,
             max_concurrent_downloads: 1,
+            max_concurrent_update_scans: 16,
             theme: ThemeMode::System,
             diagnostics_enabled: false,
         })

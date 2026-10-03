@@ -32,7 +32,7 @@ use crate::{
     download::DownloadManager,
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     identity::{AssociationConfidence, PackageAssociation},
-    inventory::{derive_update_scope, PackageKind as InventoryPackageKind},
+    inventory::{derive_update_scope, PackageInventoryRecord, PackageKind as InventoryPackageKind},
     job_events::JobCommand,
     job_worker::{
         JobWorker, LocalePackageResolver, ManagerDownloadPort, RunOnceOutcome, SystemClock,
@@ -52,6 +52,7 @@ use crate::{
 
 const WORKER_LEASE_TTL_SECONDS: i64 = 30;
 const WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const UPDATE_SCAN_CONCURRENCY_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePaths {
@@ -375,20 +376,16 @@ impl ApiBackend for ProductionApiBackend {
             .map_err(|error| AppErrorDto::from(&error))?;
             let persistence = backend.open_persistence()?;
             let settings = backend.load_settings(&persistence)?;
-            let mut candidates = Vec::new();
-            let mut skipped = Vec::new();
-            let mut scanned_main_packages = 0;
-            let mut associated_packages = 0;
+            let update_scan_concurrency =
+                usize::try_from(settings.max_concurrent_update_scans).unwrap_or(1);
             let mut complete = inventory.complete;
             let mut scanned_families = HashSet::new();
-            for installed in inventory.records {
-                if installed.package_kind != InventoryPackageKind::Main
-                    || !scanned_families.insert(installed.package_family_name.to_ascii_lowercase())
-                {
-                    continue;
-                }
-                scanned_main_packages += 1;
-                let mut association = persistence
+            let mut association_jobs = Vec::new();
+            for installed in inventory.records.into_iter().filter(|installed| {
+                installed.package_kind == InventoryPackageKind::Main
+                    && scanned_families.insert(installed.package_family_name.to_ascii_lowercase())
+            }) {
+                let association = persistence
                     .package_association(&installed.package_family_name)
                     .map_err(persistence_error)?
                     .filter(|association| {
@@ -399,77 +396,46 @@ impl ApiBackend for ProductionApiBackend {
                                 | AssociationConfidence::ExactIdentityPublisher
                         ) && association.product_id.is_some()
                     });
-                if association.is_none() {
-                    let language = settings
-                        .preferred_languages
-                        .first()
-                        .map(String::as_str)
-                        .unwrap_or("en-US");
-                    let lookup = match StoreLibCatalogAdapter::production_for_locale(
-                        &settings.market,
-                        language,
-                    ) {
-                        Ok(mut catalog) => catalog
-                            .lookup(
-                                CatalogIdentifier::PackageFamilyName,
-                                &installed.package_family_name,
-                            )
-                            .await
-                            .ok(),
-                        Err(_) => None,
-                    };
-                    association = lookup.and_then(|product| {
-                        let identity_matches =
-                            product.package_name.as_deref().is_some_and(|name| {
-                                name.eq_ignore_ascii_case(&installed.identity_name)
-                            });
-                        let publisher_matches = product.package_publisher.as_deref()
-                            == Some(installed.publisher.as_str());
-                        let family_matches =
-                            product
-                                .package_family_name
-                                .as_deref()
-                                .is_some_and(|family| {
-                                    family.eq_ignore_ascii_case(&installed.package_family_name)
-                                });
-                        if !identity_matches || !publisher_matches || !family_matches {
-                            return None;
-                        }
-                        if persist_catalog_product(
-                            &persistence,
-                            &product,
-                            &settings.market,
-                            language,
-                        )
-                        .is_err()
-                        {
-                            return None;
-                        }
-                        Some(PackageAssociation {
-                            package_family_name: installed.package_family_name.clone(),
-                            product_id: Some(product.product_id),
-                            content_id: None,
-                            identity_name: installed.identity_name.clone(),
-                            publisher: installed.publisher.clone(),
-                            confidence: AssociationConfidence::ExactPackageFamilyName,
-                            observed_at: unix_now(),
-                        })
-                    });
-                    if let Some(association) = &association {
-                        persistence
-                            .upsert_package_association(association)
-                            .map_err(persistence_error)?;
+                association_jobs.push(UpdateAssociationJob {
+                    index: association_jobs.len(),
+                    installed,
+                    association,
+                });
+            }
+            let scanned_main_packages = association_jobs.len();
+            let association_settings = settings.clone();
+            let mut association_outcomes =
+                collect_bounded(association_jobs, update_scan_concurrency, move |job| {
+                    let settings = association_settings.clone();
+                    async move { associate_update_package(job, &settings).await }
+                })
+                .await;
+            association_outcomes.sort_by_key(UpdateAssociationOutcome::index);
+
+            let mut resolution_jobs = Vec::new();
+            let mut skipped = Vec::new();
+            for outcome in association_outcomes {
+                let UpdateAssociationReady {
+                    index,
+                    installed,
+                    association,
+                    product,
+                    lookup_language,
+                } = match outcome {
+                    UpdateAssociationOutcome::Ready(ready) => *ready,
+                    UpdateAssociationOutcome::Skipped { skipped: item, .. } => {
+                        complete = false;
+                        skipped.push(item);
+                        continue;
                     }
-                }
-                let Some(association) = association else {
-                    complete = false;
-                    skipped.push(ApiUpdateSkipped {
-                        package_family_name: installed.package_family_name,
-                        reason: ApiUpdateSkipReason::MissingAssociation,
-                    });
-                    continue;
                 };
-                associated_packages += 1;
+                if let Some(product) = product {
+                    let language = lookup_language.as_deref().unwrap_or("en-US");
+                    persist_catalog_product(&persistence, &product, &settings.market, language)?;
+                    persistence
+                        .upsert_package_association(&association)
+                        .map_err(persistence_error)?;
+                }
                 let product_id = association.product_id.ok_or_else(|| {
                     runtime_error(ErrorCode::SourceIdentityMismatch, RetryAdvice::Never)
                 })?;
@@ -488,92 +454,40 @@ impl ApiBackend for ProductionApiBackend {
                     .ok_or_else(|| {
                         runtime_error(ErrorCode::CatalogUnavailable, RetryAdvice::ReResolve)
                     })?;
-                let mut resolver = StoreLibResolverAdapter::production_for_locale(market, language)
-                    .map_err(|error| AppErrorDto::from(&error))?;
-                let graph = match resolver.resolve(&product_id).await {
-                    Ok(graph) => graph,
-                    Err(_) => {
-                        complete = false;
-                        skipped.push(ApiUpdateSkipped {
-                            package_family_name: installed.package_family_name,
-                            reason: ApiUpdateSkipReason::CatalogUnavailable,
-                        });
-                        continue;
+                let market = market.to_owned();
+                let language = language.to_owned();
+                resolution_jobs.push(UpdateResolutionJob {
+                    index,
+                    installed,
+                    product_id,
+                    product,
+                    market,
+                    language,
+                });
+            }
+            let associated_packages = resolution_jobs.len();
+            let host = system_host_capabilities()?;
+            let resolution_settings = settings.clone();
+            let mut resolution_outcomes =
+                collect_bounded(resolution_jobs, update_scan_concurrency, move |job| {
+                    let host = host.clone();
+                    let settings = resolution_settings.clone();
+                    async move { resolve_update_package(job, &host, &settings).await }
+                })
+                .await;
+            resolution_outcomes.sort_by_key(UpdateResolutionOutcome::index);
+
+            let mut candidates = Vec::new();
+            for outcome in resolution_outcomes {
+                match outcome {
+                    UpdateResolutionOutcome::Candidate { candidate, .. } => {
+                        candidates.push(candidate);
                     }
-                };
-                if validate_resolved_product(&graph, &product_id, market).is_err() {
-                    complete = false;
-                    skipped.push(ApiUpdateSkipped {
-                        package_family_name: installed.package_family_name,
-                        reason: ApiUpdateSkipReason::SourceIdentityMismatch,
-                    });
-                    continue;
-                }
-                let installed_version = PackageVersion::new(
-                    installed.version[0],
-                    installed.version[1],
-                    installed.version[2],
-                    installed.version[3],
-                );
-                let Some(installed_architecture) = parse_architecture(&installed.architecture)
-                else {
-                    complete = false;
-                    skipped.push(ApiUpdateSkipped {
-                        package_family_name: installed.package_family_name,
-                        reason: ApiUpdateSkipReason::SelectionRejected,
-                    });
-                    continue;
-                };
-                let installed_selection = InstalledPackage {
-                    identity_name: installed.identity_name.clone(),
-                    publisher: Some(installed.publisher.clone()),
-                    version: installed_version,
-                    architecture: installed_architecture,
-                };
-                let preferences = SelectionPreferences {
-                    market: market.to_owned(),
-                    preferred_architectures: settings.preferred_architectures.clone(),
-                    preferred_languages: prioritized_languages(language, &settings),
-                    mode: SelectionMode::Update,
-                };
-                let selection = match select_packages(
-                    &graph,
-                    &system_host_capabilities()?,
-                    &preferences,
-                    &[installed_selection],
-                ) {
-                    Ok(selection) => selection,
-                    Err(_) => continue,
-                };
-                let Some(main) = selection
-                    .packages
-                    .iter()
-                    .find(|package| package.package_kind == PackageKind::Main)
-                else {
-                    complete = false;
-                    continue;
-                };
-                if main.version > installed_version {
-                    let deployment_scope = match derive_update_scope(&installed) {
-                        DeploymentScope::CurrentUser => ApiDeploymentScope::CurrentUser,
-                        DeploymentScope::AllUsers => ApiDeploymentScope::AllUsers,
-                    };
-                    candidates.push(ApiUpdateCandidate {
-                        app_name: product
-                            .as_ref()
-                            .and_then(|product| product.app_name.clone())
-                            .unwrap_or_else(|| installed.app_name.clone()),
-                        package_name: installed.package_name.clone(),
-                        publisher: product
-                            .as_ref()
-                            .and_then(|product| product.publisher.clone())
-                            .unwrap_or_else(|| installed.publisher.clone()),
-                        package_family_name: installed.package_family_name,
-                        current_version: installed_version.to_string(),
-                        available_version: main.version.to_string(),
-                        product_id: Some(product_id),
-                        deployment_scope,
-                    });
+                    UpdateResolutionOutcome::UpToDate { .. } => {}
+                    UpdateResolutionOutcome::Skipped { skipped: item, .. } => {
+                        complete = false;
+                        skipped.push(item);
+                    }
                 }
             }
             Ok(ApiUpdateScanResult {
@@ -687,6 +601,7 @@ impl ApiBackend for ProductionApiBackend {
                 retention_days: settings.retention_days,
                 keep_installed_payloads: settings.keep_installed_payloads,
                 max_concurrent_downloads: settings.max_concurrent_downloads,
+                max_concurrent_update_scans: settings.max_concurrent_update_scans,
                 theme: settings.theme,
                 diagnostics_enabled: settings.diagnostics_enabled,
             };
@@ -797,6 +712,280 @@ impl ProductionApiBackend {
     }
 }
 
+struct UpdateAssociationJob {
+    index: usize,
+    installed: PackageInventoryRecord,
+    association: Option<PackageAssociation>,
+}
+
+struct UpdateAssociationReady {
+    index: usize,
+    installed: PackageInventoryRecord,
+    association: PackageAssociation,
+    product: Option<CatalogProduct>,
+    lookup_language: Option<String>,
+}
+
+enum UpdateAssociationOutcome {
+    Ready(Box<UpdateAssociationReady>),
+    Skipped {
+        index: usize,
+        skipped: ApiUpdateSkipped,
+    },
+}
+
+impl UpdateAssociationOutcome {
+    const fn index(&self) -> usize {
+        match self {
+            Self::Ready(ready) => ready.index,
+            Self::Skipped { index, .. } => *index,
+        }
+    }
+}
+
+async fn associate_update_package(
+    job: UpdateAssociationJob,
+    settings: &AppSettings,
+) -> UpdateAssociationOutcome {
+    if let Some(association) = job.association {
+        return UpdateAssociationOutcome::Ready(Box::new(UpdateAssociationReady {
+            index: job.index,
+            installed: job.installed,
+            association,
+            product: None,
+            lookup_language: None,
+        }));
+    }
+    let language = settings
+        .preferred_languages
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "en-US".to_owned());
+    let mut catalog =
+        match StoreLibCatalogAdapter::production_for_locale(&settings.market, &language) {
+            Ok(catalog) => catalog,
+            Err(_) => {
+                return skipped_association(
+                    job.index,
+                    job.installed.package_family_name,
+                    ApiUpdateSkipReason::CatalogUnavailable,
+                );
+            }
+        };
+    let product = match catalog
+        .lookup(
+            CatalogIdentifier::PackageFamilyName,
+            &job.installed.package_family_name,
+        )
+        .await
+    {
+        Ok(product) => product,
+        Err(_) => {
+            return skipped_association(
+                job.index,
+                job.installed.package_family_name,
+                ApiUpdateSkipReason::MissingAssociation,
+            );
+        }
+    };
+    let identity_matches = product
+        .package_name
+        .as_deref()
+        .is_some_and(|name| name.eq_ignore_ascii_case(&job.installed.identity_name));
+    let publisher_matches = product
+        .package_publisher
+        .as_deref()
+        .is_some_and(|publisher| publisher.eq_ignore_ascii_case(&job.installed.publisher));
+    let family_matches = product
+        .package_family_name
+        .as_deref()
+        .is_some_and(|family| family.eq_ignore_ascii_case(&job.installed.package_family_name));
+    if !identity_matches || !publisher_matches || !family_matches {
+        return skipped_association(
+            job.index,
+            job.installed.package_family_name,
+            ApiUpdateSkipReason::SourceIdentityMismatch,
+        );
+    }
+    let association = PackageAssociation {
+        package_family_name: job.installed.package_family_name.clone(),
+        product_id: Some(product.product_id.clone()),
+        content_id: None,
+        identity_name: job.installed.identity_name.clone(),
+        publisher: job.installed.publisher.clone(),
+        confidence: AssociationConfidence::ExactPackageFamilyName,
+        observed_at: unix_now(),
+    };
+    UpdateAssociationOutcome::Ready(Box::new(UpdateAssociationReady {
+        index: job.index,
+        installed: job.installed,
+        association,
+        product: Some(product),
+        lookup_language: Some(language),
+    }))
+}
+
+fn skipped_association(
+    index: usize,
+    package_family_name: String,
+    reason: ApiUpdateSkipReason,
+) -> UpdateAssociationOutcome {
+    UpdateAssociationOutcome::Skipped {
+        index,
+        skipped: ApiUpdateSkipped {
+            package_family_name,
+            reason,
+        },
+    }
+}
+
+struct UpdateResolutionJob {
+    index: usize,
+    installed: PackageInventoryRecord,
+    product_id: String,
+    product: Option<ProductRecord>,
+    market: String,
+    language: String,
+}
+
+enum UpdateResolutionOutcome {
+    Candidate {
+        index: usize,
+        candidate: ApiUpdateCandidate,
+    },
+    UpToDate {
+        index: usize,
+    },
+    Skipped {
+        index: usize,
+        skipped: ApiUpdateSkipped,
+    },
+}
+
+impl UpdateResolutionOutcome {
+    const fn index(&self) -> usize {
+        match self {
+            Self::Candidate { index, .. }
+            | Self::UpToDate { index }
+            | Self::Skipped { index, .. } => *index,
+        }
+    }
+}
+
+async fn resolve_update_package(
+    job: UpdateResolutionJob,
+    host: &HostCapabilities,
+    settings: &AppSettings,
+) -> UpdateResolutionOutcome {
+    let mut resolver =
+        match StoreLibResolverAdapter::production_for_locale(&job.market, &job.language) {
+            Ok(resolver) => resolver,
+            Err(_) => {
+                return skipped_resolution(&job, ApiUpdateSkipReason::CatalogUnavailable);
+            }
+        };
+    let graph = match resolver.resolve(&job.product_id).await {
+        Ok(graph) => graph,
+        Err(_) => {
+            return skipped_resolution(&job, ApiUpdateSkipReason::CatalogUnavailable);
+        }
+    };
+    if validate_resolved_product(&graph, &job.product_id, &job.market).is_err() {
+        return skipped_resolution(&job, ApiUpdateSkipReason::SourceIdentityMismatch);
+    }
+    let installed_version = PackageVersion::new(
+        job.installed.version[0],
+        job.installed.version[1],
+        job.installed.version[2],
+        job.installed.version[3],
+    );
+    let Some(installed_architecture) = parse_architecture(&job.installed.architecture) else {
+        return skipped_resolution(&job, ApiUpdateSkipReason::SelectionRejected);
+    };
+    let latest_compatible_version =
+        graph
+            .packages
+            .iter()
+            .filter(|package| package.package_kind == PackageKind::Main)
+            .filter(|package| package_incompatibility_reason(package, host).is_none())
+            .filter(|package| {
+                package.identity_name.as_deref().is_some_and(|identity| {
+                    identity.eq_ignore_ascii_case(&job.installed.identity_name)
+                }) && package.publisher.as_deref().is_none_or(|publisher| {
+                    publisher.eq_ignore_ascii_case(&job.installed.publisher)
+                })
+            })
+            .map(|package| package.version)
+            .max();
+    let Some(latest_compatible_version) = latest_compatible_version else {
+        return skipped_resolution(&job, ApiUpdateSkipReason::SelectionRejected);
+    };
+    if latest_compatible_version <= installed_version {
+        return UpdateResolutionOutcome::UpToDate { index: job.index };
+    }
+    let installed_selection = InstalledPackage {
+        identity_name: job.installed.identity_name.clone(),
+        publisher: Some(job.installed.publisher.clone()),
+        version: installed_version,
+        architecture: installed_architecture,
+    };
+    let preferences = SelectionPreferences {
+        market: job.market.clone(),
+        preferred_architectures: settings.preferred_architectures.clone(),
+        preferred_languages: prioritized_languages(&job.language, settings),
+        mode: SelectionMode::Update,
+    };
+    let selection = match select_packages(&graph, host, &preferences, &[installed_selection]) {
+        Ok(selection) => selection,
+        Err(_) => return skipped_resolution(&job, ApiUpdateSkipReason::SelectionRejected),
+    };
+    let Some(main) = selection
+        .packages
+        .iter()
+        .find(|package| package.package_kind == PackageKind::Main)
+    else {
+        return skipped_resolution(&job, ApiUpdateSkipReason::SelectionRejected);
+    };
+    let deployment_scope = match derive_update_scope(&job.installed) {
+        DeploymentScope::CurrentUser => ApiDeploymentScope::CurrentUser,
+        DeploymentScope::AllUsers => ApiDeploymentScope::AllUsers,
+    };
+    UpdateResolutionOutcome::Candidate {
+        index: job.index,
+        candidate: ApiUpdateCandidate {
+            app_name: job
+                .product
+                .as_ref()
+                .and_then(|product| product.app_name.clone())
+                .unwrap_or_else(|| job.installed.app_name.clone()),
+            package_name: job.installed.package_name.clone(),
+            publisher: job
+                .product
+                .as_ref()
+                .and_then(|product| product.publisher.clone())
+                .unwrap_or_else(|| job.installed.publisher.clone()),
+            package_family_name: job.installed.package_family_name.clone(),
+            current_version: installed_version.to_string(),
+            available_version: main.version.to_string(),
+            product_id: Some(job.product_id.clone()),
+            deployment_scope,
+        },
+    }
+}
+
+fn skipped_resolution(
+    job: &UpdateResolutionJob,
+    reason: ApiUpdateSkipReason,
+) -> UpdateResolutionOutcome {
+    UpdateResolutionOutcome::Skipped {
+        index: job.index,
+        skipped: ApiUpdateSkipped {
+            package_family_name: job.installed.package_family_name.clone(),
+            reason,
+        },
+    }
+}
+
 fn persist_catalog_product(
     persistence: &Persistence,
     product: &CatalogProduct,
@@ -865,6 +1054,7 @@ fn default_settings(cache_root: &Path) -> AppSettings {
         retention_days: 30,
         keep_installed_payloads: false,
         max_concurrent_downloads: 2,
+        max_concurrent_update_scans: 16,
         theme: ThemeMode::System,
         diagnostics_enabled: false,
     }
@@ -1156,4 +1346,50 @@ pub type WorkerWaitFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 pub fn wait_for_worker_wake(wake: &WorkerWake) -> WorkerWaitFuture<'_> {
     Box::pin(wake.notified())
+}
+
+async fn collect_bounded<T, R, F, Fut>(items: Vec<T>, concurrency: usize, operation: F) -> Vec<R>
+where
+    F: FnMut(T) -> Fut,
+    Fut: Future<Output = R>,
+{
+    stream::iter(items)
+        .map(operation)
+        .buffer_unordered(concurrency.clamp(1, UPDATE_SCAN_CONCURRENCY_LIMIT))
+        .collect()
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use super::{collect_bounded, UPDATE_SCAN_CONCURRENCY_LIMIT};
+
+    #[tokio::test]
+    async fn update_network_work_is_bounded_and_concurrent() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let results = collect_bounded((0..128).collect(), UPDATE_SCAN_CONCURRENCY_LIMIT, |value| {
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            async move {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(current, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                value
+            }
+        })
+        .await;
+
+        assert_eq!(results.len(), 128);
+        assert_eq!(
+            maximum.load(Ordering::SeqCst),
+            UPDATE_SCAN_CONCURRENCY_LIMIT
+        );
+    }
 }

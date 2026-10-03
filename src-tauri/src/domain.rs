@@ -239,10 +239,16 @@ pub struct AppSettings {
     pub retention_days: u32,
     pub keep_installed_payloads: bool,
     pub max_concurrent_downloads: u32,
+    #[serde(default = "default_update_scan_concurrency")]
+    pub max_concurrent_update_scans: u32,
     #[serde(default)]
     pub theme: ThemeMode,
     #[serde(default)]
     pub diagnostics_enabled: bool,
+}
+
+const fn default_update_scan_concurrency() -> u32 {
+    16
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

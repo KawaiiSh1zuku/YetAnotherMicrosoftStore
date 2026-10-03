@@ -18,7 +18,7 @@ Evidence levels used here:
 | Search metadata | Bounded detail hydration exposes app name, package name, PFN, publisher, formats, and allowlisted icon | E1 protocol/API/UI tests |
 | Package selection | Host capability is a hard gate; architecture settings rank compatible candidates | E1 applicability/worker tests |
 | Installed inventory | Machine scan merges current, other-user, and provisioned state; partial failures stay explicit | E1 inventory tests; E2 not rerun |
-| Update discovery | Returns counts, candidates, skipped reasons, completeness, and scope derived from installation state | E1 API tests; PFN live lookup E3 pending |
+| Update discovery | Two bounded network phases use an independent 1-64 concurrency setting (default 16); returns counts, candidates, closed skipped reasons, completeness, and scope derived from installation state | E1 API/runtime tests; targeted live PFN/FE3 probes |
 
 ## Package formats
 

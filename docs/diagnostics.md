@@ -27,6 +27,8 @@ The main executable is already elevated before Tauri starts. There is no Broker 
 
 - Inventory results set `complete = false` when machine enumeration, user registration, or provisioned-package queries are incomplete.
 - Update scans return scanned and associated counts, candidates, skipped PFNs with closed reason codes, and `complete`.
+- Association lookup and FE3 resolution use the independent `maxConcurrentUpdateScans` setting (1-64, default 16); persistence remains serialized after each bounded network phase.
+- A newer compatible main package that fails strict update selection is reported as `selection_rejected`; it is not silently treated as up to date.
 - Partial results remain displayable and do not expose underlying raw errors.
 
 ## Network audit

@@ -17,7 +17,7 @@
 - 删除 Broker crate、IPC、sidecar、相关状态和发布脚本。Broker 中仍被主程序使用的包请求类型先迁移到无 IPC 语义的领域模块，再删除协议模块。
 - 程序尚未发布，不承担旧数据库兼容：把现有 4 个 migration 和本次 schema 调整合并为唯一的 `0001_initial.sql`，`CURRENT_SCHEMA_VERSION` 重置为 `1`。最终 schema 不创建 `requires_elevation` 等已删除字段；旧开发数据库由开发者删除后重建。
 - 搜索、详情、安装 worker 和更新扫描必须共享同一适用性选择入口。用户架构设置只影响排序，主机能力和格式支持仍为硬门。
-- 所有新网络补全均有上限：搜索最多 20 项、目录/包图最多 4 个并发；单项失败产生 `partial`，不取消整批。
+- 所有新网络补全均有上限：搜索最多 20 项且补全最多 4 个并发；更新扫描使用独立的 1–64 并发设置（默认 16）。单项失败产生 `partial` 或封闭 `skipped` 原因，不取消整批。
 - 不把 fixture、单元测试、构建或 PE 静态检查称为真实 Store/CDN/部署验收。
 
 ## 影响范围
@@ -269,8 +269,10 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m0_inventory --test m0_co
 ### 6.2 实现扫描流水线
 
 - 对机器范围主包按 PFN 去重，使用设置市场/语言和有界并发补齐关联。
+- PFN 关联和 FE3 解析分为两个有界网络阶段，共用 `maxConcurrentUpdateScans`（1–64，默认 16）；数据库写入不进入并发 future。
 - 只保存经过 identity/publisher/PFN 三重核验的关联。
 - 对每个已关联包运行统一 PackageSelectionService；候选包含 appName、packageName、publisher、PFN、当前/可用版本和建议 scope。
+- 若存在更新版本但严格选择失败，记录 `selection_rejected`，不得静默返回“无更新”。
 - `skipped` 仅包含 PFN、封闭原因码和消息键，不包含原始响应、HRESULT、SID 或路径。
 - Tauri API 和错误映射返回结构化摘要，不再把空数组作为唯一反馈。
 

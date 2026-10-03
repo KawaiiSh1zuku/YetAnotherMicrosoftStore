@@ -219,6 +219,22 @@ async fn fe3_fixture_maps_applicability_fields_without_leaking_vendor_types() {
 }
 
 #[tokio::test]
+async fn fe3_architecture_package_without_resource_identity_remains_a_main_package() {
+    let fixture =
+        include_str!("fixtures/fe3-applicability.xml").replace("_x64_zh-cn_abc", "_x64__abc");
+
+    let graph = StoreLibResolverAdapter::parse_fixture(&fixture)
+        .await
+        .expect("architecture-specific application package should parse");
+    let package = graph.packages.first().expect("fixture package");
+
+    assert_eq!(package.resource_id, None);
+    assert_eq!(package.language.as_deref(), Some("zh-CN"));
+    assert_eq!(package.architecture, Architecture::X64);
+    assert_eq!(package.package_kind, PackageKind::Main);
+}
+
+#[tokio::test]
 async fn fe3_sha256_metadata_rejects_malformed_and_conflicting_values() {
     let fixture = include_str!("fixtures/fe3-applicability.xml");
 

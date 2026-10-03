@@ -64,6 +64,7 @@ export const settings: AppSettings = {
   retentionDays: 30,
   keepInstalledPayloads: false,
   maxConcurrentDownloads: 2,
+  maxConcurrentUpdateScans: 16,
   theme: "system",
   diagnosticsEnabled: false,
 };

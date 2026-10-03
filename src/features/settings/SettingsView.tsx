@@ -15,19 +15,20 @@ const settingsSchema = z.object({
   market: z.string().trim().regex(/^[A-Za-z]{2}$/, "请输入两个字母的市场代码。"),
   language: z.string().trim().min(2, "请输入语言标签。"),
   proxyMode: z.enum(["disabled", "system", "http", "https", "socks5"]),
-  proxyHost: z.string(),
-  proxyPort: z.number().int().min(1).max(65535).nullable(),
+  proxyHost: z.string().optional(),
+  proxyPort: z.number().int().min(0).max(65535).nullable().optional(),
   cacheEnabled: z.boolean(),
   maxCacheGiB: z.number().int().min(1).max(1024),
   retentionDays: z.number().int().min(1).max(365),
   maxConcurrentDownloads: z.number().int().min(1).max(8),
+  maxConcurrentUpdateScans: z.number().int().min(1).max(64),
   theme: z.enum(["light", "dark", "system"]),
   diagnosticsEnabled: z.boolean(),
 }).superRefine((value, context) => {
-  if (["http", "https", "socks5"].includes(value.proxyMode) && !/^[\w.-]+$/.test(value.proxyHost)) {
+  if (["http", "https", "socks5"].includes(value.proxyMode) && (typeof value.proxyHost !== "string" || !/^[\w.-]+$/.test(value.proxyHost))) {
     context.addIssue({ code: "custom", path: ["proxyHost"], message: "请输入不含协议的代理主机名或 IP 地址。" });
   }
-  if (["http", "https", "socks5"].includes(value.proxyMode) && value.proxyPort === null) {
+  if (["http", "https", "socks5"].includes(value.proxyMode) && (!value.proxyPort || value.proxyPort < 1)) {
     context.addIssue({ code: "custom", path: ["proxyPort"], message: "请输入代理端口。" });
   }
 });
@@ -63,12 +64,13 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
       market: values.market.toUpperCase(),
       preferredLanguages: [values.language],
       proxyMode: values.proxyMode,
-      proxyHost: isCustomProxy(values.proxyMode) ? values.proxyHost : null,
-      proxyPort: isCustomProxy(values.proxyMode) ? values.proxyPort : null,
+      proxyHost: isCustomProxy(values.proxyMode) ? values.proxyHost ?? null : null,
+      proxyPort: isCustomProxy(values.proxyMode) ? values.proxyPort ?? null : null,
       cacheEnabled: values.cacheEnabled,
       maxCacheBytes: values.maxCacheGiB * 1024 ** 3,
       retentionDays: values.retentionDays,
       maxConcurrentDownloads: values.maxConcurrentDownloads,
+      maxConcurrentUpdateScans: values.maxConcurrentUpdateScans,
       theme: values.theme,
       diagnosticsEnabled: values.diagnosticsEnabled,
     };
@@ -129,6 +131,7 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
             <Field label="缓存上限（GiB）" error={errors.maxCacheGiB?.message}><Input type="number" {...register("maxCacheGiB", { valueAsNumber: true })} /></Field>
             <Field label="保留天数" error={errors.retentionDays?.message}><Input type="number" {...register("retentionDays", { valueAsNumber: true })} /></Field>
             <Field label="并发下载数" error={errors.maxConcurrentDownloads?.message}><Input type="number" {...register("maxConcurrentDownloads", { valueAsNumber: true })} /></Field>
+            <Field label="更新扫描并发数" error={errors.maxConcurrentUpdateScans?.message}><Input type="number" min={1} max={64} {...register("maxConcurrentUpdateScans", { valueAsNumber: true })} /></Field>
           </div>
           <ConfirmDialog trigger={<Button variant="danger">清理缓存</Button>} title="清理可回收缓存" description="只会删除未被任务占用的缓存，不会卸载应用。" confirmLabel="确认清理" destructive onConfirm={clearCache} />
         </SettingsSection>
@@ -155,6 +158,7 @@ function formValues(settings: AppSettings | null): SettingsForm {
     proxyMode: settings?.proxyMode ?? "disabled", proxyHost: settings?.proxyHost ?? "", proxyPort: settings?.proxyPort ?? null,
     cacheEnabled: settings?.cacheEnabled ?? true, maxCacheGiB: Math.max(1, Math.round((settings?.maxCacheBytes ?? 10 * 1024 ** 3) / 1024 ** 3)),
     retentionDays: settings?.retentionDays ?? 30, maxConcurrentDownloads: settings?.maxConcurrentDownloads ?? 2,
+    maxConcurrentUpdateScans: settings?.maxConcurrentUpdateScans ?? 16,
     theme: settings?.theme ?? "system", diagnosticsEnabled: settings?.diagnosticsEnabled ?? false,
   };
 }
