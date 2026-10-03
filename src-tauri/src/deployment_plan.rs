@@ -172,7 +172,7 @@ fn package_request(
             update_id: package.update_id.clone(),
         });
     };
-    let Some(expected_hash) = package.digest.as_deref() else {
+    let Some(expected_hash) = package.sha256.as_deref() else {
         return Err(DeploymentPlanError::CacheMetadataMismatch {
             update_id: package.update_id.clone(),
         });

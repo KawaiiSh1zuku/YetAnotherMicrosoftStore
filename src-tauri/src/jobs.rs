@@ -119,7 +119,7 @@ impl Job {
 }
 
 impl JobStage {
-    const fn can_transition_to(self, next: Self) -> bool {
+    pub(crate) const fn can_transition_to(self, next: Self) -> bool {
         match self {
             Self::Queued => matches!(next, Self::Resolving | Self::Cancelled),
             Self::Resolving => matches!(
@@ -141,6 +141,7 @@ impl JobStage {
                 next,
                 Self::AwaitingElevation
                     | Self::Deploying
+                    | Self::Completed
                     | Self::Failed
                     | Self::Cancelled
                     | Self::Interrupted
@@ -160,4 +161,11 @@ impl JobStage {
             Self::Completed | Self::Cancelled => false,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobSnapshot {
+    pub job: Job,
+    pub sequence: u64,
 }

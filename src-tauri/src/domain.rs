@@ -213,6 +213,15 @@ pub enum ProxyCredentialPolicy {
     WindowsCredentialManager,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    Light,
+    Dark,
+    #[default]
+    System,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -230,6 +239,10 @@ pub struct AppSettings {
     pub retention_days: u32,
     pub keep_installed_payloads: bool,
     pub max_concurrent_downloads: u32,
+    #[serde(default)]
+    pub theme: ThemeMode,
+    #[serde(default)]
+    pub diagnostics_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

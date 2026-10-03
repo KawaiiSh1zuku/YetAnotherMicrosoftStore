@@ -118,6 +118,7 @@
 | M0、M1、M2 三个只读审查子代理均返回 `429 Too Many Requests` | 1 | 不采用任何子代理结论，不重复相同并发请求；由主线直接读取实现、测试和证据文档完成审查 |
 | M5 schema v3 首次全量回归使 M2/M3 的当前版本硬编码断言失败 | 1 | 确认迁移注册表与失败位置后，将“升级到当前版本”的历史测试期望从 2 更新为 3；不修改迁移事务逻辑 |
 | M5 首次严格 Clippy 报 `package_association` 查询元组 `type_complexity` | 1 | 按既有 `PackageRow` 模式抽出私有 `PackageAssociationRow` 与 `TryFrom`，不添加 lint allow |
+| PowerShell 7 无法加载 Windows Appx 模块 | 1 | 改用系统 Windows PowerShell 5.1 执行只读 CurrentUser 包清单查询 |
 
 ## M4 下载、缓存与代理（2026-10-02）
 
@@ -142,3 +143,28 @@
 - 独立只读审查发现 5 项 Important：canonical Windows 路径在 WinTrust 前被误拒绝、AllUsers 未预配却被判定 current、多版本清单依赖枚举顺序、no-op 降级 `VerifiedDeployment`、framework 被错误要求显式预配。已逐项补失败回归并修复；另移除重复 WinTrust feature。
 - 修复后 M5 聚焦测试为 19 项通过、1 项真实签名包测试 ignored；全目标为 110 项通过、5 项环境测试 ignored。格式检查、严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建通过。
 - 本轮 E1 结果未执行真实 Microsoft CDN 包下载、真实签名包图部署、新 UAC 回环或官方 Store 跨渠道更新；这些门保持未验收。
+
+## M6 持久化后台任务、前端与真实回环（2026-10-03）
+
+- 从 `main` / `ee185d2` 创建受管理 worktree，切换到 `codex/m6-tauri-ui`；原主工作区保持干净。
+- 锁文件依赖安装复用本地 pnpm store；构建被忽略的 Broker 后，基线全目标 Rust 测试为 110 项通过、5 项环境测试 ignored。
+- 用户明确选择方案 C：以 schema v4 追加式事件日志、durable command inbox 和租约 worker 实现完整后台队列；Tauri 事件只作为 cursor 刷新提示，SQLite 投影/重放为事实来源。
+- 新增 M6 详细执行计划，拆分 SHA-256 契约、事件存储、后台 worker、安全 Tauri API、五视图前端、真实 CurrentUser 下载/安装/回滚和最终验证暂存。
+- 并行只读审查发现 FE3 主摘要 SHA-1/base64 与现有 SHA-256 契约不兼容；Task 1 必须先以失败 fixture 测试修复，禁止把 SHA-1 或未标记摘要冒充 SHA-256。
+- Task 1 RED 先因 `ResolvedPackage::sha256` 与封闭摘要错误不存在而失败；实现只接受明确 SHA-256 的 base64 32 字节值、拒绝畸形/冲突并允许 SHA-1-only 包保持不可下载展示状态。
+- Task 1 GREEN：M1 8 项、M3 16 项、M5 10 项通过且 1 项环境测试 ignored；最终全目标 Rust 111 项通过、5 项环境测试 ignored。
+- 受控在线元数据 smoke 通过代理解析 `9P7KNL5RWT25` / `US` / `en`，只观察到 1 个主包和 5 条依赖；测试未下载字节、未验证包签名、未安装或卸载，因此不构成真实安装验收。
+- Windows PowerShell 5.1 的 CurrentUser 包清单未发现 `*Sysinternals*`；首次误用 PowerShell 7 因 Appx 模块不受支持而失败，随后改用系统自带 Windows PowerShell。候选仍需在下载前按精确 identity/PFN 做完整基线扫描。
+- Task 2 完成 schema v4：追加事件、可重建 `jobs` 投影、durable command inbox、全局 generation-fenced worker lease 和不含 URL/path 的冻结部署 targets。
+- Task 2 复审先发现完整 Job 替换事件、无 fencing、命令/event 分事务、恢复 no-op 与缺失投影不可重建等风险，均改为封闭语义事件、原子命令应用、leased recovery 和 fail-closed 重放。
+- Task 2 最终聚焦回归为 24/24（M6 16、M2 5、M3 3）；严格 Clippy、目标 rustfmt 和 scoped `git diff --check` 通过。该证据仍只覆盖本地持久化与并发契约。
+- Task 3 完成 dependency-injected worker、全局 lease/generation fence、durable pause/resume/cancel、下载恢复和部署中断 reconciliation；过期 owner 不能继续写入，部署开始后拒绝 pause/cancel。
+- Task 4 移除 `greet` 与 Spike handler，冻结 13 个封闭 Tauri 命令和 `job://changed` 提示；搜索/详情/任务/设置 DTO 均不暴露 URL、缓存路径、凭据、原始 HRESULT 或服务响应。
+- Task 5 完成搜索、详情、队列、已安装和设置五视图工作台；Vitest 10/10、Playwright 键盘/焦点/360 px/axe 2/2、Vite production build 和 Windows Tauri debug no-bundle build 通过。
+- 子代理复审发现 FE3 `prerequisites` 是 Windows Update category GUID 而非 update ID；已保留为原始审计数据但不再生成依赖边。DCAT 命名 framework 依赖新增最低版本，选择器以 identity/architecture/version 和已安装清单解析，不强迫升级到目录最新 framework。
+- 真实 bundle 暴露 package moniker resource `~` 与 `AppxBundleManifest.xml` 差异；现将 `~` 规范化为 neutral，bundle 不继承默认语言资源限定，并在哈希后读取 bundle manifest、核对 neutral identity，再进入 WinTrust 预检。
+- 用户确认 HTTP 可接受后，production 下载策略仅允许 `dl.delivery.mp.microsoft.com` 和 `tlu.dl.delivery.mp.microsoft.com` 的默认端口 HTTP/HTTPS；仍强制期望大小、SHA-256 与逐跳重定向复核，不放宽其他主机、凭据、fragment 或非默认端口。
+- 代理诊断确认本机 `socks5`/`socks5h` 到该 HTTP CDN 在响应完成前断开，HTTP 代理返回 502，强制 HTTPS 以 TLS unexpected EOF 失败；production disabled 直连的 1 MiB Range 返回 206，故真实包字节仅对该精确白名单主机采用直连，目录/FE3 元数据仍经用户代理。
+- Task 6 于 2026-10-03 在 Windows 10 build 19045 x64 对 `9P7KNL5RWT25` / `US` / `en-US` 完成真实回环：解析 `Microsoft.SysinternalsSuite_8wekyb3d8bbwe` 版本 `2026.9.0.0` 的 neutral `.msixbundle`，下载 300,193,716 字节，校验 SHA-256、bundle identity 和 Microsoft 系统信任签名，经 durable worker 完成 CurrentUser 安装、精确后置清单、卸载与完整基线恢复。
+- 真实验收未导入/删除测试证书、未触发 UAC、未执行 AllUsers 或官方 Store 跨渠道更新；Windows PowerShell 5.1 独立复核 `Microsoft.SysinternalsSuite` 包计数为 0。PowerShell 7 的 Appx 模块加载失败未计入验收证据。
+- 最终回归通过：Rust 全目标 171 项通过、7 项显式环境测试 ignored，严格 Clippy、Broker check、`pnpm test` 10/10、`pnpm build`、Playwright 2/2、Tauri debug no-bundle 和 `git diff --check` 均通过。

@@ -276,8 +276,19 @@ fn read_manifest_identity(
     let file = File::open(package_path).map_err(|error| ValidationError::Io(error.to_string()))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|error| ValidationError::Manifest(error.to_string()))?;
+    let (manifest_index, bundle) = match archive.index_for_name("AppxManifest.xml") {
+        Some(index) => (index, false),
+        None => (
+            archive
+                .index_for_name("AppxMetadata/AppxBundleManifest.xml")
+                .ok_or_else(|| {
+                    ValidationError::Manifest("package manifest is missing".to_owned())
+                })?,
+            true,
+        ),
+    };
     let mut manifest = archive
-        .by_name("AppxManifest.xml")
+        .by_index(manifest_index)
         .map_err(|error| ValidationError::Manifest(error.to_string()))?;
     let mut xml = String::new();
     manifest
@@ -299,14 +310,22 @@ fn read_manifest_identity(
             .unwrap_or_default()
             .to_owned(),
         version: parse_version(identity_node.attribute("Version").unwrap_or_default())?,
-        architecture: identity_node
-            .attribute("ProcessorArchitecture")
-            .unwrap_or_default()
-            .to_owned(),
-        resource_id: identity_node
-            .attribute("ResourceId")
-            .unwrap_or_default()
-            .to_owned(),
+        architecture: if bundle {
+            "neutral".to_owned()
+        } else {
+            identity_node
+                .attribute("ProcessorArchitecture")
+                .unwrap_or_default()
+                .to_owned()
+        },
+        resource_id: if bundle {
+            String::new()
+        } else {
+            identity_node
+                .attribute("ResourceId")
+                .unwrap_or_default()
+                .to_owned()
+        },
     };
     if &identity != expected {
         return Err(ValidationError::IdentityMismatch);

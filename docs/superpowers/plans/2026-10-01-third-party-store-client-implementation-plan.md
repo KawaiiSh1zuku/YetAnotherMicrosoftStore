@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端实现计划
 
-> 状态：已完成 M0-M5 对照审查。M0 为受控 Windows E2 完成，M1-M3/M5 为自动化 E1 完成；M4 为自动化 E1 加指定产品/市场/语言的受控在线协议 smoke。真实 CDN 包下载、真实签名包图部署、跨渠道更新和发布能力仍按独立环境门与后续里程碑门控。
+> 状态：已完成 M0-M6。M0 为受控 Windows E2，M1-M5 为对应自动化 E1（M4 另有受控在线协议 smoke）；M6 完成持久化 worker、安全 Tauri API、五视图前端，并在指定产品/市场/语言/Windows 环境取得一次真实 CDN 下载、Microsoft 签名 `.msixbundle` CurrentUser 安装与精确回滚 E2。跨渠道 E3、发布和 MSIXVC 仍由 M7-M9 门控。
 
 ## 1. 执行范围
 
@@ -40,7 +40,7 @@
 
 ## 3. 当前结构与演进边界
 
-M0-M2 采用按职责分文件的扁平 Rust 模块；不为了匹配早期草案强制搬迁目录。后续新模块沿用这一边界，单个模块明显膨胀后再拆子目录：
+M0-M6 采用按职责分文件的扁平 Rust 模块；不为了匹配早期草案强制搬迁目录。后续新模块沿用这一边界，单个模块明显膨胀后再拆子目录：
 
 ```text
 src-tauri/
@@ -205,12 +205,15 @@ M8 ──> M9（新范围审批后）
 
 ### M6：Tauri API 与前端主流程
 
-- 移除 `greet` 和产品不需要的 Spike 命令；冻结命令、事件、取消/恢复和错误 DTO。
-- 使用 shadcn/ui 组合搜索、详情、队列、已安装和设置页面。
-- 展示架构、市场、语言、资源包、依赖、安装来源置信状态和互操作限制。
-- 接入任务进度、暂停/恢复/取消、等待提权和错误恢复。
+- [x] 移除 `greet` 和产品不需要的 Spike 命令；冻结 13 个命令、cursor 事件、取消/恢复和错误 DTO。
+- [x] 使用本地 shadcn-style 组件组合搜索、详情、队列、已安装和设置页面。
+- [x] 展示架构、市场、语言、资源包、依赖、安装来源置信状态和互操作限制。
+- [x] 接入持久化任务进度、暂停/恢复/取消、等待提权和错误恢复。
+- [x] 通过 production worker 完成一个免费普通 Store bundle 的真实 CurrentUser 下载、系统信任签名校验、安装与精确回滚。
 
 退出条件：Playwright 或等价 UI 冒烟、事件乱序/重连、键盘导航、焦点、窄窗口、屏幕阅读器和本地化错误检查通过。
+
+审查结论：M6 达到 E1 加限定单产品 E2。schema v4 追加事件、可重建投影、durable command inbox 和 generation-fenced lease 已实现；安全 Tauri API 与五视图 UI 通过自动化。2026-10-03 在 Windows 10 build 19045 x64 上，`9P7KNL5RWT25` / `US` / `en-US` 的 Microsoft 签名 neutral `.msixbundle` 完成 300,193,716 字节真实下载、SHA-256/bundle identity/WinTrust 校验、CurrentUser 安装、精确清单验证、卸载和零目标基线恢复；未导入证书、未触发 UAC，也未验证官方 Store 跨渠道更新。
 
 ### M7：更新与跨渠道互操作验证
 
@@ -234,7 +237,7 @@ M8 ──> M9（新范围审批后）
 - 单独记录 Xbox/MSIXVC API、服务、许可、磁盘和流式安装要求。
 - 未获得新的范围批准前，不修改第一阶段支持矩阵，也不实现下载、安装或更新。
 
-## 7. M0-M5 进度与计划匹配审查
+## 7. M0-M6 进度与计划匹配审查
 
 | 里程碑 | 原计划核心要求 | 当前实际证据 | 偏差与处置 | 结论 |
 |---|---|---|---|---|
@@ -244,6 +247,7 @@ M8 ──> M9（新范围审批后）
 | M3 | schema v2、适用性字段、强类型版本、封闭错误详情和可解释选择器 | `0002_m3_applicability.sql`、`applicability.rs`、resolver 映射；23 项 M3 测试和 1 项扩展 M1 fixture 测试 | production adapter 尚未实时验收；bundle/eAppx 只做本地选择，不等于下载或部署支持 | 匹配，完成（E1，本地） |
 | M4 | 受控在线协议 smoke、代理、可续传下载、校验、缓存恢复和 URL 安全边界 | `settings.rs`、`download.rs`、`verification.rs`、`cache.rs`；28 项 M4 自动化测试、1 项 ARM32 协议回归和 1 项 opt-in 在线 smoke | system 代理收敛为静态当前用户配置；PAC/WPAD 显式留后。在线 smoke 不等于真实 CDN 包下载 | 匹配，完成（E1 + 受控在线 smoke） |
 | M5 | verified 包图、身份关联、严格版本决策、签名预检、M0 部署委托和清单收敛 | `identity.rs`、`deployment_plan.rs`、`deployment_orchestrator.rs`、schema v3；19 项 M5 自动化测试通过，1 项真实签名包测试 ignored | 独立审查修复 canonical 路径误拒绝、AllUsers 未预配误判、framework 隐式预配、清单顺序依赖和 verified 关联降级；真实签名包图/UAC 未重跑 | 匹配，完成（E1；E2 环境门待载荷） |
+| M6 | 持久化 worker、安全 Tauri API、五视图 UI、可逆真实 CurrentUser 回环 | schema v4、event store/commands/lease、13 个命令、React 工作台；Rust 171 passed/7 ignored、Vitest 10/10、Playwright 2/2；指定 Sysinternals Suite bundle E2 | FE3 category GUID 曾被误作依赖、bundle `~`/manifest 差异和本机代理/CDN 互操作均在真实验收中修复并加入回归；E2 仅限记录环境 | 匹配，完成（E1 + 单产品 E2） |
 
 本轮可复现验证命令：
 
@@ -252,10 +256,13 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo check --manifest-path src-tauri/broker/Cargo.toml
+pnpm test
+pnpm exec playwright test
 pnpm build
+pnpm exec tauri build --debug --no-bundle
 ```
 
-当前结果：110 项 Rust 测试通过，5 项需要签名包/环境变量的 M0 真实部署、M4 opt-in 在线 smoke 或 M5 真实签名包测试 ignored；格式、默认特性严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建均通过。ignored 测试不替代历史 E2 验收，也不构成真实 CDN 下载、真实签名包图部署或跨渠道证据。
+当前结果：171 项 Rust 测试通过，7 项需要显式真实包/在线环境的测试 ignored；格式、严格 Clippy、Broker check、Vitest 10/10、Playwright 2/2、前端构建和 Tauri debug 非 bundle 构建均通过。M6 的真实回环另以显式环境变量执行并完整恢复基线；默认 ignored 状态不会重复改变 Windows 包状态，也不构成跨渠道 E3。
 
 ## 8. 风险、回滚与停止条件
 
@@ -284,4 +291,4 @@ pnpm build
 
 ## 10. 当前执行点
 
-中文规格和本实现计划已获批准，M0-M5 的进度/代码/测试/证据与计划已完成对照审查。下一步进入 M6：冻结安全 Tauri 命令/事件 DTO，并把搜索、详情、队列、已安装与设置主流程接入既有后端。真实 Microsoft CDN 包下载、真实签名包图部署、跨渠道更新、NSIS 发布和 MSIXVC 仍未验收，不得从协议 smoke、fixture、SQLite、mock-backed 编排或本地构建结果推断支持。
+中文规格和本实现计划已获批准，M0-M6 的进度/代码/测试/证据与计划已完成对照审查。下一步进入 M7：用明确产品/市场/账户矩阵验证官方 Store 与本客户端的来源无关关联、更新资格和防降级。M6 只证明一个 Microsoft 签名 bundle 的 CurrentUser 下载/安装/回滚；跨渠道 E3、AllUsers 真实 Store 包图、NSIS 发布和 MSIXVC 仍未验收。

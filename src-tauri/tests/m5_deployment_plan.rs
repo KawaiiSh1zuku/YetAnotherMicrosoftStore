@@ -50,7 +50,7 @@ fn package(update_id: &str, kind: PackageKind, version: PackageVersion) -> Resol
         package_uri: None,
         file_name: Some(format!("{update_id}.msix")),
         file_size: Some(16),
-        digest: Some("ab".repeat(32)),
+        sha256: Some("ab".repeat(32)),
         update_id: update_id.to_owned(),
         identity_name: Some(format!("Example.{update_id}")),
         publisher: Some("CN=Example".to_owned()),
@@ -74,6 +74,7 @@ fn graph(packages: Vec<ResolvedPackage>, dependencies: Vec<DependencyEdge>) -> P
         market: Some("US".to_owned()),
         packages,
         dependencies,
+        framework_requirements: Vec::new(),
     }
 }
 
@@ -257,6 +258,44 @@ fn valid_manifest_and_hash_reach_native_signature_preflight() {
             publisher: "CN=Example".to_owned(),
             version: [1, 0, 0, 0],
             architecture: "x64".to_owned(),
+            resource_id: String::new(),
+        }),
+    };
+
+    assert_eq!(
+        verify_package_request(&request),
+        Err(ValidationError::SignatureInvalid)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn valid_bundle_manifest_and_hash_reach_native_signature_preflight() {
+    let files = TestFiles::new();
+    let path = files.root.join("unsigned-manifest.msixbundle");
+    let file = fs::File::create(&path).expect("create unsigned bundle");
+    let mut archive = zip::ZipWriter::new(file);
+    archive
+        .start_file(
+            "AppxMetadata/AppxBundleManifest.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("start bundle manifest");
+    archive
+        .write_all(
+            br#"<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Example.App" Publisher="CN=Example" Version="1.0.0.0" /></Bundle>"#,
+        )
+        .expect("write bundle manifest");
+    archive.finish().expect("finish unsigned bundle");
+    let bytes = fs::read(&path).expect("read unsigned bundle");
+    let request = PackageFileRequest {
+        path,
+        sha256_hex: format!("{:x}", Sha256::digest(&bytes)),
+        expected_identity: Some(PackageIdentity {
+            name: "Example.App".to_owned(),
+            publisher: "CN=Example".to_owned(),
+            version: [1, 0, 0, 0],
+            architecture: "neutral".to_owned(),
             resource_id: String::new(),
         }),
     };

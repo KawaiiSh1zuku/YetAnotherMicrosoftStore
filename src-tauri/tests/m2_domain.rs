@@ -3,12 +3,29 @@ use yet_another_microsoft_store_lib::{
     catalog::CatalogError,
     deployment::DeploymentScope,
     domain::{
-        Architecture, DiagnosticEvent, DiagnosticOperation, InstallSource, PackageFormat,
-        PackageKind, PackageRecord, PackageVersion,
+        AppSettings, Architecture, DiagnosticEvent, DiagnosticOperation, InstallSource,
+        PackageFormat, PackageKind, PackageRecord, PackageVersion, ThemeMode,
     },
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     jobs::{Job, JobKind, JobStage, RecoveryAction},
 };
+
+#[test]
+fn legacy_settings_default_new_ui_preferences_without_rewriting_old_json() {
+    let settings: AppSettings = serde_json::from_str(
+        r#"{
+            "region":"US","market":"US","preferredArchitectures":["x64"],
+            "preferredLanguages":["en-US"],"proxyMode":"disabled",
+            "proxyHost":null,"proxyPort":null,"proxyCredentials":"prompt_every_time",
+            "cacheEnabled":true,"cacheDirectory":"C:\\\\Cache","maxCacheBytes":1024,
+            "retentionDays":30,"keepInstalledPayloads":false,"maxConcurrentDownloads":2
+        }"#,
+    )
+    .expect("legacy settings remain readable");
+
+    assert_eq!(settings.theme, ThemeMode::System);
+    assert!(!settings.diagnostics_enabled);
+}
 
 fn downloading_job() -> Job {
     Job {

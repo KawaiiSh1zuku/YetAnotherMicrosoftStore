@@ -67,6 +67,20 @@ pub struct OrchestrationOutcome {
     pub association: PackageAssociation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedDeployment {
+    scope: DeploymentScope,
+    plan: DeploymentPlan,
+    disposition: DeploymentDisposition,
+    observed_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrchestrationPreparation {
+    AlreadyCurrent(OrchestrationOutcome),
+    Ready(PreparedDeployment),
+}
+
 pub struct DeploymentOrchestrator<B, V> {
     backend: B,
     preflight: V,
@@ -93,6 +107,20 @@ where
         persistence: &Persistence,
         observed_at: i64,
     ) -> Result<OrchestrationOutcome, AppErrorDto> {
+        match self.prepare(scope, mode, plan, persistence, observed_at)? {
+            OrchestrationPreparation::AlreadyCurrent(outcome) => Ok(outcome),
+            OrchestrationPreparation::Ready(prepared) => self.commit(prepared, persistence),
+        }
+    }
+
+    pub fn prepare(
+        &mut self,
+        scope: DeploymentScope,
+        mode: SelectionMode,
+        plan: &DeploymentPlan,
+        persistence: &Persistence,
+        observed_at: i64,
+    ) -> Result<OrchestrationPreparation, AppErrorDto> {
         self.preflight
             .verify(&plan.package_set)
             .map_err(|error| AppErrorDto::from(&error))?;
@@ -137,11 +165,13 @@ where
             persistence
                 .upsert_package_association(&association)
                 .map_err(|_| storage_error())?;
-            return Ok(OrchestrationOutcome {
-                disposition: DeploymentDisposition::AlreadyCurrent,
-                inventory: pre_scan,
-                association,
-            });
+            return Ok(OrchestrationPreparation::AlreadyCurrent(
+                OrchestrationOutcome {
+                    disposition: DeploymentDisposition::AlreadyCurrent,
+                    inventory: pre_scan,
+                    association,
+                },
+            ));
         }
 
         let disposition = if installed.is_empty() {
@@ -149,12 +179,37 @@ where
         } else {
             DeploymentDisposition::Updated
         };
+        Ok(OrchestrationPreparation::Ready(PreparedDeployment {
+            scope,
+            plan: plan.clone(),
+            disposition,
+            observed_at,
+        }))
+    }
+
+    pub fn commit(
+        &mut self,
+        prepared: PreparedDeployment,
+        persistence: &Persistence,
+    ) -> Result<OrchestrationOutcome, AppErrorDto> {
+        let PreparedDeployment {
+            scope,
+            plan,
+            disposition,
+            observed_at,
+        } = prepared;
+        let main_identity = plan
+            .package_set
+            .main
+            .expected_identity
+            .as_ref()
+            .ok_or_else(identity_error)?;
         let post_scan = self
             .backend
             .install(scope, &plan.package_set)
             .map_err(|error| AppErrorDto::from(&error))?;
         ensure_complete(&post_scan)?;
-        verify_postcondition(&post_scan, scope, plan)?;
+        verify_postcondition(&post_scan, scope, &plan)?;
         let installed_main = matching_records(&post_scan, main_identity)
             .into_iter()
             .find(|record| {
@@ -163,7 +218,7 @@ where
             .ok_or_else(identity_error)?;
         let association = association_from_record(
             installed_main,
-            plan,
+            &plan,
             AssociationConfidence::VerifiedDeployment,
             observed_at,
         );

@@ -79,7 +79,7 @@ fn main_package(version: PackageVersion) -> ResolvedPackage {
         package_uri: None,
         file_name: Some("example.msix".to_owned()),
         file_size: Some(4096),
-        digest: Some("ab".repeat(32)),
+        sha256: Some("ab".repeat(32)),
         update_id: "update-main".to_owned(),
         identity_name: Some("Example.App".to_owned()),
         publisher: Some("CN=Example".to_owned()),
@@ -218,7 +218,7 @@ fn fresh_catalog_comparison_distinguishes_update_current_ahead_and_identity_mism
 }
 
 #[test]
-fn schema_v2_upgrades_to_v3_and_round_trips_association_confidence() {
+fn schema_v2_upgrades_through_v3_and_round_trips_association_confidence() {
     let database = TestDatabase::new("m5-v2-upgrade");
     let connection = Connection::open(database.path()).expect("create v2 database");
     connection
@@ -246,7 +246,7 @@ fn schema_v2_upgrades_to_v3_and_round_trips_association_confidence() {
         .upsert_package_association(&association)
         .expect("persist association");
 
-    assert_eq!(store.schema_version().expect("schema version"), 3);
+    assert_eq!(store.schema_version().expect("schema version"), 4);
     assert_eq!(
         store
             .package_association("Example.App_abc")

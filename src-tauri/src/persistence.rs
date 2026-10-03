@@ -16,14 +16,17 @@ use crate::{
     },
     error::{AppErrorDto, ErrorCode},
     identity::{AssociationConfidence, PackageAssociation},
-    jobs::{Job, JobKind, JobStage, RecoveryAction},
+    job_events::{CommandOutcome, JobCommand, JobEvent, JobTarget, StoredJobEvent, WorkerLease},
+    job_store,
+    jobs::{Job, JobKind, JobSnapshot, JobStage, RecoveryAction},
 };
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_m2.sql")),
     (2, include_str!("../migrations/0002_m3_applicability.sql")),
     (3, include_str!("../migrations/0003_m5_identity.sql")),
+    (4, include_str!("../migrations/0004_m6_job_events.sql")),
 ];
 
 #[derive(Debug)]
@@ -33,6 +36,11 @@ pub enum PersistenceError {
     IntegerOutOfRange(&'static str),
     InvalidStoredValue(&'static str),
     UnsupportedSchema(i64),
+    SequenceConflict { expected: u64, actual: u64 },
+    EventHistoryInvalid,
+    UnsafeJobEvent,
+    CommandConflict,
+    LeaseConflict,
 }
 
 impl fmt::Display for PersistenceError {
@@ -52,6 +60,11 @@ impl fmt::Display for PersistenceError {
                     "database schema version {version} is newer than supported"
                 )
             }
+            Self::SequenceConflict { .. } => formatter.write_str("job sequence conflict"),
+            Self::EventHistoryInvalid => formatter.write_str("job event history is invalid"),
+            Self::UnsafeJobEvent => formatter.write_str("job event contains unsafe data"),
+            Self::CommandConflict => formatter.write_str("job command conflict"),
+            Self::LeaseConflict => formatter.write_str("worker lease conflict"),
         }
     }
 }
@@ -87,6 +100,7 @@ impl Persistence {
         let mut connection = Connection::open(path)?;
         connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")?;
         migrate(&mut connection)?;
+        job_store::rebuild_all(&connection)?;
         Ok(Self { connection })
     }
 
@@ -309,30 +323,189 @@ impl Persistence {
     }
 
     pub fn save_job(&self, job: &Job) -> Result<(), PersistenceError> {
-        save_job(&self.connection, job)
+        let sequence = job_store::snapshot(&self.connection, &job.job_id)?
+            .map_or(0, |snapshot| snapshot.sequence);
+        let event = if sequence == 0 {
+            JobEvent::Created { job: job.clone() }
+        } else {
+            return Err(PersistenceError::EventHistoryInvalid);
+        };
+        self.append_job_event(&job.job_id, sequence, event, job.updated_at)?;
+        Ok(())
+    }
+
+    pub fn append_job_event(
+        &self,
+        job_id: &str,
+        expected_sequence: u64,
+        event: JobEvent,
+        occurred_at: i64,
+    ) -> Result<JobSnapshot, PersistenceError> {
+        job_store::append(
+            &self.connection,
+            job_id,
+            expected_sequence,
+            event,
+            occurred_at,
+        )
+    }
+
+    pub fn job_snapshot(&self, job_id: &str) -> Result<Option<JobSnapshot>, PersistenceError> {
+        job_store::snapshot(&self.connection, job_id)
+    }
+
+    pub fn list_job_snapshots(&self) -> Result<Vec<JobSnapshot>, PersistenceError> {
+        job_store::list_snapshots(&self.connection)
+    }
+
+    pub fn list_job_events(
+        &self,
+        after_cursor: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredJobEvent>, PersistenceError> {
+        job_store::list_events(&self.connection, after_cursor, limit)
+    }
+
+    pub fn rebuild_job_projection(&self, job_id: &str) -> Result<JobSnapshot, PersistenceError> {
+        job_store::rebuild(&self.connection, job_id)
+    }
+
+    pub fn enqueue_job_command(
+        &self,
+        command: &JobCommand,
+    ) -> Result<JobCommand, PersistenceError> {
+        job_store::enqueue_command(&self.connection, command)
+    }
+
+    pub fn pending_job_commands(&self, job_id: &str) -> Result<Vec<JobCommand>, PersistenceError> {
+        job_store::pending_commands(&self.connection, job_id)
+    }
+
+    pub fn finish_job_command(
+        &self,
+        command_id: &str,
+        outcome: CommandOutcome,
+        processed_at: i64,
+    ) -> Result<JobCommand, PersistenceError> {
+        job_store::finish_command(&self.connection, command_id, outcome, processed_at)
+    }
+
+    pub fn finish_job_command_leased(
+        &self,
+        command_id: &str,
+        outcome: CommandOutcome,
+        processed_at: i64,
+        lease: &WorkerLease,
+        now: i64,
+    ) -> Result<JobCommand, PersistenceError> {
+        job_store::finish_command_leased(
+            &self.connection,
+            command_id,
+            outcome,
+            processed_at,
+            lease,
+            now,
+        )
+    }
+
+    pub fn apply_job_command(
+        &self,
+        command_id: &str,
+        event: JobEvent,
+        outcome: CommandOutcome,
+        occurred_at: i64,
+        lease: &WorkerLease,
+        now: i64,
+    ) -> Result<JobSnapshot, PersistenceError> {
+        job_store::apply_command(
+            &self.connection,
+            command_id,
+            event,
+            outcome,
+            occurred_at,
+            lease,
+            now,
+        )
+    }
+
+    pub fn acquire_worker_lease(
+        &self,
+        owner_id: &str,
+        now: i64,
+        ttl: i64,
+    ) -> Result<Option<WorkerLease>, PersistenceError> {
+        job_store::acquire_lease(&self.connection, owner_id, now, ttl)
+    }
+
+    pub fn renew_worker_lease(
+        &self,
+        lease: &WorkerLease,
+        now: i64,
+        ttl: i64,
+    ) -> Result<Option<WorkerLease>, PersistenceError> {
+        job_store::renew_lease(&self.connection, lease, now, ttl)
+    }
+
+    pub fn release_worker_lease(&self, lease: &WorkerLease) -> Result<bool, PersistenceError> {
+        job_store::release_lease(&self.connection, lease)
+    }
+
+    pub fn append_job_event_leased(
+        &self,
+        job_id: &str,
+        expected_sequence: u64,
+        event: JobEvent,
+        occurred_at: i64,
+        lease: &WorkerLease,
+        now: i64,
+    ) -> Result<JobSnapshot, PersistenceError> {
+        job_store::append_leased(
+            &self.connection,
+            job_id,
+            expected_sequence,
+            event,
+            occurred_at,
+            lease,
+            now,
+        )
+    }
+
+    pub fn job_targets(&self, job_id: &str) -> Result<Vec<JobTarget>, PersistenceError> {
+        job_store::targets(&self.connection, job_id)
     }
 
     pub fn job(&self, job_id: &str) -> Result<Option<Job>, PersistenceError> {
-        let row: Option<JobRow> = self
-            .connection
-            .query_row(
-                "SELECT job_id, kind, product_id, requested_market,
-                        requested_architectures_json, requested_languages_json, deployment_scope,
-                        selected_update_id, package_family_name, stage, bytes_done, bytes_total,
-                        version, architecture, language, requires_elevation, error_json,
-                        created_at, updated_at
-                 FROM jobs WHERE job_id = ?1",
-                [job_id],
-                read_job_row,
-            )
-            .optional()?;
-        row.map(Job::try_from).transpose()
+        Ok(self.job_snapshot(job_id)?.map(|snapshot| snapshot.job))
     }
 
     pub fn recover_jobs_after_restart(
         &self,
         updated_at: i64,
     ) -> Result<Vec<(String, RecoveryAction)>, PersistenceError> {
+        self.recover_jobs_after_restart_inner(updated_at, None)
+    }
+
+    pub fn recover_jobs_after_restart_leased(
+        &self,
+        updated_at: i64,
+        lease: &WorkerLease,
+        now: i64,
+    ) -> Result<Vec<(String, RecoveryAction)>, PersistenceError> {
+        self.recover_jobs_after_restart_inner(updated_at, Some((lease, now)))
+    }
+
+    fn recover_jobs_after_restart_inner(
+        &self,
+        updated_at: i64,
+        lease: Option<(&WorkerLease, i64)>,
+    ) -> Result<Vec<(String, RecoveryAction)>, PersistenceError> {
+        match lease {
+            Some((lease, now)) => job_store::validate_lease(&self.connection, lease, now)?,
+            None if job_store::has_lease(&self.connection)? => {
+                return Err(PersistenceError::LeaseConflict);
+            }
+            None => {}
+        }
         let mut statement = self.connection.prepare(
             "SELECT job_id, kind, product_id, requested_market,
                     requested_architectures_json, requested_languages_json, deployment_scope,
@@ -350,18 +523,36 @@ impl Persistence {
         let mut changed = Vec::new();
         for row in rows {
             let mut job = Job::try_from(row)?;
+            let old_stage = job.stage;
             let action = job.recover_after_restart(updated_at);
             if action != RecoveryAction::None {
                 recovered.push((job.job_id.clone(), action));
-                changed.push(job);
+                if job.stage != old_stage {
+                    changed.push(job);
+                }
             }
         }
 
-        let transaction = self.connection.unchecked_transaction()?;
         for job in &changed {
-            save_job(&transaction, job)?;
+            let snapshot = job_store::snapshot(&self.connection, &job.job_id)?
+                .ok_or(PersistenceError::EventHistoryInvalid)?;
+            let event = JobEvent::Recovered { stage: job.stage };
+            match lease {
+                Some((lease, now)) => {
+                    self.append_job_event_leased(
+                        &job.job_id,
+                        snapshot.sequence,
+                        event,
+                        updated_at,
+                        lease,
+                        now,
+                    )?;
+                }
+                None => {
+                    self.append_job_event(&job.job_id, snapshot.sequence, event, updated_at)?;
+                }
+            }
         }
-        transaction.commit()?;
         Ok(recovered)
     }
 
@@ -695,13 +886,55 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
     {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(sql)?;
+        if *migration_version == 4 {
+            backfill_job_events(&transaction)?;
+        }
         transaction.pragma_update(None, "user_version", migration_version)?;
         transaction.commit()?;
     }
     Ok(())
 }
 
-fn save_job(connection: &Connection, job: &Job) -> Result<(), PersistenceError> {
+fn backfill_job_events(connection: &Connection) -> Result<(), PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT job_id, kind, product_id, requested_market,
+                requested_architectures_json, requested_languages_json, deployment_scope,
+                selected_update_id, package_family_name, stage, bytes_done, bytes_total,
+                version, architecture, language, requires_elevation, error_json,
+                created_at, updated_at FROM jobs ORDER BY job_id",
+    )?;
+    let rows = statement
+        .query_map([], read_job_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for row in rows {
+        let job = Job::try_from(row)?;
+        let event = JobEvent::Imported { job: job.clone() };
+        event.fold(None, job.updated_at, true)?;
+        connection.execute(
+            "INSERT INTO job_events
+             (job_id, sequence, event_kind, payload_json, projection_json, occurred_at)
+             VALUES (?1, 1, 'imported', ?2, ?3, ?4)",
+            params![
+                job.job_id,
+                serde_json::to_string(&event)?,
+                serde_json::to_string(&job)?,
+                job.updated_at
+            ],
+        )?;
+        save_job_projection(connection, &job)?;
+        connection.execute(
+            "UPDATE jobs SET event_sequence = 1 WHERE job_id = ?1",
+            [&job.job_id],
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn save_job_projection(
+    connection: &Connection,
+    job: &Job,
+) -> Result<(), PersistenceError> {
     let error_json = job.error.as_ref().map(serde_json::to_string).transpose()?;
     let requested_architectures = serde_json::to_string(&job.requested_architectures)?;
     let requested_languages = serde_json::to_string(&job.requested_languages)?;
@@ -758,6 +991,24 @@ fn save_job(connection: &Connection, job: &Job) -> Result<(), PersistenceError> 
         ],
     )?;
     Ok(())
+}
+
+pub(crate) fn load_job(
+    connection: &Connection,
+    job_id: &str,
+) -> Result<Option<Job>, PersistenceError> {
+    let row: Option<JobRow> = connection
+        .query_row(
+            "SELECT job_id, kind, product_id, requested_market,
+                requested_architectures_json, requested_languages_json, deployment_scope,
+                selected_update_id, package_family_name, stage, bytes_done, bytes_total,
+                version, architecture, language, requires_elevation, error_json,
+                created_at, updated_at FROM jobs WHERE job_id = ?1",
+            [job_id],
+            read_job_row,
+        )
+        .optional()?;
+    row.map(Job::try_from).transpose()
 }
 
 struct PackageRow {

@@ -168,3 +168,20 @@
 - `ProvisionPackageForAllUsersAsync` 只显式预配主包，framework 可由已预配主包的依赖关系隐式保留且不出现在 `FindProvisionedPackages`。因此 AllUsers 后置条件要求主包显式预配，但允许完整机器清单中的足够版本 framework；optional/resource 仍不放宽。
 - 清单可能同时存在同一 identity 的多个版本。防降级必须检查全部 scope-relevant 记录，主包后置条件寻找精确目标版本，依赖允许不低于目标版本，均不得依赖枚举顺序。
 - 已验证部署关联是比 identity/publisher 推断更强的证据；相同 PFN/product/identity/publisher 的 no-op 只刷新观测，不得把 `VerifiedDeployment` 降级。
+
+## M6 持久化任务与真实下载前置发现（2026-10-03）
+
+- `storelib_rs 0.1.11` 的 FE3 主 `digest` 是带算法的 base64 值，实际常为 SHA-1；额外 `AdditionalDigest Algorithm="SHA256"` 才能作为 M4 下载器要求的 SHA-256 来源。现有 adapter 丢失算法并把主摘要直接交给 M5，真实下载前必须修复。
+- M1-M5 模块目前各自可测，但生产层尚未串起解析、选择、下载、缓存、部署和恢复。用户选择方案 C：schema v4 追加事件为权威历史，`jobs` 为可重建投影，durable command inbox 提供幂等控制，租约防止多进程重复执行。
+- 真实 Store 包仍必须具备 Windows 信任的有效签名；与 M0 自签测试不同，真实包不应导入测试证书。CurrentUser 下载、校验、安装和卸载无需 UAC，AllUsers broker 才需要提权。
+- 真实验收目标必须由当前目录证据确认免费、普通 MSIX/AppX、地区可用且可精确回滚；历史 smoke 产品 ID 和仅有包图不能替代授权/价格判断。
+- schema v4 最终采用固定 `worker` 全局租约和单调 generation fence，而不是 per-job lease；这让 M6 先串行处理任务，避免同一 PFN/product 并发部署，并阻止过期 owner 在接管后写终态。
+- `jobs` 是可重建投影而不是事实源：事件重放可修复缺失/落后的投影与冻结 targets，但序列缺口、事件/投影分歧和被篡改 payload 必须 fail closed。
+- 下载/部署中的重启恢复必须由当前 lease owner 追加事件；释放租约保留 fencing 行后，旧无租约恢复 API 不再可用于生产 worker。
+- FE3 `<Prerequisite>` 的 ID 在真实响应中是 Windows Update category GUID，不是 `<UpdateIdentity>` 的 update ID；把它们转成包依赖边会产生大量虚假的 unresolved dependency。项目现在只保留该原始集合供审计，真实 framework 依赖来自 DCAT 命名依赖并携带最低四段版本。
+- framework 选择不能简单要求目录中最高版本：已安装的同 identity/publisher/compatible architecture framework 只要满足声明最低版本即可；需要下载时选择满足下限的最佳兼容候选。这样既不漏依赖，也不把最低版本约束误变成强制更新策略。
+- 真实 `.msixbundle` 的 FE3 package moniker 可用 `~` 表示 neutral resource，而 bundle manifest 位于 `AppxMetadata/AppxBundleManifest.xml`。普通包 manifest 校验逻辑不能直接套用；bundle 必须按 neutral identity 校验后再做 WinTrust，Windows 部署仍是最终签名与依赖裁决者。
+- Microsoft delivery 元数据可以返回 HTTP URL。安全边界不是笼统“允许 HTTP”，而是精确主机 `dl.delivery.mp.microsoft.com` / `tlu.dl.delivery.mp.microsoft.com`、默认端口、无凭据/fragment、逐跳重定向复核，并且同时具有已知大小与 SHA-256 才允许进入下载器。
+- 本机代理可完成目录/FE3 元数据请求，但对该 HTTP CDN 大文件链路不互通；SOCKS5/SOCKS5H 提前断开、HTTP proxy 返回 502、强制 HTTPS 出现 TLS EOF，而直连 Range 返回 206。因此本次验收采用元数据经代理、精确 delivery 主机字节直连；这只是已记录环境的路由结论，不是通用代理兼容声明。
+- `9P7KNL5RWT25` / `US` / `en-US` 在 2026-10-03 返回 `Microsoft.SysinternalsSuite_8wekyb3d8bbwe` 版本 `2026.9.0.0`、300,193,716 字节 neutral `.msixbundle`。production worker 已完成真实下载、SHA-256、bundle identity、Microsoft 系统信任签名、CurrentUser 安装、精确清单验证、卸载与零目标基线恢复。
+- 该真实回环不需要本地签名、证书导入或 UAC；签名来自 Microsoft 交付包并由 WinTrust/Windows 验证。证据只覆盖这一产品、市场、语言、时间点、Windows 10 build 19045 x64 和 CurrentUser 范围，不证明 AllUsers、其他产品/架构、付费授权或官方 Store 跨渠道 E3。

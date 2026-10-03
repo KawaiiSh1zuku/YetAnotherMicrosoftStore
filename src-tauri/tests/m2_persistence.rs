@@ -9,9 +9,10 @@ use yet_another_microsoft_store_lib::{
         AppSettings, Architecture, CacheEntry, CacheState, DependencyKind, DiagnosticEvent,
         DiagnosticOperation, InstallObservation, InstallSource, PackageDependency, PackageFormat,
         PackageKind, PackageRecord, PackageVersion, ProductRecord, ProxyCredentialPolicy,
-        ProxyMode,
+        ProxyMode, ThemeMode,
     },
     error::ErrorCode,
+    job_events::{JobEvent, JobTarget, JobTargetRole},
     jobs::{Job, JobKind, JobStage, RecoveryAction},
     persistence::Persistence,
 };
@@ -77,7 +78,7 @@ fn package() -> PackageRecord {
     }
 }
 
-fn job(job_id: &str, stage: JobStage) -> Job {
+fn job(job_id: &str) -> Job {
     Job {
         job_id: job_id.to_owned(),
         kind: JobKind::Install,
@@ -86,18 +87,32 @@ fn job(job_id: &str, stage: JobStage) -> Job {
         requested_architectures: vec![Architecture::X64],
         requested_languages: vec!["zh-CN".to_owned()],
         deployment_scope: DeploymentScope::AllUsers,
-        selected_update_id: Some("update-main".to_owned()),
-        package_family_name: Some("Example.App_123".to_owned()),
-        stage,
-        bytes_done: 512,
-        bytes_total: Some(1024),
-        version: Some("1.2.3.4".to_owned()),
-        architecture: Some(Architecture::X64),
-        language: Some("zh-CN".to_owned()),
+        selected_update_id: None,
+        package_family_name: None,
+        stage: JobStage::Queued,
+        bytes_done: 0,
+        bytes_total: None,
+        version: None,
+        architecture: None,
+        language: None,
         requires_elevation: false,
         error: None,
-        created_at: 100,
+        created_at: 200,
         updated_at: 200,
+    }
+}
+
+fn advance(store: &Persistence, job_id: &str, stages: &[JobStage]) {
+    store.save_job(&job(job_id)).expect("create queued job");
+    for (index, stage) in stages.iter().enumerate() {
+        store
+            .append_job_event(
+                job_id,
+                index as u64 + 1,
+                JobEvent::StageChanged { stage: *stage },
+                201 + index as i64,
+            )
+            .expect("advance job stage");
     }
 }
 
@@ -106,11 +121,11 @@ fn schema_migration_is_replayable() {
     let database = TestDatabase::new("migration-replay");
 
     let first = Persistence::open(database.path()).expect("first migration should succeed");
-    assert_eq!(first.schema_version().expect("schema version"), 3);
+    assert_eq!(first.schema_version().expect("schema version"), 4);
     drop(first);
 
     let reopened = Persistence::open(database.path()).expect("migration replay should succeed");
-    assert_eq!(reopened.schema_version().expect("schema version"), 3);
+    assert_eq!(reopened.schema_version().expect("schema version"), 4);
 }
 
 #[test]
@@ -186,6 +201,8 @@ fn repositories_round_trip_domain_records() {
         retention_days: 30,
         keep_installed_payloads: false,
         max_concurrent_downloads: 3,
+        theme: ThemeMode::Dark,
+        diagnostics_enabled: true,
     };
     let observation = InstallObservation {
         package_family_name: "Example.App_123".to_owned(),
@@ -256,12 +273,26 @@ fn repositories_round_trip_domain_records() {
 fn restart_recovery_is_persisted_before_jobs_are_returned() {
     let database = TestDatabase::new("restart-recovery");
     let store = Persistence::open(database.path()).expect("open database");
-    store
-        .save_job(&job("job-download", JobStage::Downloading))
-        .expect("save download job");
-    store
-        .save_job(&job("job-deploy", JobStage::Deploying))
-        .expect("save deployment job");
+    advance(
+        &store,
+        "job-download",
+        &[
+            JobStage::Resolving,
+            JobStage::Selecting,
+            JobStage::Downloading,
+        ],
+    );
+    advance(
+        &store,
+        "job-deploy",
+        &[
+            JobStage::Resolving,
+            JobStage::Selecting,
+            JobStage::Downloading,
+            JobStage::Verifying,
+            JobStage::Deploying,
+        ],
+    );
     drop(store);
 
     let reopened = Persistence::open(database.path()).expect("reopen database");
@@ -307,8 +338,75 @@ fn restart_recovery_is_persisted_before_jobs_are_returned() {
 fn job_request_context_survives_settings_changes_and_restart() {
     let database = TestDatabase::new("job-request-context");
     let store = Persistence::open(database.path()).expect("open database");
-    let original = job("job-context", JobStage::Paused);
+    let original = job("job-context");
     store.save_job(&original).expect("save job");
+    store
+        .append_job_event(
+            "job-context",
+            1,
+            JobEvent::StageChanged {
+                stage: JobStage::Resolving,
+            },
+            201,
+        )
+        .unwrap();
+    store
+        .append_job_event(
+            "job-context",
+            2,
+            JobEvent::StageChanged {
+                stage: JobStage::Selecting,
+            },
+            202,
+        )
+        .unwrap();
+    store
+        .append_job_event(
+            "job-context",
+            3,
+            JobEvent::SelectionRecorded {
+                selected_update_id: "update-main".to_owned(),
+                package_family_name: "Example.App_123".to_owned(),
+                version: "1.2.3.4".to_owned(),
+                architecture: Architecture::X64,
+                language: Some("zh-CN".to_owned()),
+                requires_elevation: false,
+                targets: vec![JobTarget {
+                    role: JobTargetRole::Main,
+                    update_id: "update-main".to_owned(),
+                    identity_name: "Example.App".to_owned(),
+                    publisher: "CN=Example".to_owned(),
+                    version: "1.2.3.4".to_owned(),
+                    architecture: Architecture::X64,
+                    resource_id: None,
+                    package_kind: PackageKind::Main,
+                    expected_size: 1024,
+                    sha256: "a".repeat(64),
+                }],
+            },
+            203,
+        )
+        .unwrap();
+    store
+        .append_job_event(
+            "job-context",
+            4,
+            JobEvent::StageChanged {
+                stage: JobStage::Downloading,
+            },
+            204,
+        )
+        .unwrap();
+    store
+        .append_job_event(
+            "job-context",
+            5,
+            JobEvent::StageChanged {
+                stage: JobStage::Paused,
+            },
+            205,
+        )
+        .unwrap();
     store
         .save_settings(&AppSettings {
             region: "US".to_owned(),
@@ -325,6 +423,8 @@ fn job_request_context_survives_settings_changes_and_restart() {
             retention_days: 0,
             keep_installed_payloads: false,
             max_concurrent_downloads: 1,
+            theme: ThemeMode::System,
+            diagnostics_enabled: false,
         })
         .expect("change global settings");
     drop(store);

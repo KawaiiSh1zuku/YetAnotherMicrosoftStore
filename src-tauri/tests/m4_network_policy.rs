@@ -24,6 +24,8 @@ fn settings(mode: ProxyMode, host: Option<&str>, port: Option<u16>) -> AppSettin
         retention_days: 7,
         keep_installed_payloads: false,
         max_concurrent_downloads: 2,
+        theme: Default::default(),
+        diagnostics_enabled: false,
     }
 }
 
@@ -159,13 +161,24 @@ fn production_policy_rechecks_scheme_and_host_for_redirects() {
     assert!(policy
         .validate_url("https://tlu.dl.delivery.mp.microsoft.com/content/app.msix")
         .is_ok());
+    assert!(policy
+        .validate_url("http://tlu.dl.delivery.mp.microsoft.com/content/app.msix")
+        .is_ok());
     assert_eq!(
-        policy.validate_url("http://tlu.dl.delivery.mp.microsoft.com/content/app.msix"),
-        Err(NetworkPolicyError::HttpsRequired)
+        policy.validate_url("http://attacker.example/app.msix"),
+        Err(NetworkPolicyError::HostNotAllowed)
     );
     assert_eq!(
         policy.validate_url("https://attacker.example/app.msix"),
         Err(NetworkPolicyError::HostNotAllowed)
+    );
+    assert_eq!(
+        policy.validate_url("http://tlu.dl.delivery.mp.microsoft.com:8080/app.msix"),
+        Err(NetworkPolicyError::InvalidUrl)
+    );
+    assert_eq!(
+        policy.validate_url("https://tlu.dl.delivery.mp.microsoft.com/app.msix#ignored"),
+        Err(NetworkPolicyError::InvalidUrl)
     );
     assert_eq!(
         policy.validate_redirect(
@@ -195,6 +208,6 @@ fn loopback_http_requires_the_explicit_fixture_policy() {
     assert!(policy.validate_url("http://[::1]:30123/package").is_ok());
     assert_eq!(
         policy.validate_url("http://localhost.example/package"),
-        Err(NetworkPolicyError::HttpsRequired)
+        Err(NetworkPolicyError::HostNotAllowed)
     );
 }

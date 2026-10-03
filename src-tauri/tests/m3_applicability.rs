@@ -5,7 +5,9 @@ use yet_another_microsoft_store_lib::{
     },
     domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
     error::{AppErrorDto, ErrorCode, RetryAdvice},
-    resolver::{DependencyEdge, DependencyKind, PackageGraph, ResolvedPackage},
+    resolver::{
+        DependencyEdge, DependencyKind, FrameworkRequirement, PackageGraph, ResolvedPackage,
+    },
 };
 
 fn package(
@@ -21,7 +23,7 @@ fn package(
         package_uri: None,
         file_name: None,
         file_size: Some(4096),
-        digest: None,
+        sha256: None,
         update_id: update_id.to_owned(),
         identity_name: Some("Example.App".to_owned()),
         publisher: Some("CN=Example".to_owned()),
@@ -45,6 +47,7 @@ fn graph(packages: Vec<ResolvedPackage>) -> PackageGraph {
         market: Some("CN".to_owned()),
         packages,
         dependencies: Vec::new(),
+        framework_requirements: Vec::new(),
     }
 }
 
@@ -283,6 +286,112 @@ fn installed_framework_satisfies_prerequisite_without_reselection() {
     assert!(result.decisions.iter().any(|decision| {
         decision.update_id == "framework" && decision.reason == DecisionReason::SatisfiedByInstalled
     }));
+}
+
+#[test]
+fn named_framework_requirement_uses_minimum_version_and_compatible_architecture() {
+    let root = package(
+        "main",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::X64,
+        PackageFormat::Msix,
+        PackageKind::Main,
+    );
+    let mut too_old = package(
+        "framework-old",
+        PackageVersion::new(1, 4, 0, 0),
+        Architecture::X64,
+        PackageFormat::Msix,
+        PackageKind::Framework,
+    );
+    too_old.identity_name = Some("Microsoft.Framework".to_owned());
+    let mut compatible = too_old.clone();
+    compatible.update_id = "framework-compatible".to_owned();
+    compatible.version = PackageVersion::new(1, 6, 0, 0);
+    let mut wrong_architecture = compatible.clone();
+    wrong_architecture.update_id = "framework-arm64".to_owned();
+    wrong_architecture.version = PackageVersion::new(9, 0, 0, 0);
+    wrong_architecture.architecture = Architecture::Arm64;
+    let mut packages = graph(vec![root, too_old, compatible, wrong_architecture]);
+    packages.framework_requirements.push(FrameworkRequirement {
+        identity_name: "Microsoft.Framework".to_owned(),
+        minimum_version: Some(PackageVersion::new(1, 5, 0, 0)),
+    });
+
+    let result = select_packages(
+        &packages,
+        &x64_host(),
+        &preferences(SelectionMode::Install),
+        &[],
+    )
+    .expect("a compatible framework satisfying the declared minimum exists");
+
+    assert_eq!(
+        result
+            .packages
+            .iter()
+            .map(|package| package.update_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main", "framework-compatible"]
+    );
+}
+
+#[test]
+fn installed_framework_at_declared_minimum_avoids_catalog_upgrade() {
+    let root = package(
+        "main",
+        PackageVersion::new(2, 0, 0, 0),
+        Architecture::X64,
+        PackageFormat::Msix,
+        PackageKind::Main,
+    );
+    let mut framework = package(
+        "framework",
+        PackageVersion::new(3, 0, 0, 0),
+        Architecture::X64,
+        PackageFormat::Msix,
+        PackageKind::Framework,
+    );
+    framework.identity_name = Some("Microsoft.Framework".to_owned());
+    let mut packages = graph(vec![root, framework]);
+    packages.framework_requirements.push(FrameworkRequirement {
+        identity_name: "Microsoft.Framework".to_owned(),
+        minimum_version: Some(PackageVersion::new(1, 5, 0, 0)),
+    });
+    let installed = [InstalledPackage {
+        identity_name: "Microsoft.Framework".to_owned(),
+        publisher: Some("CN=Example".to_owned()),
+        version: PackageVersion::new(1, 6, 0, 0),
+        architecture: Architecture::X64,
+    }];
+
+    let result = select_packages(
+        &packages,
+        &x64_host(),
+        &preferences(SelectionMode::Install),
+        &installed,
+    )
+    .expect("the installed framework satisfies the declared minimum");
+
+    assert_eq!(result.packages.len(), 1);
+    assert!(result.decisions.iter().any(|decision| {
+        decision.update_id == "framework" && decision.reason == DecisionReason::SatisfiedByInstalled
+    }));
+}
+
+#[test]
+fn package_graph_without_framework_requirements_remains_deserializable() {
+    let legacy = r#"{
+        "product_id":"product",
+        "market":"US",
+        "packages":[],
+        "dependencies":[]
+    }"#;
+
+    let graph: PackageGraph =
+        serde_json::from_str(legacy).expect("legacy graph should deserialize");
+
+    assert!(graph.framework_requirements.is_empty());
 }
 
 #[test]

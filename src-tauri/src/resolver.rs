@@ -2,6 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use storelib_rs::{
     DCatEndpoint, DisplayCatalogHandler, FE3Handler, IdentifierType, Lang, Locale, Market,
@@ -27,13 +28,19 @@ pub struct DependencyEdge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameworkRequirement {
+    pub identity_name: String,
+    pub minimum_version: Option<PackageVersion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedPackage {
     pub package_moniker: String,
     pub package_type: String,
     pub package_uri: Option<String>,
     pub file_name: Option<String>,
     pub file_size: Option<u64>,
-    pub digest: Option<String>,
+    pub sha256: Option<String>,
     pub update_id: String,
     pub identity_name: Option<String>,
     pub publisher: Option<String>,
@@ -56,6 +63,8 @@ pub struct PackageGraph {
     pub market: Option<String>,
     pub packages: Vec<ResolvedPackage>,
     pub dependencies: Vec<DependencyEdge>,
+    #[serde(default)]
+    pub framework_requirements: Vec<FrameworkRequirement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,9 +72,13 @@ pub enum ResolverError {
     MalformedFixture(String),
     MissingField(&'static str),
     InvalidPackageSize,
+    InvalidPackageDigest,
+    ConflictingPackageDigest,
+    InvalidPackageUrl,
     InvalidPackageMoniker,
     UnsupportedPackageFormat,
     InvalidMinimumOsVersion,
+    InvalidFrameworkVersion,
     UnsupportedLocale,
     StoreLib,
 }
@@ -78,12 +91,20 @@ impl std::fmt::Display for ResolverError {
             }
             Self::MissingField(field) => write!(formatter, "FE3 field is missing: {field}"),
             Self::InvalidPackageSize => formatter.write_str("FE3 package size is invalid"),
+            Self::InvalidPackageDigest => formatter.write_str("FE3 package digest is invalid"),
+            Self::ConflictingPackageDigest => {
+                formatter.write_str("FE3 package SHA-256 digests conflict")
+            }
+            Self::InvalidPackageUrl => formatter.write_str("FE3 package URL is invalid"),
             Self::InvalidPackageMoniker => formatter.write_str("FE3 package moniker is invalid"),
             Self::UnsupportedPackageFormat => {
                 formatter.write_str("FE3 package format is unsupported")
             }
             Self::InvalidMinimumOsVersion => {
                 formatter.write_str("FE3 minimum OS version is invalid")
+            }
+            Self::InvalidFrameworkVersion => {
+                formatter.write_str("DCAT framework minimum version is invalid")
             }
             Self::UnsupportedLocale => formatter.write_str("Store locale is unsupported"),
             Self::StoreLib => formatter.write_str("store protocol request failed"),
@@ -140,7 +161,7 @@ impl StoreLibResolverAdapter {
             .await
             .map_err(|error| ResolverError::MalformedFixture(error.to_string()))?;
         attach_update_ids(xml, &mut instances)?;
-        normalize_instances(instances)
+        normalize_instances(instances, Vec::new())
     }
 }
 
@@ -164,12 +185,30 @@ impl PackageResolver for StoreLibResolverAdapter {
                 .query_dcat(product_id, IdentifierType::ProductId, None)
                 .await
                 .map_err(|_| ResolverError::StoreLib)?;
+            let framework_requirements = self
+                .handler
+                .framework_dependencies()
+                .into_iter()
+                .filter_map(|dependency| {
+                    let identity_name = dependency.package_identity.as_deref()?.trim().to_owned();
+                    (!identity_name.is_empty())
+                        .then_some((identity_name, dependency.min_version.as_ref()))
+                })
+                .map(|(identity_name, minimum_version)| {
+                    Ok(FrameworkRequirement {
+                        identity_name,
+                        minimum_version: minimum_version
+                            .map(parse_framework_version)
+                            .transpose()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, ResolverError>>()?;
             let instances = self
                 .handler
                 .get_packages_for_product(None)
                 .await
                 .map_err(|_| ResolverError::StoreLib)?;
-            let mut graph = normalize_instances(instances)?;
+            let mut graph = normalize_instances(instances, framework_requirements)?;
             graph.product_id = Some(product_id.to_owned());
             graph.market = Some(self.handler.selected_locale.market.as_str().to_owned());
             Ok(graph)
@@ -179,8 +218,12 @@ impl PackageResolver for StoreLibResolverAdapter {
 
 fn normalize_instances(
     instances: Vec<storelib_rs::PackageInstance>,
+    framework_requirements: Vec<FrameworkRequirement>,
 ) -> Result<PackageGraph, ResolverError> {
-    let mut graph = PackageGraph::default();
+    let mut graph = PackageGraph {
+        framework_requirements,
+        ..PackageGraph::default()
+    };
     for instance in instances {
         if instance.package_moniker.trim().is_empty() {
             return Err(ResolverError::MissingField("packageMoniker"));
@@ -203,18 +246,28 @@ fn normalize_instances(
             .as_ref()
             .and_then(|metadata| metadata.publisher.clone());
         let language = instance.default_properties_language.clone();
+        let format = package_format(
+            instance.file_name.as_deref(),
+            &instance.package_type,
+            instance.is_appx_bundle,
+        )?;
         let is_framework = instance.is_appx_framework == Some(true)
             || instance
                 .update_properties
                 .as_ref()
                 .and_then(|properties| properties.is_appx_framework)
                 == Some(true);
-        let is_resource = instance.main_package == Some(false)
-            || instance
-                .applicability_blob
-                .as_ref()
-                .and_then(|blob| blob.content_is_main)
-                == Some(false);
+        let is_bundle = matches!(
+            format,
+            PackageFormat::MsixBundle | PackageFormat::AppxBundle | PackageFormat::EappxBundle
+        );
+        let is_resource = !is_bundle
+            && (instance.main_package == Some(false)
+                || instance
+                    .applicability_blob
+                    .as_ref()
+                    .and_then(|blob| blob.content_is_main)
+                    == Some(false));
         let package_kind = if is_framework {
             PackageKind::Framework
         } else if is_resource {
@@ -229,19 +282,9 @@ fn normalize_instances(
                 .as_ref()
                 .and_then(|blob| blob.content_package_id.clone())
         });
-        let format = package_format(
-            instance.file_name.as_deref(),
-            &instance.package_type,
-            instance.is_appx_bundle,
-        )?;
-        let is_neutral = Some(moniker.resource_id.is_none() && language.is_none());
-        for target in &instance.prerequisites {
-            graph.dependencies.push(DependencyEdge {
-                source_update_id: instance.update_id.clone(),
-                target_update_id: target.clone(),
-                kind: DependencyKind::Prerequisite,
-            });
-        }
+        let is_neutral = Some(is_bundle || (moniker.resource_id.is_none() && language.is_none()));
+        // FE3 prerequisites are Windows Update category GUIDs, not package
+        // update IDs. Named framework requirements come from DCAT instead.
         for target in &instance.bundled_updates {
             graph.dependencies.push(DependencyEdge {
                 source_update_id: instance.update_id.clone(),
@@ -250,13 +293,14 @@ fn normalize_instances(
             });
         }
 
+        let sha256 = normalize_sha256(&instance)?;
         graph.packages.push(ResolvedPackage {
             package_moniker: instance.package_moniker,
             package_type: package_type_name(&instance.package_type),
-            package_uri: instance.package_uri,
+            package_uri: normalize_delivery_url(instance.package_uri)?,
             file_name: instance.file_name.or(instance.package_file_name),
             file_size,
-            digest: instance.digest,
+            sha256,
             update_id: instance.update_id,
             identity_name,
             publisher,
@@ -274,6 +318,97 @@ fn normalize_instances(
         });
     }
     Ok(graph)
+}
+
+fn parse_framework_version(value: &serde_json::Value) -> Result<PackageVersion, ResolverError> {
+    let packed = match value {
+        serde_json::Value::Number(number) => number.as_u64(),
+        serde_json::Value::String(value) => value.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    if let Some(packed) = packed {
+        return Ok(PackageVersion::from_packed(packed));
+    }
+    value
+        .as_str()
+        .ok_or(ResolverError::InvalidFrameworkVersion)?
+        .trim()
+        .parse()
+        .map_err(|_| ResolverError::InvalidFrameworkVersion)
+}
+
+pub fn normalize_delivery_url(value: Option<String>) -> Result<Option<String>, ResolverError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let url = reqwest::Url::parse(&value).map_err(|_| ResolverError::InvalidPackageUrl)?;
+    let host = url
+        .host_str()
+        .ok_or(ResolverError::InvalidPackageUrl)?
+        .to_ascii_lowercase();
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || !crate::settings::MICROSOFT_PACKAGE_HOSTS.contains(&host.as_str())
+    {
+        return Err(ResolverError::InvalidPackageUrl);
+    }
+    match url.scheme() {
+        "https" if url.port().is_none_or(|port| port == 443) => {}
+        "http" if url.port().is_none_or(|port| port == 80) => {}
+        _ => return Err(ResolverError::InvalidPackageUrl),
+    }
+    Ok(Some(url.to_string()))
+}
+
+fn normalize_sha256(
+    instance: &storelib_rs::PackageInstance,
+) -> Result<Option<String>, ResolverError> {
+    let mut encoded = instance
+        .additional_digests
+        .iter()
+        .filter(|entry| digest_algorithm_is_sha256(&entry.algorithm))
+        .map(|entry| entry.value.as_str())
+        .collect::<Vec<_>>();
+    if instance
+        .digest_algorithm
+        .as_deref()
+        .is_some_and(digest_algorithm_is_sha256)
+    {
+        if let Some(value) = instance.digest.as_deref() {
+            encoded.push(value);
+        }
+    }
+
+    let mut normalized = None;
+    for value in encoded {
+        let bytes = STANDARD
+            .decode(value.trim())
+            .map_err(|_| ResolverError::InvalidPackageDigest)?;
+        if bytes.len() != 32 {
+            return Err(ResolverError::InvalidPackageDigest);
+        }
+        let value = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if normalized
+            .as_ref()
+            .is_some_and(|existing| existing != &value)
+        {
+            return Err(ResolverError::ConflictingPackageDigest);
+        }
+        normalized = Some(value);
+    }
+    Ok(normalized)
+}
+
+fn digest_algorithm_is_sha256(value: &str) -> bool {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .eq("sha256".chars())
 }
 
 struct MonikerMetadata {
@@ -309,7 +444,8 @@ fn parse_package_moniker(value: &str) -> Result<MonikerMetadata, ResolverError> 
         identity_name: identity_name.to_owned(),
         version,
         architecture,
-        resource_id: (!resource_id.is_empty()).then(|| resource_id.to_owned()),
+        resource_id: (!resource_id.is_empty() && resource_id != "~")
+            .then(|| resource_id.to_owned()),
     })
 }
 

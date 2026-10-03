@@ -1,6 +1,6 @@
 # 第三方 Microsoft Store 客户端设计规格
 
-> 状态：架构已批准并完成 M0-M5 对照审查。M0 原生部署基础达到受控 Windows 实机证据，M1-M3 达到自动化测试证据；M4 达到自动化测试并完成指定产品/市场/语言的受控在线 DCAT/FE3 smoke；M5 达到包图编排、身份关联和签名预检的自动化证据。真实 CDN 包下载、真实签名包图部署和跨渠道互操作不能由该 smoke、fixture、SQLite、mock-backed 编排或构建结果推断为已支持。
+> 状态：架构已批准并完成 M0-M6。M0 原生部署基础达到受控 Windows 实机证据，M1-M5 达到各自自动化证据；M6 完成持久化 worker、安全 Tauri API、五视图前端，并在指定产品/市场/语言/Windows 环境完成一次真实 CDN 下载、Microsoft 签名 `.msixbundle` CurrentUser 安装和精确回滚。该单产品 E2 不代表官方 Store 跨渠道 E3、AllUsers、其他产品/架构或普遍代理兼容。
 
 ## 关键边界
 
@@ -38,7 +38,7 @@
 | E2 受控 Windows 实测 | 在记录的 Windows/载荷/权限环境完成回环 | 指定环境下的真实 Windows 行为 | 其他 OS 构建、架构、产品或市场普遍兼容 |
 | E3 在线/跨渠道实测 | 对 Microsoft 实时服务和官方 Store 完成受控测试 | 指定产品、市场、账户和时间点的互操作 | 对所有产品和授权的永久保证 |
 
-当前基线：M0 为 E2（Windows 10 build 19045 x64、自签测试 MSIX）；M1 为 E1（脱敏 DCAT/FE3 fixture）；M2 为 E1（领域、SQLite 与恢复测试）；M3 为 E1（schema v2、强类型版本、封闭错误详情和纯适用性选择器）；M4 为 E1 加受控在线协议 smoke（未下载真实包）；M5 为 E1（schema v3、verified 包图、身份关联、WinTrust 预检、严格版本差异和部署后收敛）。M6-M9 尚未达到退出证据，M5 真实签名包图 E2 仍待显式载荷。
+当前基线：M0 为 E2（Windows 10 build 19045 x64、自签测试 MSIX）；M1 为 E1（脱敏 DCAT/FE3 fixture）；M2 为 E1（领域、SQLite 与恢复测试）；M3 为 E1（schema v2、强类型版本、封闭错误详情和纯适用性选择器）；M4 为 E1 加受控在线协议 smoke；M5 为 E1（schema v3、verified 包图、身份关联、WinTrust 预检、严格版本差异和部署后收敛）；M6 为 E1 加指定产品 `9P7KNL5RWT25`、`US`、`en-US`、Windows 10 build 19045 x64、CurrentUser 的真实下载/安装/回滚 E2。M7-M9 尚未达到退出证据，M6 不含官方 Store 跨渠道 E3。
 
 ## 技术选型
 
@@ -132,7 +132,7 @@ flowchart LR
   DIFF --> API
 ~~~
 
-图表示目标逻辑关系，不表示所有节点当前均已实现。M0 已覆盖 `DEPLOY`、`BROKER`、`CURRENT`、`MACHINE` 和基础 `INV`；M1 已覆盖 `CAT`/`RES` 的适配；M2 已覆盖 `DB`、领域状态和恢复语义；M3 已覆盖纯函数 `SEL` 和其解释 DTO；M4 已覆盖 `DL` 的安全传输/缓存与大小/SHA-256 `VERIFY`；M5 已覆盖包签名预检、verified 包图到 `DEPLOY` 的编排以及 `DIFF` 身份/版本逻辑。稳定 `API` 与产品 UI 属于 M6，跨渠道 E3 属于 M7。
+图中的 M0-M6 节点已经落地：M0 覆盖 `DEPLOY`、`BROKER`、`CURRENT`、`MACHINE` 和基础 `INV`；M1 覆盖 `CAT`/`RES` adapter；M2-M3 覆盖 `DB`、领域状态、恢复与纯函数 `SEL`；M4 覆盖 `DL` 的安全传输/缓存与大小/SHA-256 `VERIFY`；M5 覆盖包签名预检、verified 包图到 `DEPLOY` 的编排以及 `DIFF`；M6 以持久化 worker 串联这些模块并交付稳定 `API` 与产品 UI。跨渠道 E3 属于 M7。
 
 ### Rust 模块职责边界
 
@@ -149,7 +149,7 @@ flowchart LR
 
 前端不得依赖 storelib_rs 类型、FE3 XML 结构、原始下载 URL 或 WinRT 错误对象。
 
-当前代码仍保留 M0 调试期命令和字符串错误返回；它们不是最终 Tauri API 契约。进入 M6 集成前必须移除脚手架命令，将目录、持久化和部署错误统一映射为封闭的 `AppErrorDto`。
+M6 已移除 M0 调试命令和字符串错误返回。前端只通过封闭的稳定命令、`AppErrorDto` 和安全事件投影访问目录、持久化、下载和部署能力；内部 URL、路径、凭据、原始 HRESULT 与服务响应不穿过 Tauri 边界。
 
 ## Store 获取与包解析
 
@@ -167,7 +167,7 @@ flowchart LR
 
 ### 直连包解析
 
-解析器先使用 Display Catalog 结果获取包身份和履约数据，再通过 FE3 路径获取包实例、依赖边、包大小、可提供的哈希以及 Microsoft CDN 临时位置。
+解析器先使用 Display Catalog 结果获取包身份、履约数据和命名 framework 依赖，再通过 FE3 路径获取包实例、包大小、可提供的哈希以及 Microsoft CDN 临时位置。FE3 `prerequisites` 在真实响应中是 Windows Update category GUID，只保留为审计元数据，不转成包依赖边；framework 最低版本来自 DCAT 命名依赖。
 
 storelib_rs 必须被隔离在项目自有接口之后：
 
@@ -178,7 +178,7 @@ storelib_rs 必须被隔离在项目自有接口之后：
 
 StoreLib 本身是参考实现，不是稳定的平台 SDK。仓库已归档，见 [StoreDev/StoreLib](https://github.com/StoreDev/StoreLib)；Rust 移植版文档见 [storelib_rs](https://docs.rs/crate/storelib_rs/latest)。
 
-当前 M1 已精确固定 `storelib_rs 0.1.11` 和 `roxmltree 0.20.0`，以脱敏 fixture 验证 DCAT 搜索/产品规范化、FE3 包实例和依赖边。M4 已在指定产品 `9WZDNCRFJ3TJ`、市场 `US`、语言 `en` 上完成一次显式开关控制的实时 adapter smoke；这只证明当时的协议解析，不证明授权产品覆盖、临时 CDN URL 下载或普遍 E3 兼容。
+当前 M1 已精确固定 `storelib_rs 0.1.11` 和 `roxmltree 0.20.0`，以脱敏 fixture 验证 DCAT 搜索/产品规范化、FE3 包实例和依赖语义。M4 曾在 `9WZDNCRFJ3TJ` / `US` / `en` 完成实时 adapter smoke；M6 又在 `9P7KNL5RWT25` / `US` / `en-US` 完成真实 `.msixbundle` 下载、签名预检、CurrentUser 安装和回滚。后者只证明记录时点和环境的单产品 E2，不证明授权产品覆盖或普遍 E3。
 
 ### 适用性选择
 
@@ -236,12 +236,12 @@ Microsoft 将 MSIXVC 描述为“Microsoft Installer for Xbox Virtual Console”
 
 部署前必须：
 
-- 验证 HTTPS 以及重定向主机白名单。
+- 验证 HTTP/HTTPS scheme、精确 Microsoft delivery 主机、默认端口以及每一跳重定向；HTTP 也必须同时具备期望大小和 SHA-256。
 - 验证期望大小。
 - 流式计算并校验 SHA-256。
 - 检查包清单身份和版本。
 - 拒绝发布者/包族不匹配。
-- 由 Windows 部署执行最终的包签名和依赖验证。
+- 使用 WinTrust 做系统信任签名预检，再由 Windows 部署执行最终的包签名和依赖验证；Microsoft 交付包不需要项目重签名或导入测试证书。
 
 验证失败必须保持已安装包不变，并保留脱敏后的诊断记录。
 
@@ -283,7 +283,7 @@ M0 已在 Windows 10 build 19045 x64 上，以既有自签测试 MSIX 完成当�
 
 ## 领域模型与持久化
 
-M2 使用项目自有领域模型和 SQLite schema v1 建立持久化基线；M3 通过不可改写历史的 `0002_m3_applicability.sql` 升级为 schema v2。当前持久化以下数据：
+M2 使用项目自有领域模型和 SQLite schema v1 建立持久化基线；M3/M5/M6 通过不可改写历史的 migration 依次升级到 schema v2/v3/v4。当前持久化以下数据：
 
 - 产品及其市场、本地化语言和目录更新时间。
 - 包的强类型四段版本、包族、moniker、publisher、resource ID、package kind、架构、语言、格式、最低 OS、neutral/content ID、大小、哈希和观测来源。
@@ -302,6 +302,19 @@ M2 使用项目自有领域模型和 SQLite schema v1 建立持久化基线；M3
 
 M3 已通过新 migration 补齐 publisher、resource ID、package kind、最低 Windows build 和资源限定字段，并验证 schema v1→v2 与失败回滚。旧 schema 中任意键值错误详情只在白名单字段上兼容读取，其余值脱敏。选择器只消费项目自有 `PackageGraph`、主机能力、用户偏好和已安装清单；安装身份同时检查 identity、publisher 和 architecture，依赖环显式拒绝，语言资源按 identity 与 BCP-47 script 层级选择。ARM64 对 x64/x86 的兼容性由主机能力显式提供，不在选择器硬编码。已发布的 schema v1 保持不变。
 
+### M6 持久化后台任务与事件日志
+
+M6 采用持久化后台 worker，而不是由 WebView 或单个 Tauri invoke 串行持有任务生命周期。schema v4 通过新的不可改写 migration 增加以下结构：
+
+- `job_events` 是每个任务的追加式权威历史，使用单调递增的 `(job_id, sequence)` 和封闭事件类型；payload 只能包含安全 DTO，不保存临时 URL、代理凭据、原始服务响应或用户本地路径。
+- `jobs` 保留为可查询投影。每次状态变化必须在同一 SQLite 事务中先验证期望 sequence，再追加事件并更新投影；任何一边失败都回滚。
+- `job_commands` 是 durable inbox。暂停、恢复和取消使用稳定 command ID 去重；worker 处理后记录结果，重复提交不得产生重复部署或重复终态。
+- `worker_leases` 以 owner ID 和到期时间协调多个进程。只有持有有效租约的 worker 能取得任务；过期租约可被接管，但部署中断只能进入 `NeedsReconciliation`，不能直接重放安装。
+
+投影必须可从事件日志重建并校验。启动时如果投影 sequence 落后，先重放；如果投影领先、事件缺口或终态冲突，则停止该任务并记录稳定存储错误，不能猜测历史。解析、下载和验证可以安全重试；进入 `Deploying` 后拒绝新的 pause/cancel，并以部署前写入的事件作为崩溃边界。重启看到未闭合的部署事件时必须先扫描 Windows 清单，再追加完成、失败或重新解析事件。
+
+worker 在 Rust 进程内运行，但其队列、控制命令、租约和恢复依据都持久化。Tauri 事件只是低延迟通知；React 以 SQLite 投影和 cursor 重放为事实来源，不能把丢失、重复或乱序的窗口事件当作权威状态。
+
 ## 代理配置
 
 设置模型有四种明确模式：
@@ -317,39 +330,27 @@ M3 已通过新 migration 补齐 publisher、resource ID、package kind、最低
 
 ## Tauri 命令与事件契约
 
-当前 M0 暴露 `probe_deployment`、`scan_installed_packages`、`install_package` 和 `uninstall_package`，用于部署 Spike 与验收；其中错误仍以字符串返回，且脚手架 `greet` 尚未移除。它们是临时开发接口，不是前端稳定契约。
-
-M6 目标稳定命令集为：
+M6 已移除 M0 Spike 与脚手架 handler，当前稳定命令集为：
 
 - search_apps
 - get_app_details
-- resolve_app_packages
 - scan_installed_packages
 - scan_updates
 - start_install
 - start_update
-- cancel_job
-- pause_job
-- resume_job
+- request_job_control
 - get_job
+- list_jobs
+- list_job_events
 - get_settings
 - update_settings
 - clear_cache
 
 M0 的安装/卸载能力应作为 `start_install`/`start_update` 内部的部署后端复用；若产品需要暴露卸载功能，必须另行加入稳定命令、权限确认和影响范围设计，不能直接沿用 Spike 参数形状。
 
-事件按任务作用域划分：
+Rust 只向窗口广播 `job://changed` 提示，包含 `job_id`、最新 `sequence` 和 `updated_at`。窗口收到提示后按 cursor 调用 `list_job_events` 或重新获取 `get_job`；旧 sequence、重复提示和断线期间遗漏均不能覆盖较新的投影。
 
-- job-created
-- job-stage-changed
-- job-progress
-- job-warning
-- job-awaiting-elevation
-- job-completed
-- job-failed
-- job-cancelled
-
-DTO 包含 job_id、product_id、package_family_name、stage、bytes_done、bytes_total、version、architecture、language、requires_elevation 和面向用户安全的错误码等稳定字段。原始 URL、令牌和完整服务器响应只保留在 Rust 诊断信息中。
+`JobSnapshot` DTO 包含 job_id、sequence、product_id、package_family_name、stage、bytes_done、bytes_total、version、architecture、language、requires_elevation、允许的控制动作和面向用户安全的错误码。事件 DTO 只包含相同安全字段的增量或阶段事实。原始 URL、令牌、完整服务器响应、缓存路径和未筛选 Windows 错误只保留在 Rust 诊断边界中。
 
 ## 前端设计
 
@@ -465,9 +466,9 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 2. M1 Store 协议适配：已完成 E1。固定并隔离 `storelib_rs`，建立 DCAT/FE3 fixture 契约；不代表线上端点验收。
 3. M2 领域模型与持久化：已完成 E1。建立 schema v1、repository、安全错误模型和重启恢复；不代表下载或更新已实现。
 4. M3 适用性与资源选择：已完成 E1。schema v2、强类型版本、封闭错误详情，以及架构、语言、市场、OS、资源包、依赖、格式和防降级选择已有本地自动化证据。
-5. M4 下载、缓存与代理：已完成 E1 加受控在线协议 smoke；四种代理模式（system 限静态配置）、续传、缓存、URL 过期重解析和大小/SHA-256 验证已有证据，但未执行真实 CDN 包下载与签名验证。
-6. M5 安装/更新编排与身份关联：已完成 E1。复用 M0 部署基础，接入 verified 包图、WinTrust 预检、版本差异、Store 产品关联和部署后重扫，不重复实现 Broker；真实签名包图 E2 尚未执行。
-7. M6 Tauri API 与前端主流程：冻结安全 DTO 和命令/事件，完成搜索、详情、队列、已安装和设置 UI。
+5. M4 下载、缓存与代理：已完成 E1 加受控在线协议 smoke；四种代理模式（system 限静态配置）、续传、缓存、URL 过期重解析和大小/SHA-256 验证已有证据。M6 的集成回环进一步覆盖一个真实 CDN 包，但不形成通用代理互操作保证。
+6. M5 安装/更新编排与身份关联：已完成 E1。复用 M0 部署基础，接入 verified 包图、WinTrust 预检、版本差异、Store 产品关联和部署后重扫，不重复实现 Broker；M6 的单产品回环进一步覆盖该编排的真实签名 CurrentUser E2。
+7. M6 Tauri API 与前端主流程：已完成 E1 加单产品 E2。schema v4 追加式事件日志、durable command inbox、generation-fenced 租约 worker、安全 DTO、13 个稳定命令和搜索/详情/队列/已安装/设置 UI 已实现；指定 Sysinternals Suite 包完成真实下载、安装和精确回滚。
 8. M7 跨渠道互操作验收：在指定测试产品/市场/账户上取得 E3 证据并验证不降级策略。
 9. M8 NSIS 与发布加固：干净机安装/升级/卸载、签名、诊断、网络白名单和可访问性回归。
 10. M9 MSIXVC 研究门：第一阶段之后独立评估；未通过专门审批前不下载、不安装、不更新。
@@ -483,4 +484,4 @@ UI 样式遵循选定的 ui-styling 指导：组件组合、CSS 变量主题、R
 
 ## 当前执行门
 
-M0-M5 已通过本规格规定的对应 E1/E2 证据门。下一实施工作是 M6：冻结安全 Tauri 命令/事件 DTO，并完成搜索、详情、队列、已安装和设置主流程。M5 真实签名包图 E2、真实 CDN 包下载、跨渠道更新、NSIS 发布和 MSIXVC 仍分别受独立环境门、M7、M8、M9 门控。
+M0-M6 已通过本规格规定的对应 E1/E2 证据门。下一实施工作是 M7：在明确产品/市场/账户边界内验证官方 Store 与本客户端的来源无关关联、更新资格和防降级，取得独立 E3 证据。M6 的单产品 CurrentUser 回环不替代 M7；PAC/WPAD、NSIS 发布和 MSIXVC 仍分别受独立能力门、M8 和 M9 门控。

@@ -22,7 +22,9 @@
         <Xml>
           <ExtendedProperties Handler="appx" IsAppxFramework="false" PackageContentId="content-123" PackageIdentityName="Contoso.Notes" DefaultPropertiesLanguage="zh-CN"/>
           <Files>
-            <File FileName="resource.msix" InstallerSpecificIdentifier="Contoso.Notes_2.4.6.8_x64_zh-cn_abc" Size="4096"/>
+            <File FileName="resource.msix" InstallerSpecificIdentifier="Contoso.Notes_2.4.6.8_x64_zh-cn_abc" Size="4096" Digest="AAAAAAAAAAAAAAAAAAAAAAAAAAA=" DigestAlgorithm="SHA1">
+              <AdditionalDigest Algorithm="SHA256">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</AdditionalDigest>
+            </File>
           </Files>
           <HandlerSpecificData type="appx:AppxInstaller">
             <AppxPackageInstallData MainPackage="false" PackageFileName="resource.msix"/>

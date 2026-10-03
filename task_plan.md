@@ -18,7 +18,8 @@
 - M4：受控 DCAT/FE3 在线 smoke、静态 Windows/自定义代理、续传下载、流式校验、缓存恢复与淘汰已完成
 - M5：schema v3、verified 包图、WinTrust 预检、身份关联、严格版本决策与部署后收敛已完成 E1
 - M0-M5 计划匹配审查：已完成；M0 为受控 Windows E2，M1-M3/M5 为自动化 E1，M4 为 E1 加受控在线协议 smoke
-- 产品代码：Tauri/Rust/React 基线以及 M1-M5 协议、持久化、选择、下载/缓存、安装/更新编排边界已建立；M6 Tauri API 与前端主流程为下一门槛
+- M6：已完成；schema v4 追加式事件日志、durable command inbox、generation-fenced 租约 worker、安全 Tauri DTO、五视图前端和单产品 CurrentUser 真实回环均已验收
+- 产品代码：Tauri/Rust/React 主流程已串联 M1-M5 的协议、选择、下载/缓存、签名预检和原生部署边界；跨渠道更新、发布加固和 MSIXVC 仍分别受 M7-M9 门控
 
 ## 已确认决策
 
@@ -37,10 +38,10 @@
 
 ## 下一步门槛
 
-1. M6：移除脚手架命令并冻结封闭的 Tauri 命令、事件、取消/恢复和错误 DTO。
-2. M6：把搜索、详情、队列、已安装和设置主流程接入 M1-M5 后端，完成进度、恢复与可访问性验证。
-3. M5 真实签名 Microsoft 包图/UAC 成功路径继续保留为显式环境门，不把 M0 单包 E2 与 M5 E1 拼接成新实机结论。
-4. PAC/WPAD 保留为独立代理能力门；M4 system 模式只承诺 WinHTTP 当前用户静态代理配置。
+1. M7：用既有官方 Store 安装或更新同身份包，验证来源无关关联、防降级和跨渠道互操作；M6 单产品 CurrentUser 回环不替代该 E3 门。
+2. M7：扩展真实产品/市场/语言/架构矩阵，并继续以完整 Windows 清单而不是客户端数据库判定已安装状态。
+3. PAC/WPAD 保留为独立代理能力门；当前 system 模式只承诺 WinHTTP 当前用户静态代理配置。
+4. M8：完成 NSIS、Release Broker 签名、干净机安装/升级/卸载与发布诊断。
 
 ## M5 实施结果（2026-10-03）
 
@@ -65,6 +66,11 @@
 - 显式开关下的受控在线 smoke 于 2026-10-02 对 `9WZDNCRFJ3TJ`、`US`、`en` 成功观察到 20 个包和 81 条依赖；未保存临时 URL，未下载真实包，未改变安装状态。
 - M5 新增 schema v3、身份关联、verified 包图计划、WinTrust 预检、严格版本决策和编排收敛；独立审查修复五项 Important 后，全目标结果为 110 项通过、5 项真实环境测试 ignored。
 - M5 最终格式检查、默认特性严格 Clippy、Broker check、前端构建和 Tauri debug 非 bundle 构建通过；本轮未执行真实 Microsoft CDN 下载、签名包图部署、UAC 或跨渠道 Store 更新。
+- M6 新增 schema v4 事件/投影、durable command inbox、generation-fenced worker lease、封闭的 13 个 Tauri 命令、`job://changed` cursor 提示和搜索/详情/队列/已安装/设置五视图；前端 10/10、Playwright 2/2 通过。
+- M6 修正真实目录契约：FE3 `prerequisites` 作为 Windows Update category GUID 保留审计，不再伪造包依赖边；DCAT 命名 framework 依赖携带最低版本，选择器按 architecture/version/已安装清单解析。
+- M6 允许 `dl.delivery.mp.microsoft.com` 与 `tlu.dl.delivery.mp.microsoft.com` 的默认端口 HTTP/HTTPS 交付 URL；任何下载仍必须同时有期望大小和 SHA-256，重定向逐跳复核，其他主机、凭据、fragment 或非默认端口均拒绝。
+- 2026-10-03 在 Windows 10 build 19045 x64 上，以产品 `9P7KNL5RWT25`、市场 `US`、语言 `en-US` 完成真实 Microsoft 签名 `.msixbundle` CurrentUser 回环：下载 300,193,716 字节、校验 SHA-256/manifest/WinTrust、安装后精确清单验证、卸载并恢复原始零目标清单。未导入测试证书、未触发 UAC、未执行 AllUsers 或官方 Store 跨渠道更新。
+- M6 最终门通过：Rust 全目标 171 项通过、7 项显式环境测试 ignored，严格 Clippy、Broker check、前端构建、Tauri debug no-bundle、Vitest 10/10、Playwright 2/2 与 staged diff 检查均通过；单产品 E2 不扩展为 M7 E3 或普遍兼容声明。
 
 ## 约束
 

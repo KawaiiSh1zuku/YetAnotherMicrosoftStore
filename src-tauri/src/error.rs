@@ -198,9 +198,13 @@ impl From<&ResolverError> for AppErrorDto {
             }
             ResolverError::MalformedFixture(_)
             | ResolverError::InvalidPackageSize
+            | ResolverError::InvalidPackageDigest
+            | ResolverError::ConflictingPackageDigest
+            | ResolverError::InvalidPackageUrl
             | ResolverError::InvalidPackageMoniker
             | ResolverError::UnsupportedPackageFormat
             | ResolverError::InvalidMinimumOsVersion
+            | ResolverError::InvalidFrameworkVersion
             | ResolverError::UnsupportedLocale => {
                 Self::new(ErrorCode::DependencyUnresolved, RetryAdvice::ReResolve)
             }

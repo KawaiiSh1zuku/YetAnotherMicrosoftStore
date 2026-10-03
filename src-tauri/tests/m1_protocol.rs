@@ -1,5 +1,8 @@
 #![cfg(windows)]
 
+use yet_another_microsoft_store_lib::applicability::{
+    select_packages, HostCapabilities, SelectionMode, SelectionPreferences,
+};
 use yet_another_microsoft_store_lib::catalog::{
     CatalogError, CatalogProvider, DeviceFamily, StoreLibCatalogAdapter,
 };
@@ -7,8 +10,46 @@ use yet_another_microsoft_store_lib::domain::{
     Architecture, PackageFormat, PackageKind, PackageVersion,
 };
 use yet_another_microsoft_store_lib::resolver::{
-    DependencyKind, ResolverError, StoreLibResolverAdapter,
+    normalize_delivery_url, DependencyKind, ResolverError, StoreLibResolverAdapter,
 };
+
+#[test]
+fn fe3_delivery_urls_preserve_http_only_for_allowlisted_microsoft_hosts() {
+    assert_eq!(
+        normalize_delivery_url(Some(
+            "http://tlu.dl.delivery.mp.microsoft.com/content/app.msix?token=redacted".to_owned()
+        ))
+        .expect("allowlisted delivery URL"),
+        Some("http://tlu.dl.delivery.mp.microsoft.com/content/app.msix?token=redacted".to_owned())
+    );
+    assert!(matches!(
+        normalize_delivery_url(Some("http://download.invalid/app.msix".to_owned())),
+        Err(ResolverError::InvalidPackageUrl)
+    ));
+    assert!(matches!(
+        normalize_delivery_url(Some(
+            "https://user:secret@tlu.dl.delivery.mp.microsoft.com/app.msix".to_owned()
+        )),
+        Err(ResolverError::InvalidPackageUrl)
+    ));
+}
+
+#[tokio::test]
+async fn fe3_bundle_container_remains_a_main_package_when_install_data_is_not_main() {
+    let fixture = include_str!("fixtures/fe3-applicability.xml")
+        .replace("_x64_zh-cn_abc", "_neutral_~_abc")
+        .replace("IsAppxBundle=\"false\"", "IsAppxBundle=\"true\"")
+        .replace("resource.msix", "application.appxbundle");
+
+    let graph = StoreLibResolverAdapter::parse_fixture(&fixture)
+        .await
+        .expect("bundle fixture should parse");
+
+    assert_eq!(graph.packages[0].format, PackageFormat::AppxBundle);
+    assert_eq!(graph.packages[0].package_kind, PackageKind::Main);
+    assert_eq!(graph.packages[0].resource_id, None);
+    assert_eq!(graph.packages[0].is_neutral, Some(true));
+}
 
 #[test]
 fn dcat_fixtures_normalize_search_and_product_identity() {
@@ -78,7 +119,7 @@ async fn fe3_fixture_normalizes_packages_and_dependency_edges() {
     assert_eq!(app.prerequisites, vec!["framework-category"]);
     assert_eq!(app.bundled_updates, vec!["resource-update"]);
 
-    assert!(graph.dependencies.iter().any(|edge| {
+    assert!(!graph.dependencies.iter().any(|edge| {
         edge.source_update_id == "app-update"
             && edge.target_update_id == "framework-category"
             && edge.kind == DependencyKind::Prerequisite
@@ -88,6 +129,35 @@ async fn fe3_fixture_normalizes_packages_and_dependency_edges() {
             && edge.target_update_id == "resource-update"
             && edge.kind == DependencyKind::Bundled
     }));
+}
+
+#[tokio::test]
+async fn fe3_category_prerequisites_do_not_fail_package_selection() {
+    let graph =
+        StoreLibResolverAdapter::parse_fixture(include_str!("fixtures/fe3-sync-updates.xml"))
+            .await
+            .expect("FE3 fixture should parse");
+    let host = HostCapabilities {
+        os_version: PackageVersion::new(10, 0, 19045, 0),
+        native_architecture: Architecture::X64,
+        compatible_architectures: vec![Architecture::X64, Architecture::Neutral],
+        supported_formats: vec![PackageFormat::Appx],
+    };
+    let preferences = SelectionPreferences {
+        market: "US".to_owned(),
+        preferred_architectures: vec![Architecture::X64, Architecture::Neutral],
+        preferred_languages: vec!["en-US".to_owned()],
+        mode: SelectionMode::Install,
+    };
+
+    let selected = select_packages(&graph, &host, &preferences, &[])
+        .expect("WU category IDs are constraints, not package update IDs");
+
+    assert_eq!(selected.packages[0].update_id, "app-update");
+    assert!(selected
+        .packages
+        .iter()
+        .any(|package| package.update_id == "resource-update"));
 }
 
 #[tokio::test]
@@ -126,6 +196,46 @@ async fn fe3_fixture_maps_applicability_fields_without_leaking_vendor_types() {
     assert_eq!(package.is_neutral, Some(false));
     assert_eq!(package.content_id.as_deref(), Some("content-123"));
     assert_eq!(package.format, PackageFormat::Msix);
+    let expected_sha256 = "00".repeat(32);
+    assert_eq!(package.sha256.as_deref(), Some(expected_sha256.as_str()));
+}
+
+#[tokio::test]
+async fn fe3_sha256_metadata_rejects_malformed_and_conflicting_values() {
+    let fixture = include_str!("fixtures/fe3-applicability.xml");
+
+    let malformed = fixture.replace("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "not-base64");
+    assert!(matches!(
+        StoreLibResolverAdapter::parse_fixture(&malformed).await,
+        Err(ResolverError::InvalidPackageDigest)
+    ));
+
+    let wrong_length = fixture.replace(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    );
+    assert!(matches!(
+        StoreLibResolverAdapter::parse_fixture(&wrong_length).await,
+        Err(ResolverError::InvalidPackageDigest)
+    ));
+
+    let conflicting = fixture.replace(
+        "</AdditionalDigest>",
+        "</AdditionalDigest><AdditionalDigest Algorithm=\"SHA256\">ERERERERERERERERERERERERERERERERERERERERERE=</AdditionalDigest>",
+    );
+    assert!(matches!(
+        StoreLibResolverAdapter::parse_fixture(&conflicting).await,
+        Err(ResolverError::ConflictingPackageDigest)
+    ));
+
+    let sha1_only = fixture.replace(
+        "<AdditionalDigest Algorithm=\"SHA256\">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</AdditionalDigest>",
+        "",
+    );
+    let graph = StoreLibResolverAdapter::parse_fixture(&sha1_only)
+        .await
+        .expect("SHA-1-only metadata remains displayable");
+    assert_eq!(graph.packages[0].sha256, None);
 }
 
 #[tokio::test]

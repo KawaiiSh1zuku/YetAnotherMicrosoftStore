@@ -2,7 +2,7 @@
 
 > 记录日期：2026-10-03
 >
-> 本文件记录 M0 基线、原生部署路径、M4 网络边界和 M5 编排证据；不把 fixture/协议 smoke 扩展为真实 CDN 下载、真实签名包图部署、跨渠道更新或 MSIXVC 能力。
+> 本文件记录 M0 基线、原生部署路径、M4 网络边界、M5 编排和 M6 单产品真实回环证据；不把该产品的 CurrentUser 实测扩展为普遍兼容、跨渠道更新、AllUsers 或 MSIXVC 能力。
 
 ## 构建基线
 
@@ -21,7 +21,7 @@
 | 格式 | M0 行为 | 当前结论 |
 |---|---|---|
 | `.msix` / `.appx` | 当前用户直接部署；全用户经 Broker stage/provision | 既有自签 `.msix` 已完成双范围真实回环 |
-| `.msixbundle` / `.appxbundle` | 请求校验和 Broker 路径接受 | 真实 bundle 载荷未在本次 M0 验收 |
+| `.msixbundle` / `.appxbundle` | 请求校验和 Broker 路径接受 | M6 已对 Microsoft 签名 `.msixbundle` 完成一次 CurrentUser 真实回环；AllUsers 与其他 bundle 不作普遍兼容承诺 |
 | `.eappx` / `.eappxbundle` | broker 请求校验接受 | 授权和部署 API 仍待后续里程碑验证 |
 | `.msixvc` / Xbox 包 | broker 请求校验拒绝 | 保持 M9 能力门，不下载、不安装、不更新 |
 | `.exe` / `.msi` | broker 请求校验拒绝 | 第一阶段不执行供应商安装器 |
@@ -45,7 +45,7 @@
 | production adapter | 受控在线 smoke 通过 | 2026-10-02，产品 `9WZDNCRFJ3TJ`、市场 `US`、语言 `en`；20 个包、81 条依赖；未保存临时 URL |
 | disabled / custom HTTP(S) / SOCKS5 | 已实现并通过自动化测试 | 自定义凭据只在运行时存在；普通设置与 SQLite 不保存用户名/密码 |
 | system 代理 | 当前用户静态代理已实现 | 读取 WinHTTP 当前用户 IE proxy config；PAC/自动检测/WPAD 显式返回不支持，不作兼容承诺 |
-| 下载策略 | 本地真实 socket fixture 通过 | HTTPS host allowlist 与逐跳重定向复核；只有显式测试策略允许 loopback HTTP |
+| 下载策略 | 本地真实 socket fixture与单产品 CDN 下载通过 | production 仅允许两个 Microsoft delivery 精确主机的默认端口 HTTP/HTTPS，逐跳复核重定向；HTTP 同样必须有期望大小与 SHA-256 |
 | 续传与取消 | 本地真实字节流测试通过 | 只有 ETag 可用时续传；ETag/Content-Range/总长度变化从零重启；等待响应、限速与流读取均可取消 |
 | 完整性与落盘 | 本地 fixture 通过 | 期望大小与 SHA-256 流式校验后按内容哈希原子提升；失败不进入 verified |
 | 缓存恢复与淘汰 | SQLite/文件系统测试通过 | 恢复 partial sidecar，核对 verified 哈希，先 retention 后 LRU，保护活动任务且拒绝缓存根逃逸 |
@@ -64,6 +64,20 @@ M4 没有执行 Microsoft CDN 真实包下载、包签名验证、磁盘空间�
 | 部署后收敛 | 已实现并通过自动化测试 | 重扫 identity/publisher/version/architecture/resource；AllUsers 主包要求显式预配，framework 允许由主包依赖关系隐式保留；成功后才事务写入关联与 `ThisClient` 来源 |
 
 M5 最终自动化结果包含 19 项聚焦测试；工作区全目标为 110 项通过、5 项环境测试 ignored。M5 达到本地 E1 编排证据，并复用 M0 已记录的单包 CurrentUser/AllUsers E2 原语证据。本轮未取得新的真实签名 Microsoft 包图、UAC、CDN 下载或官方 Store 跨渠道更新证据，不能把两层证据拼接成 M5 的 E2/E3 验收。
+
+## M6 后台任务、产品 UI 与真实回环
+
+| 能力 | 当前结论 | 证据边界 |
+|---|---|---|
+| 持久化 worker | schema v4 与自动化回归通过 | 追加事件为权威历史，`jobs` 为可重建投影，durable command inbox 去重，固定 worker lease 使用 generation fence；投影分歧/事件缺口 fail closed |
+| 安全 Tauri API | 13 个封闭命令已接入 | 只广播 `job://changed` sequence 提示；前端 DTO/事件不包含 URL、路径、凭据、原始 HRESULT 或服务响应 |
+| 桌面主流程 | 五视图完成 | 搜索、详情、队列、已安装和设置；Vitest 10/10、Playwright 键盘/焦点/360 px/axe 2/2、Vite 与 Tauri debug no-bundle 构建通过 |
+| production URL 策略 | HTTP/HTTPS 精确白名单 | 仅 `dl.delivery.mp.microsoft.com`、`tlu.dl.delivery.mp.microsoft.com` 默认端口；拒绝其他主机、凭据、fragment 和非默认端口；下载强制大小与 SHA-256 |
+| 真实 Store CurrentUser 回环 | 已完成单产品 E2 | 2026-10-03，Windows 10 build 19045 x64，`9P7KNL5RWT25` / `US` / `en-US`，`Microsoft.SysinternalsSuite_8wekyb3d8bbwe` `2026.9.0.0`，neutral `.msixbundle`，300,193,716 字节 |
+| 签名与清理 | 已验证并恢复基线 | SHA-256、bundle identity、WinTrust 和 Windows 部署通过；未导入证书、未触发 UAC；卸载后 Windows PowerShell 5.1 复核目标包计数为 0 |
+| 最终自动化门 | 全部通过 | Rust 171 passed / 7 ignored，严格 Clippy、Broker check、Vitest 10/10、Playwright 2/2、前端构建和 Tauri debug no-bundle 通过 |
+
+真实回环只证明上述产品、市场、语言、时间点、主机与 CurrentUser 范围。它没有使用官方 Store 队列，不证明官方 Store 可更新本客户端安装、AllUsers、付费/授权产品、其他架构/Windows 构建或通用代理互操作；这些仍属于 M7/M8 的独立验收门。
 
 ## M0 停止条件
 

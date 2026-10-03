@@ -15,6 +15,11 @@ use windows::{
 
 use crate::domain::{AppSettings, ProxyMode};
 
+pub const MICROSOFT_PACKAGE_HOSTS: [&str; 2] = [
+    "dl.delivery.mp.microsoft.com",
+    "tlu.dl.delivery.mp.microsoft.com",
+];
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProxyCredentials {
     username: String,
@@ -391,6 +396,9 @@ impl NetworkPolicy {
         if !url.username().is_empty() || url.password().is_some() {
             return Err(NetworkPolicyError::CredentialsForbidden);
         }
+        if url.fragment().is_some() {
+            return Err(NetworkPolicyError::InvalidUrl);
+        }
         let host = url.host_str().ok_or(NetworkPolicyError::InvalidUrl)?;
         let loopback_http = self.allow_loopback_http
             && url.scheme() == "http"
@@ -398,18 +406,21 @@ impl NetworkPolicy {
                 .trim_matches(['[', ']'])
                 .parse::<IpAddr>()
                 .is_ok_and(|address| address.is_loopback());
-        if url.scheme() != "https" && !loopback_http {
-            return Err(NetworkPolicyError::HttpsRequired);
-        }
         if loopback_http {
             return Ok(());
         }
-        let host = host.to_ascii_lowercase();
-        if self.allowed_hosts.contains(&host) {
-            Ok(())
-        } else {
-            Err(NetworkPolicyError::HostNotAllowed)
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(NetworkPolicyError::HttpsRequired);
         }
+        let host = host.to_ascii_lowercase();
+        if !self.allowed_hosts.contains(&host) {
+            return Err(NetworkPolicyError::HostNotAllowed);
+        }
+        let default_port = if url.scheme() == "https" { 443 } else { 80 };
+        if url.port().is_some_and(|port| port != default_port) {
+            return Err(NetworkPolicyError::InvalidUrl);
+        }
+        Ok(())
     }
 
     pub fn validate_redirect(

@@ -1,64 +1,230 @@
 #[cfg(not(feature = "broker-dependency"))]
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+struct RuntimeState {
+    backend: app_runtime::ProductionApiBackend,
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+fn api(
+    state: &tauri::State<'_, RuntimeState>,
+) -> tauri_api::TauriApi<app_runtime::ProductionApiBackend> {
+    tauri_api::TauriApi::new(state.backend.clone())
 }
 
 #[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
-fn probe_deployment() -> Result<DeploymentProbe, String> {
-    deployment::WindowsDeploymentBackend::probe().map_err(|error| error.to_string())
+async fn search_apps(
+    state: tauri::State<'_, RuntimeState>,
+    request: tauri_api::SearchRequest,
+) -> Result<Vec<tauri_api::ApiCatalogProduct>, error::AppErrorDto> {
+    api(&state).search_apps(request).await
 }
 
 #[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
-fn scan_installed_packages(
-    scope: deployment::DeploymentScope,
-) -> Result<inventory::InventorySnapshot, String> {
-    deployment_coordinator::DeploymentCoordinator::scan(scope).map_err(|error| error.to_string())
+async fn get_app_details(
+    state: tauri::State<'_, RuntimeState>,
+    request: tauri_api::DetailsRequest,
+) -> Result<tauri_api::ApiAppDetails, error::AppErrorDto> {
+    api(&state).get_app_details(request).await
 }
 
 #[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
-fn install_package(
-    scope: deployment::DeploymentScope,
-    package: package_validation::VerifiedPackageSet,
-) -> Result<inventory::InventorySnapshot, String> {
-    deployment_coordinator::DeploymentCoordinator::install(scope, &package)
-        .map_err(|error| error.to_string())
+async fn scan_installed_packages(
+    state: tauri::State<'_, RuntimeState>,
+    scope: tauri_api::ApiDeploymentScope,
+) -> Result<tauri_api::ApiInventorySnapshot, error::AppErrorDto> {
+    api(&state).scan_installed_packages(scope).await
 }
 
 #[cfg(not(feature = "broker-dependency"))]
 #[tauri::command]
-fn uninstall_package(
-    scope: deployment::DeploymentScope,
-    package_family_name: String,
-    package_full_names: Vec<String>,
-) -> Result<inventory::InventorySnapshot, String> {
-    deployment_coordinator::DeploymentCoordinator::uninstall(
-        scope,
-        &package_family_name,
-        &package_full_names,
-    )
-    .map_err(|error| error.to_string())
+async fn scan_updates(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<Vec<tauri_api::ApiUpdateCandidate>, error::AppErrorDto> {
+    api(&state).scan_updates().await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn start_install(
+    state: tauri::State<'_, RuntimeState>,
+    request: tauri_api::StartJobRequest,
+) -> Result<tauri_api::ApiJobSnapshot, error::AppErrorDto> {
+    api(&state).start_install(request).await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn start_update(
+    state: tauri::State<'_, RuntimeState>,
+    request: tauri_api::StartJobRequest,
+) -> Result<tauri_api::ApiJobSnapshot, error::AppErrorDto> {
+    api(&state).start_update(request).await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn request_job_control(
+    state: tauri::State<'_, RuntimeState>,
+    request: tauri_api::JobControlRequest,
+) -> Result<tauri_api::ApiJobSnapshot, error::AppErrorDto> {
+    api(&state).request_job_control(request).await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn get_job(
+    state: tauri::State<'_, RuntimeState>,
+    job_id: String,
+) -> Result<Option<tauri_api::ApiJobSnapshot>, error::AppErrorDto> {
+    api(&state).get_job(job_id).await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn list_jobs(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<Vec<tauri_api::ApiJobSnapshot>, error::AppErrorDto> {
+    api(&state).list_jobs().await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn list_job_events(
+    state: tauri::State<'_, RuntimeState>,
+    request: tauri_api::ListJobEventsRequest,
+) -> Result<tauri_api::ApiJobEventPage, error::AppErrorDto> {
+    api(&state).list_job_events(request).await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn get_settings(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<tauri_api::ApiAppSettings, error::AppErrorDto> {
+    api(&state).get_settings().await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn update_settings(
+    state: tauri::State<'_, RuntimeState>,
+    settings: tauri_api::ApiAppSettings,
+) -> Result<tauri_api::ApiAppSettings, error::AppErrorDto> {
+    api(&state).update_settings(settings).await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+#[tauri::command]
+async fn clear_cache(state: tauri::State<'_, RuntimeState>) -> Result<(), error::AppErrorDto> {
+    api(&state).clear_cache().await
+}
+
+#[cfg(not(feature = "broker-dependency"))]
+fn start_runtime_tasks(
+    app: tauri::AppHandle,
+    backend: app_runtime::ProductionApiBackend,
+) -> Result<(), std::io::Error> {
+    use std::time::Duration;
+    use tauri::Emitter;
+    use tauri_api::ApiBackend;
+
+    let worker_backend = backend.clone();
+    let wake = worker_backend.worker_wake();
+    std::thread::Builder::new()
+        .name("yamstore-worker".to_owned())
+        .spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async move {
+                loop {
+                    match worker_backend.run_worker_once().await {
+                        Ok(job_worker::RunOnceOutcome::Processed { .. }) => continue,
+                        Ok(
+                            job_worker::RunOnceOutcome::Idle
+                            | job_worker::RunOnceOutcome::LeaseBusy,
+                        ) => {
+                            tokio::select! {
+                                () = wake.notified() => {},
+                                () = tokio::time::sleep(Duration::from_secs(1)) => {},
+                            }
+                        }
+                        Ok(job_worker::RunOnceOutcome::LeaseLost) | Err(_) => {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                }
+            });
+        })
+        .map_err(|_| std::io::Error::other("worker thread initialization failed"))?;
+
+    tauri::async_runtime::spawn(async move {
+        let mut cursor = 0_u64;
+        loop {
+            let request = tauri_api::ListJobEventsRequest {
+                after_cursor: Some(cursor),
+                limit: 100,
+            };
+            match backend.list_job_events(request).await {
+                Ok(events) if !events.is_empty() => {
+                    for event in events {
+                        cursor = event.cursor;
+                        let hint = tauri_api::JobChangedHint {
+                            job_id: event.job_id,
+                            sequence: event.sequence,
+                            updated_at: event.snapshot.job.updated_at,
+                        };
+                        let _ = app.emit(tauri_api::JOB_CHANGED_EVENT, hint);
+                    }
+                }
+                Ok(_) | Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        }
+    });
+    Ok(())
 }
 
 #[cfg(not(feature = "broker-dependency"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Manager;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let data_root = app.path().app_data_dir()?;
+            let cache_root = app.path().app_cache_dir()?.join("packages");
+            let paths = app_runtime::RuntimePaths::new(data_root.join("state.sqlite3"), cache_root)
+                .map_err(|_| std::io::Error::other("runtime path initialization failed"))?;
+            let backend = app_runtime::ProductionApiBackend::new(paths);
+            start_runtime_tasks(app.handle().clone(), backend.clone())?;
+            app.manage(RuntimeState { backend });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            greet,
-            probe_deployment,
+            search_apps,
+            get_app_details,
             scan_installed_packages,
-            install_package,
-            uninstall_package
+            scan_updates,
+            start_install,
+            start_update,
+            request_job_control,
+            get_job,
+            list_jobs,
+            list_job_events,
+            get_settings,
+            update_settings,
+            clear_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+pub mod app_runtime;
 pub mod applicability;
 pub mod broker;
 pub mod broker_launcher;
@@ -74,12 +240,13 @@ pub mod download;
 pub mod error;
 pub mod identity;
 pub mod inventory;
+pub mod job_events;
+pub mod job_store;
+pub mod job_worker;
 pub mod jobs;
 pub mod package_validation;
 pub mod persistence;
 pub mod resolver;
 pub mod settings;
+pub mod tauri_api;
 pub mod verification;
-
-#[cfg(not(feature = "broker-dependency"))]
-use deployment::DeploymentProbe;

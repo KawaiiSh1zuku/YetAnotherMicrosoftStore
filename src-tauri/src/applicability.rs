@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
-    resolver::{DependencyKind, PackageGraph, ResolvedPackage},
+    resolver::{DependencyKind, FrameworkRequirement, PackageGraph, ResolvedPackage},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,12 +229,64 @@ pub fn select_packages(
         completed_ids: HashSet::new(),
         decisions,
     };
+    select_framework_requirements(&context, &mut selection)?;
     select_dependencies(&context, root, &mut selection)?;
 
     Ok(SelectionResult {
         packages: selection.packages,
         decisions: selection.decisions,
     })
+}
+
+fn select_framework_requirements<'a>(
+    context: &SelectionContext<'a>,
+    selection: &mut SelectionAccumulator<'a>,
+) -> Result<(), ApplicabilityError> {
+    for requirement in &context.graph.framework_requirements {
+        let dependency = best_framework_candidate(requirement, context).ok_or_else(|| {
+            ApplicabilityError::DependencyUnresolved {
+                update_id: requirement.identity_name.clone(),
+            }
+        })?;
+        let minimum_version = requirement
+            .minimum_version
+            .unwrap_or_else(|| PackageVersion::new(0, 0, 0, 0));
+        if matching_installed(dependency, context.installed)
+            .is_some_and(|installed| installed.version >= minimum_version)
+        {
+            selection.decisions.push(decision(
+                dependency,
+                false,
+                DecisionReason::SatisfiedByInstalled,
+            ));
+            continue;
+        }
+        add_selected(dependency, DecisionReason::SelectedDependency, selection);
+        select_dependencies(context, dependency, selection)?;
+    }
+    Ok(())
+}
+
+fn best_framework_candidate<'a>(
+    requirement: &FrameworkRequirement,
+    context: &SelectionContext<'a>,
+) -> Option<&'a ResolvedPackage> {
+    context
+        .graph
+        .packages
+        .iter()
+        .filter(|package| {
+            package.package_kind == PackageKind::Framework
+                && package.identity_name.as_deref().is_some_and(|identity| {
+                    identity.eq_ignore_ascii_case(&requirement.identity_name)
+                })
+                && requirement
+                    .minimum_version
+                    .is_none_or(|minimum| package.version >= minimum)
+                && incompatibility_reason(package, context.host, context.preferences, true)
+                    .is_none()
+        })
+        .max_by_key(|package| root_rank(package, context.preferences))
 }
 
 struct SelectionContext<'a> {
@@ -386,6 +438,24 @@ fn incompatibility_reason(
     preferences: &SelectionPreferences,
     check_language: bool,
 ) -> Option<DecisionReason> {
+    if let Some(reason) = package_incompatibility_reason(package, host) {
+        return Some(reason);
+    }
+    if check_language
+        && package.package_kind == PackageKind::Resource
+        && package.is_neutral != Some(true)
+        && package.language.is_some()
+        && language_rank(package.language.as_deref(), preferences).is_none()
+    {
+        return Some(DecisionReason::LanguageNotPreferred);
+    }
+    None
+}
+
+pub fn package_incompatibility_reason(
+    package: &ResolvedPackage,
+    host: &HostCapabilities,
+) -> Option<DecisionReason> {
     if package.package_kind == PackageKind::Unknown {
         return Some(DecisionReason::MissingApplicabilityMetadata);
     }
@@ -404,14 +474,6 @@ fn incompatibility_reason(
             .contains(&package.architecture)
     {
         return Some(DecisionReason::ArchitectureIncompatible);
-    }
-    if check_language
-        && package.package_kind == PackageKind::Resource
-        && package.is_neutral != Some(true)
-        && package.language.is_some()
-        && language_rank(package.language.as_deref(), preferences).is_none()
-    {
-        return Some(DecisionReason::LanguageNotPreferred);
     }
     None
 }
