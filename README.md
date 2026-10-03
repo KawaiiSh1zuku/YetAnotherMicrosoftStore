@@ -1,53 +1,53 @@
 # Yet Another Microsoft Store
 
-Yet Another Microsoft Store is a Windows desktop client that searches Microsoft Store catalog metadata, resolves compatible AppX/MSIX packages, downloads them from Microsoft delivery hosts, verifies package identity and signatures, and deploys them through Windows package APIs.
+Yet Another Microsoft Store 是一个 Windows 桌面客户端，用于搜索 Microsoft Store 目录元数据、解析兼容的 AppX/MSIX 软件包、从 Microsoft 分发主机下载软件包、验证软件包身份与签名，并通过 Windows 软件包 API 完成部署。
 
-The application is built with Rust, Tauri 2, React, and TypeScript. It does not use `winget` or PowerShell as a product runtime dependency.
+本项目使用 Rust、Tauri 2、React 和 TypeScript 构建，不依赖 `winget` 或 PowerShell 作为产品运行时组件。
 
-## Release status
+## 发布状态
 
-Version `0.1.0` is a pre-release build. M0-M6 are implemented at the evidence levels recorded in [the support matrix](docs/support-matrix.md). M7 cross-channel Store interoperability is deferred because the current validation machine's Microsoft Store is unavailable. M8 release hardening is implemented at local E1: the x64 unsigned NSIS path has been compiled and checked, while the ARM64 artifact path is configured for GitHub's native ARM64 runner but has not yet been executed in this checkout.
+当前版本 `0.1.0` 为预发布版本。M0-M6 已按[支持矩阵](docs/support-matrix.md)中记录的证据等级完成。由于当前验证机器上的 Microsoft Store 不可用，M7 跨渠道 Store 互操作验证已暂缓。M8 发布加固已达到本地 E1：x64 无签名 NSIS 构建链路已完成编译与检查；ARM64 工件链路已配置为使用 GitHub 原生 ARM64 runner，但尚未在当前检出或 GitHub Actions 中实际运行。
 
-Release artifacts are intentionally unsigned because the project does not use a code-signing certificate. Publish both architecture-specific SHA-256 files with every release and complete the clean-machine checklist in [the release guide](docs/release.md). Windows may show an unknown-publisher or SmartScreen warning.
+发布工件有意保持无代码签名，因为本项目不使用代码签名证书。每次发布都应同时公布两个架构各自的 SHA-256 文件，并完成[发布指南](docs/release.md)中的干净机器检查清单。Windows 可能显示“未知发布者”或 SmartScreen 警告。
 
-## Supported environment
+## 支持环境
 
-- Windows 10 x64 build 19045 is the currently recorded validation baseline.
-- Release artifacts target Windows x64 and Windows ARM64.
-- Supported payload families are `.msix`, `.appx`, `.msixbundle`, and `.appxbundle` within the documented package, identity, architecture, and authorization boundaries.
-- `.eappx` and `.eappxbundle` remain conditional; MSIXVC/Xbox, EXE, and MSI payloads are not supported.
-- Current-user deployment is the default. All-users operations use a one-shot UAC Broker; the main application remains `asInvoker`.
-- The NSIS installer is configured for per-user installation, downgrade blocking, and Microsoft's WebView2 download bootstrapper. Those behaviors still require clean-machine acceptance; initial installation may require network access.
+- 当前已记录的验证基线为 Windows 10 x64 build 19045。
+- 发布工件面向 Windows x64 和 Windows ARM64。
+- 在已记录的软件包、身份、架构和授权边界内，支持 `.msix`、`.appx`、`.msixbundle` 和 `.appxbundle`。
+- `.eappx` 和 `.eappxbundle` 仍为条件支持；不支持 MSIXVC/Xbox、EXE 和 MSI 软件包。
+- 默认执行当前用户部署。全用户操作通过一次性 UAC Broker 完成，主应用始终保持 `asInvoker`。
+- NSIS 安装器配置为当前用户安装、阻止降级，并使用 Microsoft WebView2 下载引导程序。这些行为仍需通过干净机器验收；首次安装可能需要网络连接。
 
-The recorded Sysinternals Suite round trip proves one product, market, language, host, time, and CurrentUser scenario. It is not a general compatibility or official Store update guarantee.
+已记录的 Sysinternals Suite 往返验证仅证明特定产品、市场、语言、主机、时间和 CurrentUser 场景，不代表普遍兼容，也不保证可通过官方 Store 更新。
 
-## Install
+## 安装
 
-1. Download the installer matching the machine architecture from the release.
-2. Verify the SHA-256 value against the adjacent `SHA256SUMS.txt`.
-3. Run the NSIS installer. It is configured for the current Windows user. Application-data preservation during an in-place upgrade remains part of the clean-machine release checklist.
+1. 从发布页面下载与机器架构匹配的安装器。
+2. 使用相邻的 `SHA256SUMS.txt` 校验安装器的 SHA-256。
+3. 运行 NSIS 安装器。安装器配置为安装到当前 Windows 用户；就地升级时是否完整保留应用数据仍属于干净机器发布检查项。
 
-The installer, main executable, and Broker are unsigned. The elevated Broker still validates the named-pipe peer PID/session/nonce, caller image path, protected staging path, package identity, hash, and Microsoft package signature; it does not require Authenticode on the caller executable.
+安装器、主程序和 Broker 均无代码签名。提权 Broker 仍会校验命名管道对端的 PID、会话和 nonce、调用方映像路径、受保护的暂存路径、软件包身份、哈希以及 Microsoft 软件包签名；它不要求调用方可执行文件具备 Authenticode 签名。
 
-## Privacy and network boundary
+## 隐私与网络边界
 
-The production network audit permits these Microsoft hosts:
+生产网络审计仅允许以下 Microsoft 主机：
 
 - `displaycatalog.mp.microsoft.com`
 - `fe3.delivery.mp.microsoft.com`
 - `dl.delivery.mp.microsoft.com`
 - `tlu.dl.delivery.mp.microsoft.com`
 
-Signed download URLs and proxy credentials are not persisted. Diagnostic exports contain only closed event names, timestamps, version/architecture data, crash-recovery state, and the host allowlist. They omit URLs, tokens, proxy credentials, raw service responses, HRESULT values, and local paths. Use **Settings > Export diagnostics** to create a JSON report in the current user's Downloads directory.
+带签名的下载 URL 和代理凭据不会被持久化。诊断导出仅包含封闭事件名、时间戳、版本与架构信息、崩溃恢复状态和主机白名单，不包含 URL、令牌、代理凭据、原始服务响应、HRESULT 或本地路径。可在 **Settings > Export diagnostics**（设置 > 导出诊断）中将 JSON 报告导出到当前用户的“下载”目录。
 
-## Build from source
+## 从源码构建
 
-Prerequisites:
+前置条件：
 
-- Windows with the MSVC build tools for the target architecture
-- the stable Rust toolchain selected by `rust-toolchain.toml` (CI currently pins `1.98.1`)
-- Node.js 24 and pnpm `8.15.1`
-- WebView2 development/runtime prerequisites required by Tauri
+- Windows，以及目标架构对应的 MSVC 构建工具
+- `rust-toolchain.toml` 选择的 stable Rust 工具链（CI 当前固定为 `1.98.1`）
+- Node.js 24 和 pnpm `8.15.1`
+- Tauri 所需的 WebView2 开发与运行时组件
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -56,18 +56,18 @@ cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 pnpm build:release
 ```
 
-Build one architecture without rerunning the full quality gate:
+如需跳过完整质量检查并仅构建一个架构：
 
 ```powershell
 ./scripts/build-release.ps1 -Architecture x64 -SkipChecks
 ./scripts/build-release.ps1 -Architecture arm64 -SkipChecks
 ```
 
-The script verifies the main executable and Broker PE machine type and writes the installer, `SHA256SUMS.txt`, `BUILD-METADATA.json`, and `THIRD_PARTY_LICENSES.json` under `release-artifacts/<architecture>/`.
+构建脚本会验证主程序和 Broker 的 PE machine 类型，并将安装器、`SHA256SUMS.txt`、`BUILD-METADATA.json` 和 `THIRD_PARTY_LICENSES.json` 写入 `release-artifacts/<architecture>/`。
 
-See [the release guide](docs/release.md) for dual-architecture CI, hash publication, and upgrade/uninstall acceptance. See [diagnostics](docs/diagnostics.md) for the export contract.
+双架构 CI、哈希发布以及升级/卸载验收流程见[发布指南](docs/release.md)；诊断导出契约见[诊断与恢复](docs/diagnostics.md)。
 
-## Development checks
+## 开发检查
 
 ```powershell
 pnpm test
@@ -80,6 +80,6 @@ cargo check --manifest-path src-tauri/broker/Cargo.toml
 pnpm exec tauri build --debug --no-bundle
 ```
 
-## License status
+## 许可证状态
 
-The repository does not currently declare a project distribution license. Do not mirror or redistribute source or binaries without maintainer permission. Third-party dependency license metadata is generated from the locked Cargo and pnpm graphs and bundled as `THIRD_PARTY_LICENSES.json`.
+仓库当前尚未声明项目自身的分发许可证。未经维护者许可，请勿镜像或再分发源代码及二进制文件。第三方依赖许可证元数据由锁定的 Cargo 和 pnpm 依赖图生成，并以 `THIRD_PARTY_LICENSES.json` 随安装包分发。
