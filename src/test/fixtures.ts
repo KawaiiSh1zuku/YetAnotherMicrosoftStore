@@ -31,6 +31,13 @@ export const appDetails: AppDetails = {
     dependencyCount: 1,
     rejectionReason: null,
   },
+  localAction: {
+    kind: "install",
+    deploymentScope: null,
+    installedVersion: null,
+    availableVersion: "1.2.3.4",
+    launchable: false,
+  },
 };
 
 export const job: JobSnapshot = {
@@ -48,6 +55,7 @@ export const job: JobSnapshot = {
   language: "en-US",
   allowedControls: ["pause", "cancel"],
   error: null,
+  blockedProcesses: [],
   updatedAt: 20,
 };
 
@@ -94,7 +102,8 @@ export function createClient(overrides: Partial<StoreClient> = {}): StoreClient 
     startInstall: vi.fn().mockResolvedValue(job),
     startUpdate: vi.fn().mockResolvedValue(job),
     requestJobControl: vi.fn().mockResolvedValue(job),
-    terminateJobPackageProcesses: vi.fn().mockResolvedValue({ matched: 0, terminated: 0, failed: 0 }),
+    terminateJobPackageProcesses: vi.fn().mockResolvedValue({ matched: [], terminated: [], remaining: [] }),
+    launchInstalledApp: vi.fn().mockResolvedValue(undefined),
     getJob: vi.fn().mockResolvedValue(job),
     listJobs: vi.fn().mockResolvedValue([job]),
     listJobEvents: vi.fn().mockResolvedValue({ events: [], nextCursor: null }),

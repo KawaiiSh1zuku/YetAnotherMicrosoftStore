@@ -2,7 +2,7 @@ export type Architecture = "neutral" | "x86" | "x64" | "arm" | "arm64";
 export type DeploymentScope = "current_user" | "all_users";
 export type ProxyMode = "disabled" | "system" | "http" | "https" | "socks5";
 export type ThemeMode = "light" | "dark" | "system";
-export type JobControl = "pause" | "resume" | "cancel";
+export type JobControl = "pause" | "resume" | "retry_deployment" | "cancel";
 export type JobStage =
   | "queued"
   | "resolving"
@@ -11,6 +11,7 @@ export type JobStage =
   | "paused"
   | "verifying"
   | "deploying"
+  | "awaiting_process_exit"
   | "interrupted"
   | "needs_reconciliation"
   | "completed"
@@ -76,6 +77,15 @@ export interface AppDetails extends CatalogProduct {
   language: string;
   supportedArchitectures: Architecture[];
   selectionPreview: SelectionPreview;
+  localAction: LocalProductAction;
+}
+
+export interface LocalProductAction {
+  kind: "install" | "update" | "open";
+  deploymentScope: DeploymentScope | null;
+  installedVersion: string | null;
+  availableVersion: string | null;
+  launchable: boolean;
 }
 
 export interface SelectionPreview {
@@ -105,7 +115,13 @@ export interface JobSnapshot {
   language: string | null;
   allowedControls: JobControl[];
   error: SafeError | null;
+  blockedProcesses: ProcessDescriptor[];
   updatedAt: number;
+}
+
+export interface ProcessDescriptor {
+  pid: number;
+  name: string;
 }
 
 export interface JobChangedHint {
@@ -197,7 +213,7 @@ export interface DiagnosticExport {
 }
 
 export interface TerminatePackageProcessesResult {
-  matched: number;
-  terminated: number;
-  failed: number;
+  matched: ProcessDescriptor[];
+  terminated: ProcessDescriptor[];
+  remaining: ProcessDescriptor[];
 }

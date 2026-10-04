@@ -188,6 +188,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .trust-row { display: flex; flex-wrap: wrap; gap: 18px; padding: 14px 0; color: var(--success); border-block: 1px solid var(--border); }
 .trust-row span { display: flex; align-items: center; gap: 7px; }
 .details-actions { display: flex; align-items: center; gap: 10px; }
+.details-primary-action { min-width: 118px; }
 
 .filter-tabs { display: flex; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .filter-tabs button { min-height: 38px; padding: 6px 12px; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
@@ -200,6 +201,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .stage--failed, .stage--cancelled { color: var(--danger); background: var(--danger-soft); }
 .stage--completed { color: var(--success); background: var(--success-soft); }
 .stage--needs_reconciliation { color: var(--warning); background: var(--warning-soft); }
+.stage--awaiting_process_exit { color: var(--warning); background: var(--warning-soft); }
 .queue-progress .progress { flex: 1; }
 .progress { height: 7px; overflow: hidden; border-radius: 4px; background: var(--surface-strong); }
 .progress__fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
@@ -248,6 +250,9 @@ td:first-child span { color: var(--text-muted); font-size: 0.76rem; }
 .dialog-title { margin: 0; font-size: 1.08rem; font-weight: 750; }
 .dialog-description { margin: 9px 0 20px; color: var(--text-muted); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog-actions--wrap { flex-wrap: wrap; }
+.process-list { display: grid; max-height: 180px; margin: 0 0 16px; padding: 8px 8px 8px 30px; gap: 6px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); font-variant-numeric: tabular-nums; }
+.process-list li { overflow-wrap: anywhere; }
 
 @keyframes pulse { 50% { opacity: 0.55; } }
 @keyframes fade { from { opacity: 0; } }

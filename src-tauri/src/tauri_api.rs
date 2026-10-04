@@ -90,6 +90,25 @@ pub struct AppDetailsSource {
     pub product: CatalogProduct,
     pub supported_architectures: Vec<Architecture>,
     pub selection_preview: crate::applicability::SelectionPreview,
+    pub local_action: LocalProductAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalProductActionKind {
+    Install,
+    Update,
+    Open,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalProductAction {
+    pub kind: LocalProductActionKind,
+    pub deployment_scope: Option<ApiDeploymentScope>,
+    pub installed_version: Option<String>,
+    pub available_version: Option<String>,
+    pub launchable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +136,10 @@ pub trait ApiBackend: Send + Sync {
         &self,
         _job_id: String,
     ) -> ApiFuture<'_, TerminatePackageProcessesResult> {
+        Box::pin(async { Err(boundary_error(ErrorCode::DeploymentDenied)) })
+    }
+
+    fn launch_installed_app(&self, _product_id: String) -> ApiFuture<'_, ()> {
         Box::pin(async { Err(boundary_error(ErrorCode::DeploymentDenied)) })
     }
 
@@ -189,7 +212,18 @@ where
             language,
             source.supported_architectures,
             source.selection_preview,
+            source.local_action,
         )
+    }
+
+    pub async fn launch_installed_app(&self, product_id: String) -> Result<(), AppErrorDto> {
+        if !safe_identifier(&product_id) {
+            return Err(boundary_error(ErrorCode::DeploymentDenied));
+        }
+        self.backend
+            .launch_installed_app(product_id)
+            .await
+            .map_err(sanitize_error)
     }
 
     pub async fn scan_installed_packages(
@@ -278,10 +312,26 @@ where
             .terminate_job_package_processes(job_id)
             .await
             .map_err(sanitize_error)?;
-        if result.terminated > result.matched
-            || result.failed > result.matched
-            || result.terminated.saturating_add(result.failed) > result.matched
-            || result.matched > 10_000
+        let descriptors_are_safe = |descriptors: &[crate::package_process::ProcessDescriptor]| {
+            descriptors.len() <= 128
+                && descriptors
+                    .iter()
+                    .all(|descriptor| descriptor.pid != 0 && safe_text(&descriptor.name, 260))
+        };
+        let all_classified = result
+            .terminated
+            .iter()
+            .chain(&result.remaining)
+            .all(|descriptor| result.matched.contains(descriptor));
+        if !descriptors_are_safe(&result.matched)
+            || !descriptors_are_safe(&result.terminated)
+            || !descriptors_are_safe(&result.remaining)
+            || result.terminated.len() + result.remaining.len() != result.matched.len()
+            || !all_classified
+            || result
+                .terminated
+                .iter()
+                .any(|descriptor| result.remaining.contains(descriptor))
         {
             return Err(boundary_error(ErrorCode::DeploymentFailed));
         }
@@ -653,6 +703,7 @@ pub struct ApiAppDetails {
     pub language: String,
     pub supported_architectures: Vec<Architecture>,
     pub selection_preview: crate::applicability::SelectionPreview,
+    pub local_action: LocalProductAction,
 }
 
 impl ApiAppDetails {
@@ -662,6 +713,7 @@ impl ApiAppDetails {
         language: String,
         supported_architectures: Vec<Architecture>,
         selection_preview: crate::applicability::SelectionPreview,
+        local_action: LocalProductAction,
     ) -> Result<Self, AppErrorDto> {
         if !safe_market(&market) || !safe_language(&language) || supported_architectures.len() > 16
         {
@@ -682,6 +734,7 @@ impl ApiAppDetails {
             language,
             supported_architectures,
             selection_preview,
+            local_action,
         })
     }
 }
@@ -762,6 +815,7 @@ pub struct ApiJobSnapshot {
     pub language: Option<String>,
     pub allowed_controls: Vec<JobControl>,
     pub error: Option<AppErrorDto>,
+    pub blocked_processes: Vec<crate::package_process::ProcessDescriptor>,
     pub updated_at: i64,
 }
 
@@ -801,6 +855,7 @@ impl ApiJobSnapshot {
             language: job.language,
             allowed_controls: allowed_controls(job.stage),
             error: job.error.map(sanitize_error),
+            blocked_processes: job.blocked_processes,
             updated_at: job.updated_at,
         }
         .validated()
@@ -844,6 +899,11 @@ impl ApiJobSnapshot {
                 .as_ref()
                 .and_then(|error| error.job_id.as_deref())
                 .is_some_and(|job_id| job_id != self.job_id)
+            || self.blocked_processes.len() > 128
+            || self
+                .blocked_processes
+                .iter()
+                .any(|process| !process.is_safe())
         {
             return Err(boundary_error(ErrorCode::DeploymentFailed));
         }
@@ -919,6 +979,9 @@ fn allowed_controls(stage: JobStage) -> Vec<JobControl> {
         JobStage::Downloading => vec![JobControl::Pause, JobControl::Cancel],
         JobStage::Paused | JobStage::Interrupted | JobStage::Failed => {
             vec![JobControl::Resume, JobControl::Cancel]
+        }
+        JobStage::AwaitingProcessExit => {
+            vec![JobControl::RetryDeployment, JobControl::Cancel]
         }
         JobStage::Queued | JobStage::Resolving | JobStage::Selecting | JobStage::Verifying => {
             vec![JobControl::Cancel]

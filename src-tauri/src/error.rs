@@ -78,6 +78,14 @@ impl ErrorCode {
     }
 }
 
+pub const fn classify_deployment_hresult(code: i32) -> ErrorCode {
+    match code as u32 {
+        0x8007_3D02 => ErrorCode::PackageInUse,
+        0x8007_0005 => ErrorCode::DeploymentDenied,
+        _ => ErrorCode::DeploymentFailed,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryAdvice {
@@ -322,11 +330,14 @@ impl From<&DeploymentPlanError> for AppErrorDto {
             | DeploymentPlanError::CacheNotVerified { .. } => {
                 Self::new(ErrorCode::DownloadFailed, RetryAdvice::ReResolve)
             }
+            DeploymentPlanError::PackageValidation { error, .. } => Self::from(error),
             DeploymentPlanError::MissingProductId
             | DeploymentPlanError::MissingMainPackage
             | DeploymentPlanError::AmbiguousMainPackage
             | DeploymentPlanError::MissingPackageIdentity { .. }
-            | DeploymentPlanError::CacheMetadataMismatch { .. } => {
+            | DeploymentPlanError::CacheMetadataMismatch { .. }
+            | DeploymentPlanError::UnsafeCachePath { .. }
+            | DeploymentPlanError::CheckpointInvalid => {
                 Self::new(ErrorCode::SourceIdentityMismatch, RetryAdvice::ReResolve)
             }
         }
@@ -358,7 +369,9 @@ impl From<&ValidationError> for AppErrorDto {
 impl From<&CoordinatorError> for AppErrorDto {
     fn from(error: &CoordinatorError) -> Self {
         match error.code.as_str() {
-            "inventory_access_denied" => Self::new(ErrorCode::DeploymentDenied, RetryAdvice::Never),
+            "inventory_access_denied" | "deployment_denied" => {
+                Self::new(ErrorCode::DeploymentDenied, RetryAdvice::Never)
+            }
             "postcondition_missing" | "postcondition_residual" | "incomplete_inventory" => {
                 Self::new(ErrorCode::DeploymentFailed, RetryAdvice::ReconcileInventory)
             }

@@ -80,6 +80,7 @@ CREATE TABLE jobs (
     architecture TEXT,
     language TEXT,
     error_json TEXT,
+    blocked_processes_json TEXT NOT NULL DEFAULT '[]',
     event_sequence INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -94,7 +95,8 @@ CREATE TABLE job_events (
     sequence INTEGER NOT NULL CHECK (sequence > 0),
     event_kind TEXT NOT NULL CHECK (event_kind IN (
         'created', 'imported', 'stage_changed', 'progress_recorded',
-        'deployment_progress_recorded', 'selection_recorded', 'failed',
+        'deployment_progress_recorded', 'deployment_checkpoint_ready',
+        'deployment_blocked', 'selection_recorded', 'failed',
         'completed', 'cancelled', 'recovered'
     )),
     payload_json TEXT NOT NULL,
@@ -108,7 +110,7 @@ CREATE INDEX job_events_job_cursor_idx ON job_events(job_id, cursor);
 CREATE TABLE job_commands (
     command_id TEXT PRIMARY KEY NOT NULL,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
-    control TEXT NOT NULL CHECK (control IN ('pause', 'resume', 'cancel')),
+    control TEXT NOT NULL CHECK (control IN ('pause', 'resume', 'retry_deployment', 'cancel')),
     expected_sequence INTEGER NOT NULL CHECK (expected_sequence >= 0),
     created_at INTEGER NOT NULL,
     processed_at INTEGER,
@@ -128,6 +130,13 @@ CREATE TABLE worker_leases (
 );
 
 CREATE INDEX worker_leases_expires_idx ON worker_leases(expires_at);
+
+CREATE TABLE deployment_checkpoints (
+    job_id TEXT PRIMARY KEY NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    checkpoint_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 
 CREATE TABLE job_targets (
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,

@@ -101,6 +101,7 @@ fn plan(version: [u16; 4]) -> DeploymentPlan {
             },
             dependencies: Vec::new(),
         },
+        checkpoint_packages: Vec::new(),
     }
 }
 

@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    domain::{Architecture, PackageKind},
-    error::AppErrorDto,
+    domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
+    error::{AppErrorDto, ErrorCode, RetryAdvice},
     jobs::{Job, JobSnapshot, JobStage, RecoveryAction},
+    package_process::ProcessDescriptor,
     persistence::PersistenceError,
 };
 
@@ -15,6 +16,8 @@ pub enum JobEventKind {
     StageChanged,
     ProgressRecorded,
     DeploymentProgressRecorded,
+    DeploymentCheckpointReady,
+    DeploymentBlocked,
     SelectionRecorded,
     Failed,
     Completed,
@@ -46,6 +49,94 @@ pub struct JobTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentCheckpointPackage {
+    pub role: JobTargetRole,
+    pub order: u16,
+    pub cache_key: String,
+    pub update_id: String,
+    pub identity_name: String,
+    pub publisher: String,
+    pub version: String,
+    pub architecture: Architecture,
+    pub resource_id: Option<String>,
+    pub package_kind: PackageKind,
+    pub format: PackageFormat,
+    pub expected_size: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentCheckpoint {
+    pub product_id: String,
+    pub main_update_id: String,
+    pub main_version: PackageVersion,
+    pub content_id: Option<String>,
+    pub packages: Vec<DeploymentCheckpointPackage>,
+}
+
+impl DeploymentCheckpoint {
+    pub(crate) fn is_safe(&self) -> bool {
+        if !safe_identifier(&self.product_id)
+            || !safe_identifier(&self.main_update_id)
+            || self
+                .content_id
+                .as_deref()
+                .is_some_and(|value| !safe_identifier(value))
+            || self.packages.is_empty()
+            || self.packages.len() > 128
+            || self
+                .packages
+                .iter()
+                .filter(|package| package.role == JobTargetRole::Main)
+                .count()
+                != 1
+            || self.packages.iter().any(|package| !package.is_safe())
+        {
+            return false;
+        }
+        let main = self
+            .packages
+            .iter()
+            .find(|package| package.role == JobTargetRole::Main)
+            .expect("main checkpoint package was counted");
+        if main.update_id != self.main_update_id
+            || main.version != self.main_version.to_string()
+            || main.package_kind != PackageKind::Main
+        {
+            return false;
+        }
+        let mut orders = self
+            .packages
+            .iter()
+            .map(|package| usize::from(package.order))
+            .collect::<Vec<_>>();
+        orders.sort_unstable();
+        orders == (0..self.packages.len()).collect::<Vec<_>>()
+    }
+}
+
+impl DeploymentCheckpointPackage {
+    fn is_safe(&self) -> bool {
+        safe_identifier(&self.cache_key)
+            && safe_identifier(&self.update_id)
+            && safe_identifier(&self.identity_name)
+            && safe_identifier(&self.version)
+            && self.resource_id.as_deref().is_none_or(safe_identifier)
+            && self.expected_size > 0
+            && !self.sha256.is_empty()
+            && self.sha256.len() <= 128
+            && self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && !self.publisher.is_empty()
+            && self.publisher.len() <= 512
+            && !self.publisher.contains('/')
+            && !self.publisher.contains('\\')
+            && !self.publisher.chars().any(char::is_control)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum JobEvent {
     Created {
@@ -63,6 +154,10 @@ pub enum JobEvent {
     },
     DeploymentProgressRecorded {
         percentage: u8,
+    },
+    DeploymentCheckpointReady,
+    DeploymentBlocked {
+        processes: Vec<ProcessDescriptor>,
     },
     SelectionRecorded {
         selected_update_id: String,
@@ -90,6 +185,8 @@ impl JobEvent {
             Self::StageChanged { .. } => JobEventKind::StageChanged,
             Self::ProgressRecorded { .. } => JobEventKind::ProgressRecorded,
             Self::DeploymentProgressRecorded { .. } => JobEventKind::DeploymentProgressRecorded,
+            Self::DeploymentCheckpointReady => JobEventKind::DeploymentCheckpointReady,
+            Self::DeploymentBlocked { .. } => JobEventKind::DeploymentBlocked,
             Self::SelectionRecorded { .. } => JobEventKind::SelectionRecorded,
             Self::Failed { .. } => JobEventKind::Failed,
             Self::Completed => JobEventKind::Completed,
@@ -117,7 +214,8 @@ impl JobEvent {
                     && job.version.is_none()
                     && job.architecture.is_none()
                     && job.language.is_none()
-                    && job.error.is_none() =>
+                    && job.error.is_none()
+                    && job.blocked_processes.is_empty() =>
             {
                 validate_job(job)?;
                 Ok(job.clone())
@@ -156,8 +254,11 @@ impl JobEvent {
                             next.language = None;
                             next.error = None;
                             next.deployment_progress = None;
+                            next.blocked_processes.clear();
                         } else if *stage == JobStage::Deploying {
                             next.deployment_progress = Some(0);
+                            next.error = None;
+                            next.blocked_processes.clear();
                         }
                     }
                     Self::ProgressRecorded {
@@ -185,6 +286,25 @@ impl JobEvent {
                             return Err(PersistenceError::EventHistoryInvalid);
                         }
                         next.deployment_progress = Some(*percentage);
+                    }
+                    Self::DeploymentCheckpointReady => {
+                        if old.stage != JobStage::Deploying {
+                            return Err(PersistenceError::EventHistoryInvalid);
+                        }
+                    }
+                    Self::DeploymentBlocked { processes } => {
+                        if old.stage != JobStage::Deploying
+                            || processes.len() > 128
+                            || processes.iter().any(|process| !process.is_safe())
+                        {
+                            return Err(PersistenceError::EventHistoryInvalid);
+                        }
+                        next.stage = JobStage::AwaitingProcessExit;
+                        next.blocked_processes.clone_from(processes);
+                        let mut error =
+                            AppErrorDto::new(ErrorCode::PackageInUse, RetryAdvice::Retry);
+                        error.job_id = Some(old.job_id.clone());
+                        next.error = Some(error);
                     }
                     Self::SelectionRecorded {
                         selected_update_id,
@@ -234,12 +354,14 @@ impl JobEvent {
                         }
                         next.stage = JobStage::Failed;
                         next.error = Some(error.clone());
+                        next.blocked_processes.clear();
                     }
                     Self::Completed => {
                         if !old.stage.can_transition_to(JobStage::Completed) {
                             return Err(PersistenceError::EventHistoryInvalid);
                         }
                         next.stage = JobStage::Completed;
+                        next.blocked_processes.clear();
                         if old.stage == JobStage::Deploying {
                             next.deployment_progress = Some(100);
                         }
@@ -249,6 +371,7 @@ impl JobEvent {
                             return Err(PersistenceError::EventHistoryInvalid);
                         }
                         next.stage = JobStage::Cancelled;
+                        next.blocked_processes.clear();
                     }
                     Self::Recovered { stage } => {
                         if matches!(
@@ -296,6 +419,7 @@ pub struct StoredJobEvent {
 pub enum JobControl {
     Pause,
     Resume,
+    RetryDeployment,
     Cancel,
 }
 
@@ -380,6 +504,8 @@ fn validate_job(job: &Job) -> Result<(), PersistenceError> {
             .error
             .as_ref()
             .is_none_or(|error| safe_error(error, &job.job_id))
+        && job.blocked_processes.len() <= 128
+        && job.blocked_processes.iter().all(ProcessDescriptor::is_safe)
     {
         Ok(())
     } else {

@@ -6,9 +6,51 @@ use yet_another_microsoft_store_lib::{
         AppSettings, Architecture, DiagnosticEvent, DiagnosticOperation, InstallSource,
         PackageFormat, PackageKind, PackageRecord, PackageVersion, ThemeMode,
     },
-    error::{AppErrorDto, ErrorCode, RetryAdvice},
+    error::{classify_deployment_hresult, AppErrorDto, ErrorCode, RetryAdvice},
     jobs::{Job, JobKind, JobStage, RecoveryAction},
+    package_process::{ProcessDescriptor, TerminatePackageProcessesResult},
 };
+
+#[test]
+fn package_process_termination_result_serializes_bounded_descriptors() {
+    let first = ProcessDescriptor {
+        pid: 420,
+        name: "Example.exe".to_owned(),
+    };
+    let second = ProcessDescriptor {
+        pid: 421,
+        name: "Background.exe".to_owned(),
+    };
+    let result = TerminatePackageProcessesResult {
+        matched: vec![first.clone(), second.clone()],
+        terminated: vec![first],
+        remaining: vec![second],
+    };
+
+    assert_eq!(
+        serde_json::to_value(result).expect("process descriptors should serialize"),
+        json!({
+            "matched": [
+                {"pid": 420, "name": "Example.exe"},
+                {"pid": 421, "name": "Background.exe"}
+            ],
+            "terminated": [{"pid": 420, "name": "Example.exe"}],
+            "remaining": [{"pid": 421, "name": "Background.exe"}]
+        })
+    );
+}
+
+#[test]
+fn non_package_in_use_hresults_keep_their_existing_deployment_classification() {
+    assert_eq!(
+        classify_deployment_hresult(0x80070005_u32 as i32),
+        ErrorCode::DeploymentDenied
+    );
+    assert_eq!(
+        classify_deployment_hresult(0x80004005_u32 as i32),
+        ErrorCode::DeploymentFailed
+    );
+}
 
 #[test]
 fn legacy_settings_default_new_ui_preferences_without_rewriting_old_json() {
@@ -46,6 +88,7 @@ fn downloading_job() -> Job {
         architecture: Some(Architecture::X64),
         language: Some("zh-CN".to_owned()),
         error: None,
+        blocked_processes: Vec::new(),
         created_at: 100,
         updated_at: 200,
     }
@@ -249,6 +292,35 @@ fn deploying_job_requires_inventory_reconciliation_after_restart() {
 
     assert_eq!(recovery, RecoveryAction::ReconcileInventory);
     assert_eq!(job.stage, JobStage::NeedsReconciliation);
+}
+
+#[test]
+fn awaiting_process_exit_is_active_cancellable_and_restart_stable() {
+    let mut job = downloading_job();
+    job.stage = JobStage::Deploying;
+    job.transition_to(JobStage::AwaitingProcessExit, 250)
+        .expect("deployment can wait for package processes");
+
+    assert_eq!(
+        serde_json::to_value(job.stage).expect("waiting stage should serialize"),
+        "awaiting_process_exit"
+    );
+    assert_eq!(job.recover_after_restart(300), RecoveryAction::None);
+    assert_eq!(job.stage, JobStage::AwaitingProcessExit);
+    assert_eq!(job.updated_at, 250);
+    job.transition_to(JobStage::Cancelled, 310)
+        .expect("waiting deployment remains cancellable");
+}
+
+#[test]
+fn retry_deployment_control_has_a_closed_wire_value() {
+    assert_eq!(
+        serde_json::to_value(
+            yet_another_microsoft_store_lib::job_events::JobControl::RetryDeployment
+        )
+        .expect("retry deployment control should serialize"),
+        "retry_deployment"
+    );
 }
 
 #[test]

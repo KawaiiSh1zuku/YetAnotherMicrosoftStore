@@ -26,6 +26,14 @@ async fn get_app_details(
 }
 
 #[tauri::command]
+async fn launch_installed_app(
+    state: tauri::State<'_, RuntimeState>,
+    product_id: String,
+) -> Result<(), error::AppErrorDto> {
+    api(&state).launch_installed_app(product_id).await
+}
+
+#[tauri::command]
 async fn scan_installed_packages(
     state: tauri::State<'_, RuntimeState>,
     scope: tauri_api::ApiDeploymentScope,
@@ -255,6 +263,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             search_apps,
             get_app_details,
+            launch_installed_app,
             scan_installed_packages,
             scan_updates,
             start_install,
@@ -297,6 +306,7 @@ pub mod job_store;
 pub mod job_worker;
 pub mod jobs;
 pub mod package;
+pub mod package_application;
 pub mod package_process;
 pub mod package_validation;
 pub mod persistence;

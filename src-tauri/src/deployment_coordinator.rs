@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     deployment::{DeploymentProgressCallback, DeploymentScope, WindowsDeploymentBackend},
+    error::{classify_deployment_hresult, ErrorCode},
     inventory::{InventorySnapshot, WindowsInventory},
     package_validation::{verify_package_request, ValidationError, VerifiedPackageSet},
 };
@@ -171,8 +172,18 @@ fn inventory_error(error: crate::inventory::InventoryError) -> CoordinatorError 
 }
 
 fn deployment_error(error: crate::deployment::DeploymentError) -> CoordinatorError {
+    let code = match &error {
+        crate::deployment::DeploymentError::DeploymentFailed { hresult, .. } => {
+            match classify_deployment_hresult(*hresult) {
+                ErrorCode::PackageInUse => "package_in_use",
+                ErrorCode::DeploymentDenied => "deployment_denied",
+                _ => "deployment_failed",
+            }
+        }
+        _ => "deployment_failed",
+    };
     CoordinatorError {
-        code: "deployment_failed".to_owned(),
+        code: code.to_owned(),
         message: error.to_string(),
     }
 }

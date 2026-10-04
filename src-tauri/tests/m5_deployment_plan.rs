@@ -5,6 +5,7 @@ use yet_another_microsoft_store_lib::{
     applicability::SelectionResult,
     deployment_plan::{build_deployment_plan, DeploymentPlanError},
     domain::{Architecture, CacheEntry, CacheState, PackageFormat, PackageKind, PackageVersion},
+    job_events::{DeploymentCheckpoint, DeploymentCheckpointPackage, JobTargetRole},
     package::{PackageFileRequest, PackageIdentity},
     package_validation::{verify_package_request, verify_package_signature, ValidationError},
     resolver::{DependencyEdge, DependencyKind, PackageGraph, ResolvedPackage},
@@ -12,6 +13,106 @@ use yet_another_microsoft_store_lib::{
 
 struct TestFiles {
     root: PathBuf,
+}
+
+fn retry_checkpoint(files: &TestFiles) -> (DeploymentCheckpoint, CacheEntry) {
+    let verified = files.root.join("verified");
+    fs::create_dir_all(&verified).expect("create verified root");
+    let path = verified.join("main.msix");
+    fs::write(&path, b"checkpoint-payload").expect("write checkpoint payload");
+    let sha256 = format!("{:x}", Sha256::digest(b"checkpoint-payload"));
+    (
+        DeploymentCheckpoint {
+            product_id: "product".to_owned(),
+            main_update_id: "main".to_owned(),
+            main_version: PackageVersion::new(3, 0, 0, 0),
+            content_id: Some("content-main".to_owned()),
+            packages: vec![DeploymentCheckpointPackage {
+                role: JobTargetRole::Main,
+                order: 0,
+                cache_key: "cache-main".to_owned(),
+                update_id: "main".to_owned(),
+                identity_name: "Example.main".to_owned(),
+                publisher: "CN=Example".to_owned(),
+                version: "3.0.0.0".to_owned(),
+                architecture: Architecture::X64,
+                resource_id: None,
+                package_kind: PackageKind::Main,
+                format: PackageFormat::Msix,
+                expected_size: 18,
+                sha256: sha256.clone(),
+            }],
+        },
+        CacheEntry {
+            cache_key: "cache-main".to_owned(),
+            job_id: Some("job".to_owned()),
+            update_id: "main".to_owned(),
+            path: path.to_string_lossy().into_owned(),
+            size: 18,
+            sha256,
+            state: CacheState::Verified,
+            last_accessed_at: 100,
+        },
+    )
+}
+
+#[test]
+fn retry_deployment_checkpoint_rebuilds_exact_plan_and_rejects_untrusted_cache() {
+    let files = TestFiles::new();
+    let (checkpoint, cache) = retry_checkpoint(&files);
+    let plan = checkpoint
+        .rebuild_verified_plan(&files.root, std::slice::from_ref(&cache), |_| Ok(()))
+        .expect("trusted checkpoint should rebuild");
+
+    assert_eq!(plan.product_id, "product");
+    assert_eq!(plan.main_update_id, "main");
+    assert_eq!(plan.main_version, PackageVersion::new(3, 0, 0, 0));
+    assert_eq!(plan.content_id.as_deref(), Some("content-main"));
+    assert_eq!(plan.package_set.dependencies, Vec::new());
+    assert_eq!(plan.package_set.main.path, PathBuf::from(&cache.path));
+    assert_eq!(plan.package_set.main.sha256_hex, cache.sha256);
+    assert_eq!(
+        plan.package_set.main.expected_identity,
+        Some(PackageIdentity {
+            name: "Example.main".to_owned(),
+            publisher: "CN=Example".to_owned(),
+            version: [3, 0, 0, 0],
+            architecture: "x64".to_owned(),
+            resource_id: String::new(),
+        })
+    );
+
+    assert!(matches!(
+        checkpoint.rebuild_verified_plan(&files.root, &[], |_| Ok(())),
+        Err(DeploymentPlanError::MissingVerifiedCache { .. })
+    ));
+    let mut wrong_size = cache.clone();
+    wrong_size.size += 1;
+    assert!(matches!(
+        checkpoint.rebuild_verified_plan(&files.root, &[wrong_size], |_| Ok(())),
+        Err(DeploymentPlanError::CacheMetadataMismatch { .. })
+    ));
+    let outside = files.root.parent().unwrap().join("outside.msix");
+    fs::write(&outside, b"checkpoint-payload").expect("write outside fixture");
+    let mut escaped = cache.clone();
+    escaped.path = outside.to_string_lossy().into_owned();
+    assert!(matches!(
+        checkpoint.rebuild_verified_plan(&files.root, &[escaped], |_| Ok(())),
+        Err(DeploymentPlanError::UnsafeCachePath { .. })
+    ));
+    let _ = fs::remove_file(outside);
+    assert!(matches!(
+        checkpoint.rebuild_verified_plan(&files.root, std::slice::from_ref(&cache), |_| {
+            Err(ValidationError::IdentityMismatch)
+        }),
+        Err(DeploymentPlanError::PackageValidation { .. })
+    ));
+    assert!(matches!(
+        checkpoint.rebuild_verified_plan(&files.root, &[cache], |_| {
+            Err(ValidationError::SignatureInvalid)
+        }),
+        Err(DeploymentPlanError::PackageValidation { .. })
+    ));
 }
 
 impl TestFiles {

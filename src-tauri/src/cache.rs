@@ -129,6 +129,13 @@ impl CacheManager {
         Ok(())
     }
 
+    pub(crate) fn validate_verified_path(&self, path: &Path) -> Result<(), CacheError> {
+        if !path.is_file() || !self.safe_existing_path(path)? {
+            return Err(CacheError::InvalidRoot);
+        }
+        Ok(())
+    }
+
     pub fn record_verified(
         &self,
         persistence: &Persistence,

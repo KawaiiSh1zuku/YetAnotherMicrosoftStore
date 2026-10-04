@@ -12,10 +12,37 @@ use yet_another_microsoft_store_lib::{
         ProxyMode, ThemeMode,
     },
     error::ErrorCode,
-    job_events::{JobEvent, JobTarget, JobTargetRole},
+    job_events::{
+        DeploymentCheckpoint, DeploymentCheckpointPackage, JobEvent, JobTarget, JobTargetRole,
+    },
     jobs::{Job, JobKind, JobStage, RecoveryAction},
+    package_process::ProcessDescriptor,
     persistence::Persistence,
 };
+
+fn deployment_checkpoint() -> DeploymentCheckpoint {
+    DeploymentCheckpoint {
+        product_id: "product".to_owned(),
+        main_update_id: "update-main".to_owned(),
+        main_version: PackageVersion::new(1, 2, 3, 4),
+        content_id: Some("content-main".to_owned()),
+        packages: vec![DeploymentCheckpointPackage {
+            role: JobTargetRole::Main,
+            order: 0,
+            cache_key: "cache-main".to_owned(),
+            update_id: "update-main".to_owned(),
+            identity_name: "Example.App".to_owned(),
+            publisher: "CN=Example".to_owned(),
+            version: "1.2.3.4".to_owned(),
+            architecture: Architecture::X64,
+            resource_id: None,
+            package_kind: PackageKind::Main,
+            format: PackageFormat::MsixBundle,
+            expected_size: 4096,
+            sha256: "abcdef".to_owned(),
+        }],
+    }
+}
 
 struct TestDatabase {
     path: PathBuf,
@@ -97,6 +124,7 @@ fn job(job_id: &str) -> Job {
         architecture: None,
         language: None,
         error: None,
+        blocked_processes: Vec::new(),
         created_at: 200,
         updated_at: 200,
     }
@@ -144,6 +172,186 @@ fn schema_migration_is_replayable() {
         )
         .expect("inspect deployment progress column");
     assert_eq!(deployment_progress_columns, 1);
+}
+
+fn deploying(store: &Persistence, job_id: &str) -> u64 {
+    advance(
+        store,
+        job_id,
+        &[
+            JobStage::Resolving,
+            JobStage::Selecting,
+            JobStage::Downloading,
+            JobStage::Verifying,
+            JobStage::Deploying,
+        ],
+    );
+    store.job_snapshot(job_id).unwrap().unwrap().sequence
+}
+
+#[test]
+fn checkpoint_and_blocked_processes_survive_reopen_and_terminal_cleanup() {
+    let database = TestDatabase::new("deployment-checkpoint");
+    let checkpoint = deployment_checkpoint();
+    let processes = vec![ProcessDescriptor {
+        pid: 420,
+        name: "Example.exe".to_owned(),
+    }];
+    {
+        let store = Persistence::open(database.path()).expect("open database");
+        let sequence = deploying(&store, "job-checkpoint");
+        let lease = store
+            .acquire_worker_lease("worker-a", 300, 100)
+            .unwrap()
+            .unwrap();
+        let ready = store
+            .save_deployment_checkpoint_leased(
+                "job-checkpoint",
+                sequence,
+                &checkpoint,
+                301,
+                &lease,
+                301,
+            )
+            .expect("checkpoint and ready event commit together");
+        let blocked = store
+            .append_job_event_leased(
+                "job-checkpoint",
+                ready.sequence,
+                JobEvent::DeploymentBlocked {
+                    processes: processes.clone(),
+                },
+                302,
+                &lease,
+                302,
+            )
+            .expect("record deployment block");
+        assert_eq!(blocked.job.stage, JobStage::AwaitingProcessExit);
+        assert_eq!(blocked.job.blocked_processes, processes);
+    }
+    {
+        let store = Persistence::open(database.path()).expect("reopen database");
+        assert_eq!(
+            store
+                .deployment_checkpoint("job-checkpoint")
+                .expect("load checkpoint"),
+            Some(checkpoint)
+        );
+        let waiting = store.job_snapshot("job-checkpoint").unwrap().unwrap();
+        assert_eq!(waiting.job.stage, JobStage::AwaitingProcessExit);
+        let lease = store
+            .acquire_worker_lease("worker-b", 500, 100)
+            .unwrap()
+            .unwrap();
+        store
+            .append_job_event_leased(
+                "job-checkpoint",
+                waiting.sequence,
+                JobEvent::Cancelled,
+                501,
+                &lease,
+                501,
+            )
+            .expect("cancel waiting deployment");
+        assert_eq!(store.deployment_checkpoint("job-checkpoint").unwrap(), None);
+    }
+}
+
+#[test]
+fn invalid_or_stale_checkpoint_write_rolls_back_without_advancing_the_job() {
+    let database = TestDatabase::new("deployment-checkpoint-rollback");
+    let store = Persistence::open(database.path()).expect("open database");
+    let sequence = deploying(&store, "job-checkpoint-rollback");
+    let old_lease = store
+        .acquire_worker_lease("worker-a", 300, 10)
+        .unwrap()
+        .unwrap();
+    let mut invalid = deployment_checkpoint();
+    invalid.packages[0].cache_key.clear();
+    assert!(store
+        .save_deployment_checkpoint_leased(
+            "job-checkpoint-rollback",
+            sequence,
+            &invalid,
+            301,
+            &old_lease,
+            301,
+        )
+        .is_err());
+    assert_eq!(
+        store
+            .job_snapshot("job-checkpoint-rollback")
+            .unwrap()
+            .unwrap()
+            .sequence,
+        sequence
+    );
+    assert_eq!(
+        store
+            .deployment_checkpoint("job-checkpoint-rollback")
+            .unwrap(),
+        None
+    );
+
+    let new_lease = store
+        .acquire_worker_lease("worker-b", 311, 100)
+        .unwrap()
+        .unwrap();
+    assert!(store
+        .save_deployment_checkpoint_leased(
+            "job-checkpoint-rollback",
+            sequence,
+            &deployment_checkpoint(),
+            312,
+            &old_lease,
+            312,
+        )
+        .is_err());
+    store
+        .save_deployment_checkpoint_leased(
+            "job-checkpoint-rollback",
+            sequence,
+            &deployment_checkpoint(),
+            312,
+            &new_lease,
+            312,
+        )
+        .expect("current lease saves checkpoint");
+}
+
+#[test]
+fn malformed_checkpoint_json_fails_closed() {
+    let database = TestDatabase::new("deployment-checkpoint-malformed");
+    {
+        let store = Persistence::open(database.path()).expect("open database");
+        let sequence = deploying(&store, "job-checkpoint-malformed");
+        let lease = store
+            .acquire_worker_lease("worker", 300, 100)
+            .unwrap()
+            .unwrap();
+        store
+            .save_deployment_checkpoint_leased(
+                "job-checkpoint-malformed",
+                sequence,
+                &deployment_checkpoint(),
+                301,
+                &lease,
+                301,
+            )
+            .expect("save checkpoint");
+    }
+    let connection = rusqlite::Connection::open(database.path()).expect("open raw database");
+    connection
+        .execute(
+            "UPDATE deployment_checkpoints SET checkpoint_json = '{\"packages\":[]}' WHERE job_id = ?1",
+            ["job-checkpoint-malformed"],
+        )
+        .expect("corrupt checkpoint fixture");
+    drop(connection);
+    let store = Persistence::open(database.path()).expect("reopen database");
+    assert!(store
+        .deployment_checkpoint("job-checkpoint-malformed")
+        .is_err());
 }
 
 #[test]

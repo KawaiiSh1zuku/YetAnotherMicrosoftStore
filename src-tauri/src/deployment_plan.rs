@@ -1,13 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    fs,
+    path::{Path, PathBuf},
 };
 
 use crate::{
     applicability::SelectionResult,
+    cache::CacheManager,
     domain::{Architecture, CacheEntry, CacheState, PackageFormat, PackageKind, PackageVersion},
+    job_events::{DeploymentCheckpoint, DeploymentCheckpointPackage, JobTargetRole},
     package::{PackageFileRequest, PackageIdentity},
-    package_validation::VerifiedPackageSet,
+    package_validation::{ValidationError, VerifiedPackageSet},
     resolver::{PackageGraph, ResolvedPackage},
 };
 
@@ -18,6 +21,7 @@ pub struct DeploymentPlan {
     pub main_version: PackageVersion,
     pub content_id: Option<String>,
     pub package_set: VerifiedPackageSet,
+    pub checkpoint_packages: Vec<DeploymentCheckpointPackage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,12 +29,32 @@ pub enum DeploymentPlanError {
     MissingProductId,
     MissingMainPackage,
     AmbiguousMainPackage,
-    MissingPackageIdentity { update_id: String },
-    UnsupportedPackageFormat { update_id: String },
-    MissingVerifiedCache { update_id: String },
-    CacheNotVerified { update_id: String },
-    CacheMetadataMismatch { update_id: String },
-    DependencyCycle { update_id: String },
+    MissingPackageIdentity {
+        update_id: String,
+    },
+    UnsupportedPackageFormat {
+        update_id: String,
+    },
+    MissingVerifiedCache {
+        update_id: String,
+    },
+    CacheNotVerified {
+        update_id: String,
+    },
+    CacheMetadataMismatch {
+        update_id: String,
+    },
+    UnsafeCachePath {
+        update_id: String,
+    },
+    PackageValidation {
+        update_id: String,
+        error: ValidationError,
+    },
+    CheckpointInvalid,
+    DependencyCycle {
+        update_id: String,
+    },
 }
 
 pub fn build_deployment_plan(
@@ -91,12 +115,35 @@ pub fn build_deployment_plan(
         )?;
     }
 
-    let main_request = package_request(main, cache)?;
-    let dependencies = ordered
+    let (main_request, main_checkpoint) = package_request(main, cache, JobTargetRole::Main, 0)?;
+    let dependency_packages = ordered
         .into_iter()
         .filter(|update_id| *update_id != main.update_id)
-        .map(|update_id| package_request(selected[update_id], cache))
+        .enumerate()
+        .map(|(index, update_id)| {
+            package_request(
+                selected[update_id],
+                cache,
+                if selected[update_id].package_kind == PackageKind::Resource {
+                    JobTargetRole::Resource
+                } else {
+                    JobTargetRole::Dependency
+                },
+                u16::try_from(index + 1).map_err(|_| DeploymentPlanError::CheckpointInvalid)?,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
+    let dependencies = dependency_packages
+        .iter()
+        .map(|(request, _)| request.clone())
+        .collect();
+    let checkpoint_packages = std::iter::once(main_checkpoint)
+        .chain(
+            dependency_packages
+                .into_iter()
+                .map(|(_, checkpoint)| checkpoint),
+        )
+        .collect();
 
     Ok(DeploymentPlan {
         product_id: product_id.clone(),
@@ -107,7 +154,113 @@ pub fn build_deployment_plan(
             main: main_request,
             dependencies,
         },
+        checkpoint_packages,
     })
+}
+
+impl DeploymentCheckpoint {
+    pub fn from_plan(plan: &DeploymentPlan) -> Self {
+        Self {
+            product_id: plan.product_id.clone(),
+            main_update_id: plan.main_update_id.clone(),
+            main_version: plan.main_version,
+            content_id: plan.content_id.clone(),
+            packages: plan.checkpoint_packages.clone(),
+        }
+    }
+
+    pub fn rebuild_verified_plan<F>(
+        &self,
+        cache_root: &Path,
+        cache: &[CacheEntry],
+        mut verify: F,
+    ) -> Result<DeploymentPlan, DeploymentPlanError>
+    where
+        F: FnMut(&PackageFileRequest) -> Result<(), ValidationError>,
+    {
+        if !self.is_safe() {
+            return Err(DeploymentPlanError::CheckpointInvalid);
+        }
+        let manager =
+            CacheManager::new(cache_root).map_err(|_| DeploymentPlanError::CheckpointInvalid)?;
+        let mut packages = self.packages.clone();
+        packages.sort_by_key(|package| package.order);
+        let mut main = None;
+        let mut dependencies = Vec::new();
+        for package in &packages {
+            let entry = cache
+                .iter()
+                .find(|entry| entry.cache_key == package.cache_key)
+                .ok_or_else(|| DeploymentPlanError::MissingVerifiedCache {
+                    update_id: package.update_id.clone(),
+                })?;
+            if entry.state != CacheState::Verified {
+                return Err(DeploymentPlanError::CacheNotVerified {
+                    update_id: package.update_id.clone(),
+                });
+            }
+            if entry.update_id != package.update_id
+                || entry.size != package.expected_size
+                || !entry.sha256.eq_ignore_ascii_case(&package.sha256)
+            {
+                return Err(DeploymentPlanError::CacheMetadataMismatch {
+                    update_id: package.update_id.clone(),
+                });
+            }
+            let path = PathBuf::from(&entry.path);
+            if !path.is_absolute() || manager.validate_verified_path(&path).is_err() {
+                return Err(DeploymentPlanError::UnsafeCachePath {
+                    update_id: package.update_id.clone(),
+                });
+            }
+            if !matches!(fs::metadata(&path), Ok(metadata) if metadata.len() == package.expected_size)
+            {
+                return Err(DeploymentPlanError::CacheMetadataMismatch {
+                    update_id: package.update_id.clone(),
+                });
+            }
+            if !supported_format(package.format) {
+                return Err(DeploymentPlanError::UnsupportedPackageFormat {
+                    update_id: package.update_id.clone(),
+                });
+            }
+            let request = PackageFileRequest {
+                path,
+                sha256_hex: package.sha256.clone(),
+                expected_identity: Some(PackageIdentity {
+                    name: package.identity_name.clone(),
+                    publisher: package.publisher.clone(),
+                    version: package
+                        .version
+                        .parse::<PackageVersion>()
+                        .map_err(|_| DeploymentPlanError::CheckpointInvalid)?
+                        .components(),
+                    architecture: architecture_name(package.architecture).to_owned(),
+                    resource_id: package.resource_id.clone().unwrap_or_default(),
+                }),
+            };
+            verify(&request).map_err(|error| DeploymentPlanError::PackageValidation {
+                update_id: package.update_id.clone(),
+                error,
+            })?;
+            if package.role == JobTargetRole::Main {
+                main = Some(request);
+            } else {
+                dependencies.push(request);
+            }
+        }
+        Ok(DeploymentPlan {
+            product_id: self.product_id.clone(),
+            main_update_id: self.main_update_id.clone(),
+            main_version: self.main_version,
+            content_id: self.content_id.clone(),
+            package_set: VerifiedPackageSet {
+                main: main.ok_or(DeploymentPlanError::CheckpointInvalid)?,
+                dependencies,
+            },
+            checkpoint_packages: packages,
+        })
+    }
 }
 
 fn visit_dependencies<'a>(
@@ -147,7 +300,9 @@ fn visit_dependencies<'a>(
 fn package_request(
     package: &ResolvedPackage,
     cache: &[CacheEntry],
-) -> Result<PackageFileRequest, DeploymentPlanError> {
+    role: JobTargetRole,
+    order: u16,
+) -> Result<(PackageFileRequest, DeploymentCheckpointPackage), DeploymentPlanError> {
     let entries = cache
         .iter()
         .filter(|entry| entry.update_id == package.update_id)
@@ -202,7 +357,7 @@ fn package_request(
             update_id: package.update_id.clone(),
         })?;
 
-    Ok(PackageFileRequest {
+    let request = PackageFileRequest {
         path: PathBuf::from(&entry.path),
         sha256_hex: entry.sha256.clone(),
         expected_identity: Some(PackageIdentity {
@@ -212,7 +367,25 @@ fn package_request(
             architecture: architecture_name(package.architecture).to_owned(),
             resource_id: package.resource_id.clone().unwrap_or_default(),
         }),
-    })
+    };
+    Ok((
+        request,
+        DeploymentCheckpointPackage {
+            role,
+            order,
+            cache_key: entry.cache_key.clone(),
+            update_id: package.update_id.clone(),
+            identity_name: identity_name.clone(),
+            publisher: publisher.clone(),
+            version: package.version.to_string(),
+            architecture: package.architecture,
+            resource_id: package.resource_id.clone(),
+            package_kind: package.package_kind,
+            format: package.format,
+            expected_size,
+            sha256: expected_hash.to_owned(),
+        },
+    ))
 }
 
 fn supported_format(format: PackageFormat) -> bool {

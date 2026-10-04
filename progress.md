@@ -74,3 +74,16 @@
 - Playwright：2/2 通过，覆盖桌面键盘/axe 与 360 px 窄屏。
 - 受控代理、下载进度、部署进度、错误状态码、列表排序和终止命令均有自动化回归。
 - 尚未执行真实签名包的可逆 Windows 安装/更新，也未强制终止当前正在运行的 OpenAI.Codex；不声明 E2/E3 安装验收通过。
+
+## 2026-10-04 方案 B 实施进度
+
+- 完成详情页后端本地动作推导、可信已安装应用启动命令，以及 Install/Update/Open 前端分派。
+- 完成队列 sequence-monotonic 合并、先订阅后列表再 replay 的初始化顺序，以及验证/下载/部署分阶段进度呈现。
+- 完成 Windows 部署 HRESULT 包占用分类、进程名/PID 描述符、PFN 二次校验和残留进程结果。
+- 完成 `awaiting_process_exit`、`retry_deployment`、部署 checkpoint 单表持久化、重启保持和终态清理。
+- 完成 checkpoint 重建及 worker 直接重试；自动化证明该路径不会调用 resolver/downloader，缓存缺失时关闭式失败。
+- 完成自动打开且可重新打开的占用进程弹窗；部分终止失败会逐项显示残留进程名和 PID。
+- 最终 E1：Rust `cargo test --lib --tests` 为 205 passed / 9 ignored；`cargo fmt --all -- --check` 与严格 Clippy 通过。
+- 最终前端验证：Vitest 24/24、Playwright 3/3、TypeScript/Vite production build 通过；Playwright 覆盖桌面键盘/axe、360px 工作台与 360px 占用弹窗残留进程呈现。
+- `pnpm exec tauri build --debug --no-bundle` 通过，生成 debug EXE；这是构建证据，不是 live 部署或启动验收。
+- 尚未执行受控 Windows 的真实签名包部署占用、强制终止、重启后重试或 AppListEntry 启动，不声明 E2 通过。

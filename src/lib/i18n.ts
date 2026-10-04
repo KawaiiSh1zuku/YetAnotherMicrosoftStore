@@ -37,8 +37,9 @@ const stageLabels: Record<JobStage, string> = {
   selecting: "正在选择包",
   downloading: "正在下载",
   paused: "已暂停",
-  verifying: "正在验证",
+  verifying: "正在验证签名",
   deploying: "正在安装",
+  awaiting_process_exit: "等待关闭占用进程",
   interrupted: "等待恢复",
   needs_reconciliation: "正在核对系统状态",
   completed: "已完成",
@@ -49,6 +50,7 @@ const stageLabels: Record<JobStage, string> = {
 const controlLabels: Record<JobControl, string> = {
   pause: "暂停",
   resume: "继续",
+  retry_deployment: "重试部署",
   cancel: "取消",
 };
 

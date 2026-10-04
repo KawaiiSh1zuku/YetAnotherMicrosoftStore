@@ -1,10 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { axe } from "vitest-axe";
 import App from "../App";
 import { localizeError } from "../lib/i18n";
-import { catalogProduct, createClient, job, settings } from "./fixtures";
+import type { JobChangedHint, JobSnapshot } from "../lib/types";
+import { appDetails, catalogProduct, createClient, job, settings } from "./fixtures";
 
 describe("M6 desktop workbench", () => {
   it("shows the concrete HTTP status for download failures", () => {
@@ -212,13 +213,67 @@ describe("M6 desktop workbench", () => {
     expect(screen.getByText("42%")).toBeVisible();
   });
 
+  it("keeps an event snapshot that arrives while the queue listener is registering", async () => {
+    let resolveList!: (jobs: JobSnapshot[]) => void;
+    const listJobs = vi.fn().mockImplementation(
+      () => new Promise<JobSnapshot[]>((resolve) => { resolveList = resolve; }),
+    );
+    const eventJob = { ...job, sequence: 8, stage: "verifying" as const, bytesDone: 100, bytesTotal: 100 };
+    const subscribeJobChanges = vi.fn().mockImplementation(
+      async (listener: (hint: JobChangedHint) => void) => {
+        listener({ jobId: job.jobId, sequence: 8, updatedAt: 30 });
+        return () => undefined;
+      },
+    );
+    const client = createClient({
+      listJobs,
+      listJobEvents: vi.fn().mockResolvedValue({
+        nextCursor: 1,
+        events: [{ cursor: 1, jobId: job.jobId, sequence: 8, snapshot: eventJob }],
+      }),
+      subscribeJobChanges,
+    });
+    render(<App client={client} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "队列" }));
+    expect(await screen.findByText("正在验证签名")).toBeVisible();
+
+    await act(async () => resolveList([{ ...job, sequence: 7, stage: "downloading" }]));
+
+    await waitFor(() => expect(screen.getByText("序列 8")).toBeVisible());
+    expect(screen.queryByText("序列 7")).not.toBeInTheDocument();
+  });
+
+  it("renders signature verification without stale download progress", async () => {
+    const client = createClient({
+      listJobs: vi.fn().mockResolvedValue([{
+        ...job,
+        stage: "verifying",
+        bytesDone: 100,
+        bytesTotal: 100,
+        allowedControls: [],
+      }]),
+    });
+    render(<App client={client} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "队列" }));
+
+    expect(await screen.findByText("正在验证签名")).toBeVisible();
+    expect(screen.queryByText("100%")).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
   it("confirms, terminates related package processes, and retries an in-use job", async () => {
     const user = userEvent.setup();
-    const failedJob = {
+    const blockedJob = {
       ...job,
       sequence: 7,
-      stage: "failed" as const,
-      allowedControls: ["resume", "cancel"] as const,
+      stage: "awaiting_process_exit" as const,
+      allowedControls: ["retry_deployment", "cancel"] as const,
+      blockedProcesses: [
+        { pid: 420, name: "Terminal.exe" },
+        { pid: 421, name: "OpenConsole.exe" },
+      ],
       error: {
         code: "package_in_use" as const,
         messageKey: "errors.packageInUse",
@@ -227,25 +282,68 @@ describe("M6 desktop workbench", () => {
         details: [],
       },
     };
-    const terminateJobPackageProcesses = vi.fn().mockResolvedValue({ matched: 2, terminated: 2, failed: 0 });
+    const terminateJobPackageProcesses = vi.fn().mockResolvedValue({
+      matched: blockedJob.blockedProcesses,
+      terminated: blockedJob.blockedProcesses,
+      remaining: [],
+    });
     const client = Object.assign(createClient({
-      listJobs: vi.fn().mockResolvedValue([failedJob]),
-      requestJobControl: vi.fn().mockResolvedValue({ ...failedJob, sequence: 8, stage: "queued", error: null }),
+      listJobs: vi.fn().mockResolvedValue([blockedJob]),
+      requestJobControl: vi.fn().mockResolvedValue({ ...blockedJob, sequence: 8, stage: "deploying", error: null, blockedProcesses: [] }),
     }), { terminateJobPackageProcesses });
     render(<App client={client} />);
 
     await user.click(screen.getByRole("button", { name: "队列" }));
-    await user.click(await screen.findByRole("button", { name: "已结束" }));
-    await user.click(screen.getByRole("button", { name: "结束相关进程并重试" }));
-    await user.click(screen.getByRole("button", { name: "确认结束" }));
+    expect(await screen.findByRole("alertdialog", { name: "结束相关应用进程" })).toBeVisible();
+    expect(screen.getByText("Terminal.exe (PID 420)")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "结束相关进程" }));
 
     await waitFor(() => expect(terminateJobPackageProcesses).toHaveBeenCalledWith(job.jobId));
     expect(client.requestJobControl).toHaveBeenCalledWith({
       jobId: job.jobId,
       expectedSequence: 7,
-      control: "resume",
+      control: "retry_deployment",
       commandId: expect.stringMatching(/^ui-/),
     });
+  });
+
+  it("keeps the process dialog open and lists every remaining name and pid", async () => {
+    const user = userEvent.setup();
+    const blockedJob = {
+      ...job,
+      sequence: 9,
+      stage: "awaiting_process_exit" as const,
+      allowedControls: ["retry_deployment", "cancel"] as const,
+      blockedProcesses: [{ pid: 420, name: "Terminal.exe" }],
+      error: {
+        code: "package_in_use" as const,
+        messageKey: "errors.packageInUse",
+        retry: "retry" as const,
+        jobId: job.jobId,
+        details: [],
+      },
+    };
+    const remaining = [
+      { pid: 420, name: "Terminal.exe" },
+      { pid: 421, name: "OpenConsole.exe" },
+    ];
+    const client = createClient({
+      listJobs: vi.fn().mockResolvedValue([blockedJob]),
+      terminateJobPackageProcesses: vi.fn().mockResolvedValue({
+        matched: remaining,
+        terminated: [],
+        remaining,
+      }),
+    });
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "队列" }));
+    await user.click(await screen.findByRole("button", { name: "结束相关进程" }));
+
+    expect(await screen.findByText("Terminal.exe (PID 420)")).toBeVisible();
+    expect(screen.getByText("OpenConsole.exe (PID 421)")).toBeVisible();
+    expect(screen.getByRole("alertdialog", { name: "结束相关应用进程" })).toBeVisible();
+    expect(client.requestJobControl).not.toHaveBeenCalled();
   });
 
   it("renders loading, empty, and localized safe error states", async () => {
@@ -306,4 +404,85 @@ it("starts installation from details with the selected locale", async () => {
     language: "en-US",
     scope: "current_user",
   });
+});
+
+it("starts an update with the backend-derived deployment scope", async () => {
+  const user = userEvent.setup();
+  const details = {
+    ...appDetails,
+    localAction: {
+      kind: "update" as const,
+      deploymentScope: "all_users" as const,
+      installedVersion: "1.0.0.0",
+      availableVersion: "1.2.3.4",
+      launchable: true,
+    },
+  };
+  const client = createClient({ getAppDetails: vi.fn().mockResolvedValue(details) });
+  render(<App client={client} />);
+
+  await user.type(screen.getByRole("searchbox", { name: "搜索 Microsoft Store" }), "terminal");
+  await user.click(screen.getByRole("button", { name: "搜索" }));
+  await user.click(await screen.findByRole("button", { name: /Windows Terminal/ }));
+  await user.click(await screen.findByRole("button", { name: "更新" }));
+  await user.click(screen.getByRole("button", { name: "确认更新" }));
+
+  expect(client.startUpdate).toHaveBeenCalledWith({
+    productId: catalogProduct.productId,
+    market: "US",
+    language: "en-US",
+    scope: "all_users",
+  });
+  expect(client.startInstall).not.toHaveBeenCalled();
+});
+
+it("opens an installed app without showing a deployment confirmation", async () => {
+  const user = userEvent.setup();
+  const details = {
+    ...appDetails,
+    selectionPreview: { ...appDetails.selectionPreview, installable: false },
+    localAction: {
+      kind: "open" as const,
+      deploymentScope: null,
+      installedVersion: "1.2.3.4",
+      availableVersion: "1.2.3.4",
+      launchable: true,
+    },
+  };
+  const client = createClient({ getAppDetails: vi.fn().mockResolvedValue(details) });
+  render(<App client={client} />);
+
+  await user.type(screen.getByRole("searchbox", { name: "搜索 Microsoft Store" }), "terminal");
+  await user.click(screen.getByRole("button", { name: "搜索" }));
+  await user.click(await screen.findByRole("button", { name: /Windows Terminal/ }));
+  await user.click(await screen.findByRole("button", { name: "打开" }));
+
+  expect(client.launchInstalledApp).toHaveBeenCalledWith(catalogProduct.productId);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(client.startInstall).not.toHaveBeenCalled();
+});
+
+it("keeps an unlaunchable installed app as disabled Open instead of Install", async () => {
+  const user = userEvent.setup();
+  const details = {
+    ...appDetails,
+    selectionPreview: { ...appDetails.selectionPreview, installable: false },
+    localAction: {
+      kind: "open" as const,
+      deploymentScope: null,
+      installedVersion: "1.2.3.4",
+      availableVersion: "1.2.3.4",
+      launchable: false,
+    },
+  };
+  const client = createClient({ getAppDetails: vi.fn().mockResolvedValue(details) });
+  render(<App client={client} />);
+
+  await user.type(screen.getByRole("searchbox", { name: "搜索 Microsoft Store" }), "terminal");
+  await user.click(screen.getByRole("button", { name: "搜索" }));
+  await user.click(await screen.findByRole("button", { name: /Windows Terminal/ }));
+
+  expect(await screen.findByRole("button", { name: "打开" })).toBeDisabled();
+  expect(screen.getByText("此应用没有可启动的入口。")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "安装" })).not.toBeInTheDocument();
 });

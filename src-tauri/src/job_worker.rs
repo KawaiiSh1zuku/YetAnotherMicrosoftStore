@@ -28,11 +28,12 @@ use crate::{
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     inventory::PackageInventoryRecord,
     job_events::{
-        CommandOutcome, CommandRejectReason, JobControl, JobEvent, JobTarget, JobTargetRole,
-        WorkerLease,
+        CommandOutcome, CommandRejectReason, DeploymentCheckpoint, JobControl, JobEvent, JobTarget,
+        JobTargetRole, WorkerLease,
     },
     jobs::{Job, JobKind, JobSnapshot, JobStage},
-    package_process::PackageProcessManager,
+    package_process::{PackageProcessManager, ProcessDescriptor},
+    package_validation::verify_package_request,
     persistence::{Persistence, PersistenceError},
     resolver::{PackageGraph, PackageResolver, ResolverError, StoreLibResolverAdapter},
 };
@@ -252,7 +253,7 @@ pub trait DeploymentPort {
         scope: DeploymentScope,
         mode: SelectionMode,
         plan: DeploymentPlan,
-        package_family_name: Option<String>,
+        _package_family_name: Option<String>,
     ) -> WorkerFuture<'a, Result<DeploymentPreparation<Self::Prepared>, AppErrorDto>>;
 
     fn commit<'a>(
@@ -260,6 +261,26 @@ pub trait DeploymentPort {
         prepared: Self::Prepared,
         progress: mpsc::UnboundedSender<u8>,
     ) -> WorkerFuture<'a, Result<(), AppErrorDto>>;
+
+    fn rebuild_checkpoint<'a>(
+        &'a mut self,
+        checkpoint: DeploymentCheckpoint,
+        cache_root: PathBuf,
+        cache: Vec<CacheEntry>,
+    ) -> WorkerFuture<'a, Result<DeploymentPlan, AppErrorDto>> {
+        Box::pin(async move {
+            checkpoint
+                .rebuild_verified_plan(&cache_root, &cache, |_| Ok(()))
+                .map_err(|error| AppErrorDto::from(&error))
+        })
+    }
+
+    fn blocking_processes<'a>(
+        &'a mut self,
+        _package_family_name: String,
+    ) -> WorkerFuture<'a, Result<Vec<ProcessDescriptor>, AppErrorDto>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 
     fn reconcile<'a>(
         &'a mut self,
@@ -288,22 +309,11 @@ impl DeploymentPort for SystemDeploymentPort {
         scope: DeploymentScope,
         mode: SelectionMode,
         plan: DeploymentPlan,
-        package_family_name: Option<String>,
+        _package_family_name: Option<String>,
     ) -> WorkerFuture<'a, Result<DeploymentPreparation<Self::Prepared>, AppErrorDto>> {
         let database_path = self.database_path.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                if mode == SelectionMode::Update
-                    && package_family_name.as_deref().is_some_and(|family| {
-                        PackageProcessManager::matching_process_count(family)
-                            .is_ok_and(|count| count > 0)
-                    })
-                {
-                    return Err(AppErrorDto::new(
-                        ErrorCode::PackageInUse,
-                        RetryAdvice::Retry,
-                    ));
-                }
                 let persistence =
                     Persistence::open(&database_path).map_err(|_| blocking_error())?;
                 let mut orchestrator =
@@ -343,6 +353,37 @@ impl DeploymentPort for SystemDeploymentPort {
                         }),
                     )
                     .map(|_| ())
+            })
+            .await
+            .map_err(|_| blocking_error())?
+        })
+    }
+
+    fn rebuild_checkpoint<'a>(
+        &'a mut self,
+        checkpoint: DeploymentCheckpoint,
+        cache_root: PathBuf,
+        cache: Vec<CacheEntry>,
+    ) -> WorkerFuture<'a, Result<DeploymentPlan, AppErrorDto>> {
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                checkpoint
+                    .rebuild_verified_plan(&cache_root, &cache, verify_package_request)
+                    .map_err(|error| AppErrorDto::from(&error))
+            })
+            .await
+            .map_err(|_| blocking_error())?
+        })
+    }
+
+    fn blocking_processes<'a>(
+        &'a mut self,
+        package_family_name: String,
+    ) -> WorkerFuture<'a, Result<Vec<ProcessDescriptor>, AppErrorDto>> {
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                PackageProcessManager::matching_processes(&package_family_name)
+                    .map_err(|_| AppErrorDto::new(ErrorCode::PackageInUse, RetryAdvice::Retry))
             })
             .await
             .map_err(|_| blocking_error())?
@@ -614,6 +655,9 @@ where
         if command_action == CommandAction::Stop {
             return Ok(processed(snapshot));
         }
+        if command_action == CommandAction::RetryDeployment {
+            return self.retry_deployment(snapshot, lease).await;
+        }
 
         if snapshot.job.stage == JobStage::NeedsReconciliation {
             return self.reconcile(snapshot, lease).await;
@@ -829,7 +873,7 @@ where
                 deployment.prepare(
                     snapshot.job.deployment_scope,
                     mode,
-                    plan,
+                    plan.clone(),
                     snapshot.job.package_family_name.clone(),
                 )
             })
@@ -852,7 +896,16 @@ where
                 stage: JobStage::Deploying,
             },
         )?;
-        match run_deployment(
+        let now = self.clock.now();
+        snapshot = self.store.save_deployment_checkpoint_leased(
+            &job_id,
+            snapshot.sequence,
+            &DeploymentCheckpoint::from_plan(&plan),
+            now,
+            lease,
+            now,
+        )?;
+        let result = run_deployment(
             &self.store,
             &self.clock,
             &self.config,
@@ -861,14 +914,119 @@ where
             lease,
             prepared,
         )
-        .await?
+        .await?;
+        self.finish_deployment(result, lease).await
+    }
+
+    async fn retry_deployment(
+        &mut self,
+        snapshot: JobSnapshot,
+        lease: &mut WorkerLease,
+    ) -> Result<RunOnceOutcome, WorkerError> {
+        let job_id = snapshot.job.job_id.clone();
+        let Some(checkpoint) = self.store.deployment_checkpoint(&job_id)? else {
+            return self.fail(
+                snapshot,
+                lease,
+                safe_error(
+                    &job_id,
+                    ErrorCode::SourceIdentityMismatch,
+                    RetryAdvice::ReResolve,
+                ),
+            );
+        };
+        let cache = self.store.cache_entries()?;
+        let cache_root = self.config.cache_root.clone();
+        let plan = match self
+            .await_with_heartbeat(lease, |deployment| {
+                deployment.rebuild_checkpoint(checkpoint, cache_root, cache)
+            })
+            .await
         {
+            LeaseAware::LeaseLost => return Ok(RunOnceOutcome::LeaseLost),
+            LeaseAware::Ready(Ok(plan)) => plan,
+            LeaseAware::Ready(Err(error)) => {
+                return self.fail(snapshot, lease, with_job(error, &job_id))
+            }
+        };
+        let mode = match snapshot.job.kind {
+            JobKind::Install => SelectionMode::Install,
+            JobKind::Update => SelectionMode::Update,
+        };
+        let preparation = match self
+            .await_with_heartbeat(lease, |deployment| {
+                deployment.prepare(
+                    snapshot.job.deployment_scope,
+                    mode,
+                    plan,
+                    snapshot.job.package_family_name.clone(),
+                )
+            })
+            .await
+        {
+            LeaseAware::LeaseLost => return Ok(RunOnceOutcome::LeaseLost),
+            LeaseAware::Ready(Ok(preparation)) => preparation,
+            LeaseAware::Ready(Err(error)) => {
+                return self.fail(snapshot, lease, with_job(error, &job_id))
+            }
+        };
+        let DeploymentPreparation::Ready(prepared) = preparation else {
+            let completed = self.append(lease, snapshot, JobEvent::Completed)?;
+            return Ok(processed(completed));
+        };
+        let result = run_deployment(
+            &self.store,
+            &self.clock,
+            &self.config,
+            &mut self.deployment,
+            snapshot,
+            lease,
+            prepared,
+        )
+        .await?;
+        self.finish_deployment(result, lease).await
+    }
+
+    async fn finish_deployment(
+        &mut self,
+        result: DeploymentRun,
+        lease: &mut WorkerLease,
+    ) -> Result<RunOnceOutcome, WorkerError> {
+        match result {
             DeploymentRun::LeaseLost => Ok(RunOnceOutcome::LeaseLost),
             DeploymentRun::Completed(snapshot) => {
                 let completed = self.append(lease, snapshot, JobEvent::Completed)?;
                 Ok(processed(completed))
             }
+            DeploymentRun::Failed { snapshot, error } if error.code == ErrorCode::PackageInUse => {
+                let job_id = snapshot.job.job_id.clone();
+                let Some(package_family_name) = snapshot.job.package_family_name.clone() else {
+                    return self.fail(
+                        snapshot,
+                        lease,
+                        safe_error(
+                            &job_id,
+                            ErrorCode::SourceIdentityMismatch,
+                            RetryAdvice::Never,
+                        ),
+                    );
+                };
+                let processes = match self
+                    .await_with_heartbeat(lease, |deployment| {
+                        deployment.blocking_processes(package_family_name)
+                    })
+                    .await
+                {
+                    LeaseAware::LeaseLost => return Ok(RunOnceOutcome::LeaseLost),
+                    LeaseAware::Ready(Ok(processes)) => processes,
+                    LeaseAware::Ready(Err(_)) => Vec::new(),
+                };
+                let blocked =
+                    self.append(lease, snapshot, JobEvent::DeploymentBlocked { processes })?;
+                Ok(processed(blocked))
+            }
             DeploymentRun::Failed { snapshot, error } => {
+                let job_id = snapshot.job.job_id.clone();
                 let failed = self.append(
                     lease,
                     snapshot,
@@ -987,14 +1145,21 @@ where
             result = &mut future => {
                 while let Ok(percentage) = progress_rx.try_recv() {
                     let now = clock.now();
-                    snapshot = store.append_job_event_leased(
+                    let result = store.append_job_event_leased(
                         &snapshot.job.job_id,
                         snapshot.sequence,
                         JobEvent::DeploymentProgressRecorded { percentage },
                         now,
                         lease,
                         now,
-                    )?;
+                    );
+                    match result {
+                        Ok(next) => snapshot = next,
+                        Err(PersistenceError::LeaseConflict) => {
+                            return Ok(DeploymentRun::LeaseLost)
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 }
                 return Ok(match result {
                     Ok(()) => DeploymentRun::Completed(snapshot),
@@ -1004,14 +1169,21 @@ where
             progress = progress_rx.recv() => {
                 if let Some(percentage) = progress {
                     let now = clock.now();
-                    snapshot = store.append_job_event_leased(
+                    let result = store.append_job_event_leased(
                         &snapshot.job.job_id,
                         snapshot.sequence,
                         JobEvent::DeploymentProgressRecorded { percentage },
                         now,
                         lease,
                         now,
-                    )?;
+                    );
+                    match result {
+                        Ok(next) => snapshot = next,
+                        Err(PersistenceError::LeaseConflict) => {
+                            return Ok(DeploymentRun::LeaseLost)
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 }
             }
             _ = heartbeat.tick() => {
@@ -1110,6 +1282,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandAction {
     Continue,
+    RetryDeployment,
     Stop,
 }
 
@@ -1144,6 +1317,11 @@ fn process_pending_commands<C: Clock>(
                     stage: JobStage::Resolving,
                 })
             }
+            (JobControl::RetryDeployment, JobStage::AwaitingProcessExit) => {
+                Some(JobEvent::StageChanged {
+                    stage: JobStage::Deploying,
+                })
+            }
             (
                 JobControl::Cancel,
                 JobStage::Queued
@@ -1153,7 +1331,8 @@ fn process_pending_commands<C: Clock>(
                 | JobStage::Paused
                 | JobStage::Verifying
                 | JobStage::Interrupted
-                | JobStage::Failed,
+                | JobStage::Failed
+                | JobStage::AwaitingProcessExit,
             ) => Some(JobEvent::Cancelled),
             (JobControl::Pause, JobStage::Paused) | (JobControl::Cancel, JobStage::Cancelled) => {
                 store.finish_job_command_leased(
@@ -1187,10 +1366,10 @@ fn process_pending_commands<C: Clock>(
             lease,
             now,
         )?;
-        action = if matches!(snapshot.job.stage, JobStage::Resolving) {
-            CommandAction::Continue
-        } else {
-            CommandAction::Stop
+        action = match command.control {
+            JobControl::RetryDeployment => CommandAction::RetryDeployment,
+            _ if snapshot.job.stage == JobStage::Resolving => CommandAction::Continue,
+            _ => CommandAction::Stop,
         };
     }
     Ok((snapshot, action))

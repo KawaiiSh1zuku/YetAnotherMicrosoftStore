@@ -16,7 +16,10 @@ use crate::{
     },
     error::{AppErrorDto, ErrorCode},
     identity::{AssociationConfidence, PackageAssociation},
-    job_events::{CommandOutcome, JobCommand, JobEvent, JobTarget, StoredJobEvent, WorkerLease},
+    job_events::{
+        CommandOutcome, DeploymentCheckpoint, JobCommand, JobEvent, JobTarget, StoredJobEvent,
+        WorkerLease,
+    },
     job_store,
     jobs::{Job, JobKind, JobSnapshot, JobStage, RecoveryAction},
 };
@@ -473,6 +476,33 @@ impl Persistence {
         )
     }
 
+    pub fn save_deployment_checkpoint_leased(
+        &self,
+        job_id: &str,
+        expected_sequence: u64,
+        checkpoint: &DeploymentCheckpoint,
+        occurred_at: i64,
+        lease: &WorkerLease,
+        now: i64,
+    ) -> Result<JobSnapshot, PersistenceError> {
+        job_store::save_deployment_checkpoint_leased(
+            &self.connection,
+            job_id,
+            expected_sequence,
+            checkpoint,
+            occurred_at,
+            lease,
+            now,
+        )
+    }
+
+    pub fn deployment_checkpoint(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<DeploymentCheckpoint>, PersistenceError> {
+        job_store::deployment_checkpoint(&self.connection, job_id)
+    }
+
     pub fn job_targets(&self, job_id: &str) -> Result<Vec<JobTarget>, PersistenceError> {
         job_store::targets(&self.connection, job_id)
     }
@@ -514,7 +544,7 @@ impl Persistence {
                     requested_architectures_json, requested_languages_json, deployment_scope,
                     selected_update_id, package_family_name, stage, bytes_done, bytes_total,
                     deployment_progress, version, architecture, language, error_json,
-                    created_at, updated_at
+                    blocked_processes_json, created_at, updated_at
              FROM jobs ORDER BY job_id",
         )?;
         let rows = statement
@@ -902,15 +932,17 @@ pub(crate) fn save_job_projection(
     let error_json = job.error.as_ref().map(serde_json::to_string).transpose()?;
     let requested_architectures = serde_json::to_string(&job.requested_architectures)?;
     let requested_languages = serde_json::to_string(&job.requested_languages)?;
+    let blocked_processes = serde_json::to_string(&job.blocked_processes)?;
     connection.execute(
         "INSERT INTO jobs (
             job_id, kind, product_id, requested_market, requested_architectures_json,
             requested_languages_json, deployment_scope, selected_update_id,
             package_family_name, stage, bytes_done, bytes_total, deployment_progress,
-            version, architecture, language, error_json, created_at, updated_at
+            version, architecture, language, error_json, blocked_processes_json,
+            created_at, updated_at
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-            ?17, ?18, ?19
+            ?17, ?18, ?19, ?20
          )
          ON CONFLICT(job_id) DO UPDATE SET
             kind = excluded.kind,
@@ -929,6 +961,7 @@ pub(crate) fn save_job_projection(
             architecture = excluded.architecture,
             language = excluded.language,
             error_json = excluded.error_json,
+            blocked_processes_json = excluded.blocked_processes_json,
             updated_at = excluded.updated_at",
         params![
             job.job_id,
@@ -950,6 +983,7 @@ pub(crate) fn save_job_projection(
             job.architecture.map(enum_text).transpose()?,
             job.language,
             error_json,
+            blocked_processes,
             job.created_at,
             job.updated_at
         ],
@@ -967,7 +1001,7 @@ pub(crate) fn load_job(
                 requested_architectures_json, requested_languages_json, deployment_scope,
                 selected_update_id, package_family_name, stage, bytes_done, bytes_total,
                 deployment_progress, version, architecture, language, error_json,
-                created_at, updated_at FROM jobs WHERE job_id = ?1",
+                blocked_processes_json, created_at, updated_at FROM jobs WHERE job_id = ?1",
             [job_id],
             read_job_row,
         )
@@ -1133,6 +1167,7 @@ struct JobRow {
     architecture: Option<String>,
     language: Option<String>,
     error_json: Option<String>,
+    blocked_processes_json: String,
     created_at: i64,
     updated_at: i64,
 }
@@ -1156,8 +1191,9 @@ fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         architecture: row.get(14)?,
         language: row.get(15)?,
         error_json: row.get(16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
+        blocked_processes_json: row.get(17)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
     })
 }
 
@@ -1195,6 +1231,7 @@ impl TryFrom<JobRow> for Job {
                 .error_json
                 .map(|value| serde_json::from_str::<AppErrorDto>(&value))
                 .transpose()?,
+            blocked_processes: serde_json::from_str(&row.blocked_processes_json)?,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

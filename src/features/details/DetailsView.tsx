@@ -1,4 +1,4 @@
-import { ArrowLeft, CheckCircle2, Download, ShieldCheck } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Download, ExternalLink, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/alert-dialog";
 import { Badge } from "../../components/ui/badge";
@@ -31,6 +31,7 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
       market: settings?.market ?? "US",
       language: settings?.preferredLanguages[0] ?? "en-US",
     }).then((value) => {
+      if (!value.localAction) throw new Error("details response is missing localAction");
       if (active) { setDetails(value); setStatus("ready"); }
     }).catch((value) => {
       if (active) { setError(localizeError(value)); setStatus("error"); }
@@ -38,17 +39,33 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
     return () => { active = false; };
   }, [client, product.productId, settings?.market, settings?.preferredLanguages]);
 
-  async function install() {
+  async function startDeployment(kind: "install" | "update") {
+    if (!details) return;
     setStatus("starting");
     setError(null);
     try {
-      const job = await client.startInstall({
+      const request = {
         productId: product.productId,
-        market: details?.market ?? settings?.market ?? "US",
-        language: details?.language ?? settings?.preferredLanguages[0] ?? "en-US",
-        scope,
-      });
+        market: details.market,
+        language: details.language,
+        scope: details.localAction.deploymentScope ?? scope,
+      };
+      const job = kind === "update"
+        ? await client.startUpdate(request)
+        : await client.startInstall(request);
       onJobStarted(job);
+      setStatus("ready");
+    } catch (value) {
+      setError(localizeError(value));
+      setStatus("error");
+    }
+  }
+
+  async function openInstalledApp() {
+    setStatus("starting");
+    setError(null);
+    try {
+      await client.launchInstalledApp(product.productId);
       setStatus("ready");
     } catch (value) {
       setError(localizeError(value));
@@ -89,18 +106,20 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
             <div><span>PFN</span><strong title={details.packageFamilyName ?? ""}>{details.packageFamilyName ?? "待解析"}</strong></div>
             <div><span>发布者</span><strong title={details.publisher ?? ""}>{details.publisher ?? "未提供"}</strong></div>
           </div>
-          {!details.selectionPreview.installable && <div className="inline-alert" role="status">{selectionRejection(details.selectionPreview.rejectionReason)}</div>}
+          {details.localAction.kind !== "open" && !details.selectionPreview.installable && <div className="inline-alert" role="status">{selectionRejection(details.selectionPreview.rejectionReason)}</div>}
 
-          <section className="details-section" aria-labelledby="install-options-heading">
-            <div>
-              <h2 id="install-options-heading">安装范围</h2>
-              <p>当前管理员账户安装不会更改其他 Windows 账户。</p>
-            </div>
-            <div className="segmented-control" aria-label="安装范围">
-              <button type="button" aria-pressed={scope === "current_user"} onClick={() => setScope("current_user")}>当前管理员账户</button>
-              <button type="button" aria-pressed={scope === "all_users"} onClick={() => setScope("all_users")}>所有用户</button>
-            </div>
-          </section>
+          {details.localAction.kind === "install" && (
+            <section className="details-section" aria-labelledby="install-options-heading">
+              <div>
+                <h2 id="install-options-heading">安装范围</h2>
+                <p>当前管理员账户安装不会更改其他 Windows 账户。</p>
+              </div>
+              <div className="segmented-control" aria-label="安装范围">
+                <button type="button" aria-pressed={scope === "current_user"} onClick={() => setScope("current_user")}>当前管理员账户</button>
+                <button type="button" aria-pressed={scope === "all_users"} onClick={() => setScope("all_users")}>所有用户</button>
+              </div>
+            </section>
+          )}
 
           <div className="trust-row">
             <span><ShieldCheck aria-hidden="true" size={18} /> 系统信任签名验证</span>
@@ -108,15 +127,30 @@ export function DetailsView({ client, product, settings, onBack, onJobStarted }:
           </div>
 
           <div className="details-actions">
-            <ConfirmDialog
-              trigger={<Button variant="primary" disabled={status === "starting" || !details.selectionPreview.installable}><Download aria-hidden="true" size={18} />安装</Button>}
+            {details.localAction.kind === "install" && <ConfirmDialog
+              trigger={<Button className="details-primary-action" variant="primary" disabled={status === "starting" || !details.selectionPreview.installable}><Download aria-hidden="true" size={18} />{status === "starting" ? "正在开始..." : "安装"}</Button>}
               title={`安装 ${product.appName}`}
               description={scope === "all_users" ? "应用将为所有用户部署。" : "应用将安装到当前管理员账户。下载与验证会在后台继续。"}
               confirmLabel="确认安装"
-              onConfirm={install}
-            />
-            {scope === "all_users" && <Badge>所有用户</Badge>}
+              onConfirm={() => startDeployment("install")}
+            />}
+            {details.localAction.kind === "update" && <ConfirmDialog
+              trigger={<Button className="details-primary-action" variant="primary" disabled={status === "starting" || !details.selectionPreview.installable}><RefreshCw aria-hidden="true" size={18} />{status === "starting" ? "正在开始..." : "更新"}</Button>}
+              title={`更新 ${product.appName}`}
+              description={details.localAction.deploymentScope === "all_users" ? "更新将应用到所有用户。" : "更新将应用到当前用户。"}
+              confirmLabel="确认更新"
+              onConfirm={() => startDeployment("update")}
+            />}
+            {details.localAction.kind === "open" && <Button
+              className="details-primary-action"
+              variant="primary"
+              disabled={status === "starting" || !details.localAction.launchable}
+              aria-describedby={!details.localAction.launchable ? "open-unavailable" : undefined}
+              onClick={() => void openInstalledApp()}
+            ><ExternalLink aria-hidden="true" size={18} />{status === "starting" ? "正在打开..." : "打开"}</Button>}
+            {(details.localAction.kind === "install" ? scope : details.localAction.deploymentScope) === "all_users" && <Badge>所有用户</Badge>}
           </div>
+          {details.localAction.kind === "open" && !details.localAction.launchable && <p id="open-unavailable" className="job-error" role="status">此应用没有可启动的入口。</p>}
         </>
       )}
     </section>

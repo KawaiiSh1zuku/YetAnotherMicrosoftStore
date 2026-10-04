@@ -52,6 +52,7 @@ export interface StoreClient {
   startUpdate(request: StartJobRequest): Promise<JobSnapshot>;
   requestJobControl(request: JobControlRequest): Promise<JobSnapshot>;
   terminateJobPackageProcesses(jobId: string): Promise<TerminatePackageProcessesResult>;
+  launchInstalledApp(productId: string): Promise<void>;
   getJob(jobId: string): Promise<JobSnapshot | null>;
   listJobs(): Promise<JobSnapshot[]>;
   listJobEvents(request: ListJobEventsRequest): Promise<JobEventPage>;
@@ -71,6 +72,7 @@ export const tauriClient: StoreClient = {
   startUpdate: (request) => invoke("start_update", { request }),
   requestJobControl: (request) => invoke("request_job_control", { request }),
   terminateJobPackageProcesses: (jobId) => invoke("terminate_job_package_processes", { jobId }),
+  launchInstalledApp: (productId) => invoke("launch_installed_app", { productId }),
   getJob: (jobId) => invoke("get_job", { jobId }),
   listJobs: () => invoke("list_jobs"),
   listJobEvents: (request) => invoke("list_job_events", { request }),
@@ -86,19 +88,32 @@ export function shouldReplayHint(hint: JobChangedHint, current?: JobSnapshot): b
   return current === undefined || hint.sequence > current.sequence;
 }
 
+export function mergeJobSnapshots(
+  current: ReadonlyMap<string, JobSnapshot>,
+  incoming: Iterable<JobSnapshot>,
+): Map<string, JobSnapshot> {
+  const jobs = new Map(current);
+  for (const snapshot of incoming) {
+    const existing = jobs.get(snapshot.jobId);
+    if (existing === undefined || snapshot.sequence > existing.sequence) {
+      jobs.set(snapshot.jobId, {
+        ...snapshot,
+        title: snapshot.title ?? existing?.title,
+      });
+    } else if (snapshot.sequence === existing.sequence && existing.title === undefined && snapshot.title) {
+      jobs.set(snapshot.jobId, { ...existing, title: snapshot.title });
+    }
+  }
+  return jobs;
+}
+
 export function applyEventPage(
   current: ReadonlyMap<string, JobSnapshot>,
   page: JobEventPage,
 ): { jobs: Map<string, JobSnapshot>; cursor: number | null } {
-  const jobs = new Map(current);
+  let jobs = new Map(current);
   for (const event of [...page.events].sort((left, right) => left.cursor - right.cursor)) {
-    const existing = jobs.get(event.jobId);
-    if (existing === undefined || event.sequence > existing.sequence) {
-      jobs.set(event.jobId, {
-        ...event.snapshot,
-        title: event.snapshot.title ?? existing?.title,
-      });
-    }
+    jobs = mergeJobSnapshots(jobs, [event.snapshot]);
   }
   return { jobs, cursor: page.nextCursor };
 }

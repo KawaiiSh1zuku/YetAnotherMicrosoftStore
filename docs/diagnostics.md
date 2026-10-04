@@ -23,6 +23,16 @@ The application owns a per-session Windows mutex and a clean-shutdown marker. Th
 
 The main executable is already elevated before Tauri starts. There is no Broker lifecycle, IPC event, `AwaitingElevation` stage, or task-level UAC cancellation event to diagnose. UAC cancellation happens before the application process exists.
 
+### Package-in-use recovery
+
+Windows deployment is authoritative for package-in-use detection. HRESULT `0x80073D02` is mapped to the closed `package_in_use` error only after the native deployment call returns it; process enumeration is diagnostic and never predicts whether deployment is allowed.
+
+Before native deployment, the worker persists a lease- and sequence-fenced checkpoint containing ordered cache keys, expected size/hash, package format, and package identity. It contains no signed URL or frontend-supplied path. A blocked job remains active in `awaiting_process_exit`, including after restart. `retry_deployment` rebuilds the exact plan from current verified cache entries and repeats cache containment, size/hash, manifest identity, publisher, and native signature checks. Missing or changed material fails closed; resolver and downloader are not called by this retry path.
+
+The process termination command accepts only the trusted job ID. The backend derives the PFN from that job, re-enumerates matching processes, rechecks the PFN after opening each handle, and returns bounded `matched`, `terminated`, and `remaining` descriptors. The UI displays each remaining executable name and PID. A process name/PID is diagnostic only and is never accepted as a termination target from the frontend.
+
+These contracts and recovery transitions have E0/E1 coverage. They do not prove a live Windows deployment, process termination, installed-app launch, or restart round trip; those remain controlled Windows E2 checks.
+
 ## Partial scans
 
 - Inventory results set `complete = false` when machine enumeration, user registration, or provisioned-package queries are incomplete.

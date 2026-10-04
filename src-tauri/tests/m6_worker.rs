@@ -15,16 +15,20 @@ use sha2::{Digest, Sha256};
 use yet_another_microsoft_store_lib::{
     applicability::{HostCapabilities, InstalledPackage},
     deployment::DeploymentScope,
-    domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
+    domain::{Architecture, CacheEntry, CacheState, PackageFormat, PackageKind, PackageVersion},
     download::{CancellationToken, DownloadManager, VerifiedDownload},
     error::{AppErrorDto, ErrorCode, RetryAdvice, SafeErrorDetail},
-    job_events::{CommandOutcome, JobCommand, JobControl, JobEvent, JobTarget},
+    job_events::{
+        CommandOutcome, DeploymentCheckpoint, DeploymentCheckpointPackage, JobCommand, JobControl,
+        JobEvent, JobTarget, JobTargetRole,
+    },
     job_worker::{
         Clock, DeploymentPort, DeploymentPreparation, DownloadArtifact, DownloadPort,
         DownloadProgress, HostEnvironment, HostEnvironmentPort, JobWorker, ManagerDownloadPort,
         ReconciliationOutcome, RunOnceOutcome, WorkerConfig, WorkerFuture, WorkerResolverPort,
     },
     jobs::{Job, JobKind, JobStage},
+    package_process::ProcessDescriptor,
     persistence::Persistence,
     resolver::{PackageGraph, ResolvedPackage, ResolverError},
     settings::{NetworkPolicy, ProxyRoute},
@@ -161,6 +165,17 @@ impl WorkerResolverPort for FakeResolver {
     }
 }
 
+struct PanicResolver;
+
+impl WorkerResolverPort for PanicResolver {
+    fn resolve<'a>(
+        &'a mut self,
+        _job: &'a Job,
+    ) -> WorkerFuture<'a, Result<PackageGraph, ResolverError>> {
+        panic!("checkpoint retry must not resolve the catalog")
+    }
+}
+
 struct RecordingRefreshResolver {
     graph: PackageGraph,
     calls: Arc<AtomicUsize>,
@@ -245,6 +260,19 @@ impl DownloadPort for FakeDownload {
     }
 }
 
+struct PanicDownload;
+
+impl DownloadPort for PanicDownload {
+    fn download<'a>(
+        &'a mut self,
+        _artifacts: Vec<DownloadArtifact>,
+        _cancellation: CancellationToken,
+        _progress: tokio::sync::mpsc::UnboundedSender<DownloadProgress>,
+    ) -> WorkerFuture<'a, Result<Vec<VerifiedDownload>, AppErrorDto>> {
+        panic!("checkpoint retry must not download packages")
+    }
+}
+
 #[derive(Default)]
 struct DeploymentCalls {
     prepared: Vec<JobStage>,
@@ -315,6 +343,53 @@ impl DeploymentPort for FakeDeployment {
     }
 }
 
+struct BlockingDeployment {
+    processes: Vec<ProcessDescriptor>,
+}
+
+impl DeploymentPort for BlockingDeployment {
+    type Prepared = ();
+
+    fn prepare<'a>(
+        &'a mut self,
+        _scope: DeploymentScope,
+        _mode: yet_another_microsoft_store_lib::applicability::SelectionMode,
+        _plan: yet_another_microsoft_store_lib::deployment_plan::DeploymentPlan,
+        _package_family_name: Option<String>,
+    ) -> WorkerFuture<'a, Result<DeploymentPreparation<Self::Prepared>, AppErrorDto>> {
+        Box::pin(async { Ok(DeploymentPreparation::Ready(())) })
+    }
+
+    fn commit<'a>(
+        &'a mut self,
+        _prepared: Self::Prepared,
+        _progress: tokio::sync::mpsc::UnboundedSender<u8>,
+    ) -> WorkerFuture<'a, Result<(), AppErrorDto>> {
+        Box::pin(async {
+            Err(AppErrorDto::new(
+                ErrorCode::PackageInUse,
+                RetryAdvice::Retry,
+            ))
+        })
+    }
+
+    fn blocking_processes<'a>(
+        &'a mut self,
+        _package_family_name: String,
+    ) -> WorkerFuture<'a, Result<Vec<ProcessDescriptor>, AppErrorDto>> {
+        let processes = self.processes.clone();
+        Box::pin(async move { Ok(processes) })
+    }
+
+    fn reconcile<'a>(
+        &'a mut self,
+        _scope: DeploymentScope,
+        _targets: Vec<JobTarget>,
+    ) -> WorkerFuture<'a, Result<ReconciliationOutcome, AppErrorDto>> {
+        Box::pin(async { Ok(ReconciliationOutcome::Converged) })
+    }
+}
+
 fn package_graph() -> PackageGraph {
     PackageGraph {
         product_id: Some("product-1".to_owned()),
@@ -365,6 +440,7 @@ fn queued_job(job_id: &str, now: i64) -> Job {
         architecture: None,
         language: None,
         error: None,
+        blocked_processes: Vec::new(),
         created_at: now,
         updated_at: now,
     }
@@ -438,6 +514,81 @@ fn seed_deploying_job(store: &Persistence, job_id: &str) {
             JobStage::Deploying,
         ],
     );
+}
+
+fn seed_blocked_checkpoint(database: &TestDatabase, job_id: &str) -> PathBuf {
+    let store = Persistence::open(&database.0).expect("checkpoint store");
+    seed_deploying_job(&store, job_id);
+    let cache_root = database.0.with_extension("cache");
+    let verified_root = cache_root.join("verified");
+    fs::create_dir_all(&verified_root).expect("verified root");
+    let path = verified_root.join("main.msix");
+    fs::write(&path, b"x").expect("verified package");
+    let sha256 = format!("{:x}", Sha256::digest(b"x"));
+    store
+        .upsert_cache_entry(&CacheEntry {
+            cache_key: "cache-main".to_owned(),
+            job_id: Some(job_id.to_owned()),
+            update_id: "main-update".to_owned(),
+            path: path.to_string_lossy().into_owned(),
+            size: 1,
+            sha256: sha256.clone(),
+            state: CacheState::Verified,
+            last_accessed_at: 100,
+        })
+        .expect("cache entry");
+    let lease = store
+        .acquire_worker_lease("seed-worker", 100, 60)
+        .expect("lease query")
+        .expect("seed lease");
+    let deploying = store.job_snapshot(job_id).unwrap().unwrap();
+    let ready = store
+        .save_deployment_checkpoint_leased(
+            job_id,
+            deploying.sequence,
+            &DeploymentCheckpoint {
+                product_id: "product-1".to_owned(),
+                main_update_id: "main-update".to_owned(),
+                main_version: PackageVersion::new(1, 0, 0, 0),
+                content_id: Some("content-main".to_owned()),
+                packages: vec![DeploymentCheckpointPackage {
+                    role: JobTargetRole::Main,
+                    order: 0,
+                    cache_key: "cache-main".to_owned(),
+                    update_id: "main-update".to_owned(),
+                    identity_name: "Example.App".to_owned(),
+                    publisher: "CN=Example".to_owned(),
+                    version: "1.0.0.0".to_owned(),
+                    architecture: Architecture::X64,
+                    resource_id: None,
+                    package_kind: PackageKind::Main,
+                    format: PackageFormat::Msix,
+                    expected_size: 1,
+                    sha256,
+                }],
+            },
+            100,
+            &lease,
+            100,
+        )
+        .expect("checkpoint ready");
+    store
+        .append_job_event_leased(
+            job_id,
+            ready.sequence,
+            JobEvent::DeploymentBlocked {
+                processes: vec![ProcessDescriptor {
+                    pid: 420,
+                    name: "Example.exe".to_owned(),
+                }],
+            },
+            100,
+            &lease,
+            100,
+        )
+        .expect("deployment blocked");
+    assert!(store.release_worker_lease(&lease).expect("release lease"));
+    path
 }
 
 fn config(owner_id: &str, cache_root: PathBuf) -> WorkerConfig {
@@ -579,6 +730,144 @@ async fn happy_path_freezes_safe_targets_and_persists_deploying_before_commit() 
         stored.event,
         JobEvent::DeploymentProgressRecorded { percentage: 35 }
     )));
+}
+
+#[tokio::test]
+async fn package_in_use_preserves_checkpoint_and_records_blocking_processes() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("store");
+    store
+        .append_job_event(
+            "job-blocked",
+            0,
+            JobEvent::Created {
+                job: queued_job("job-blocked", 100),
+            },
+            100,
+        )
+        .expect("create");
+    let mut worker = JobWorker::new(
+        Persistence::open(&database.0).expect("worker store"),
+        config("worker-blocked", database.0.with_extension("cache")),
+        FakeResolver(package_graph()),
+        FakeHost,
+        FakeDownload {
+            delay: Duration::ZERO,
+        },
+        BlockingDeployment {
+            processes: vec![ProcessDescriptor {
+                pid: 420,
+                name: "Example.exe".to_owned(),
+            }],
+        },
+        TestClock::new(100),
+    );
+
+    assert!(matches!(
+        worker.run_once().await.expect("blocked run"),
+        RunOnceOutcome::Processed {
+            stage: JobStage::AwaitingProcessExit,
+            ..
+        }
+    ));
+    let blocked = store.job_snapshot("job-blocked").unwrap().unwrap();
+    assert_eq!(
+        blocked.job.blocked_processes,
+        vec![ProcessDescriptor {
+            pid: 420,
+            name: "Example.exe".to_owned(),
+        }]
+    );
+    assert_eq!(blocked.job.error.unwrap().code, ErrorCode::PackageInUse);
+    assert!(store
+        .deployment_checkpoint("job-blocked")
+        .expect("checkpoint query")
+        .is_some());
+}
+
+#[tokio::test]
+async fn retry_deployment_after_restart_uses_checkpoint_without_resolving_or_downloading() {
+    let database = TestDatabase::new();
+    seed_blocked_checkpoint(&database, "job-retry");
+    let store = Persistence::open(&database.0).expect("store");
+    let blocked = store.job_snapshot("job-retry").unwrap().unwrap();
+    store
+        .enqueue_job_command(&command(
+            "job-retry",
+            JobControl::RetryDeployment,
+            blocked.sequence,
+        ))
+        .expect("retry command");
+    let calls = Arc::new(Mutex::new(DeploymentCalls::default()));
+    let mut worker = JobWorker::new(
+        Persistence::open(&database.0).expect("worker store"),
+        config("retry-worker", database.0.with_extension("cache")),
+        PanicResolver,
+        FakeHost,
+        PanicDownload,
+        FakeDeployment {
+            calls: calls.clone(),
+            reconciliation: ReconciliationOutcome::Converged,
+            prepare_delay: Duration::ZERO,
+            commit_delay: Duration::ZERO,
+            expire_clock_on_prepare: None,
+            expire_clock: None,
+        },
+        TestClock::new(100),
+    );
+
+    assert!(matches!(
+        worker.run_once().await.expect("retry run"),
+        RunOnceOutcome::Processed {
+            stage: JobStage::Completed,
+            ..
+        }
+    ));
+    let calls = calls.lock().expect("calls");
+    assert_eq!(calls.prepared.len(), 1);
+    assert_eq!(calls.committed, 1);
+}
+
+#[tokio::test]
+async fn retry_deployment_fails_closed_when_checkpoint_cache_is_missing() {
+    let database = TestDatabase::new();
+    let path = seed_blocked_checkpoint(&database, "job-retry-missing");
+    fs::remove_file(path).expect("remove cached package");
+    let store = Persistence::open(&database.0).expect("store");
+    let blocked = store.job_snapshot("job-retry-missing").unwrap().unwrap();
+    store
+        .enqueue_job_command(&command(
+            "job-retry-missing",
+            JobControl::RetryDeployment,
+            blocked.sequence,
+        ))
+        .expect("retry command");
+    let calls = Arc::new(Mutex::new(DeploymentCalls::default()));
+    let mut worker = JobWorker::new(
+        Persistence::open(&database.0).expect("worker store"),
+        config("retry-worker", database.0.with_extension("cache")),
+        PanicResolver,
+        FakeHost,
+        PanicDownload,
+        FakeDeployment {
+            calls: calls.clone(),
+            reconciliation: ReconciliationOutcome::Converged,
+            prepare_delay: Duration::ZERO,
+            commit_delay: Duration::ZERO,
+            expire_clock_on_prepare: None,
+            expire_clock: None,
+        },
+        TestClock::new(100),
+    );
+
+    assert!(matches!(
+        worker.run_once().await.expect("retry run"),
+        RunOnceOutcome::Processed {
+            stage: JobStage::Failed,
+            ..
+        }
+    ));
+    assert_eq!(calls.lock().expect("calls").committed, 0);
 }
 
 #[tokio::test]

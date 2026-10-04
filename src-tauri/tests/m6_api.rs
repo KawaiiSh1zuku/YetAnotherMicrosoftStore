@@ -9,8 +9,8 @@ use tauri_api::{
     ApiAppDetails, ApiAppSettings, ApiBackend, ApiCatalogProduct, ApiDeploymentScope, ApiFuture,
     ApiInventorySnapshot, ApiJobSnapshot, ApiUpdateCandidate, ApiUpdateScanResult,
     AppDetailsSource, DetailsRequest, JobChangedHint, JobControlRequest, JobView,
-    ListJobEventsRequest, SearchRequest, StartJobRequest, StartJobSpec, TauriApi,
-    JOB_CHANGED_EVENT,
+    ListJobEventsRequest, LocalProductAction, LocalProductActionKind, SearchRequest,
+    StartJobRequest, StartJobSpec, TauriApi, JOB_CHANGED_EVENT,
 };
 use yet_another_microsoft_store_lib::{
     applicability::{SelectedMainPackage, SelectionPreview},
@@ -27,7 +27,7 @@ use yet_another_microsoft_store_lib::{
     },
     job_events::{JobControl, JobEvent, StoredJobEvent},
     jobs::{Job, JobKind, JobSnapshot, JobStage},
-    package_process::TerminatePackageProcessesResult,
+    package_process::{ProcessDescriptor, TerminatePackageProcessesResult},
 };
 
 fn catalog_product() -> CatalogProduct {
@@ -88,6 +88,7 @@ fn downloading_job() -> JobSnapshot {
             architecture: Some(Architecture::X64),
             language: Some("en-US".to_owned()),
             error: None,
+            blocked_processes: Vec::new(),
             created_at: 10,
             updated_at: 20,
         },
@@ -117,6 +118,7 @@ fn job_snapshot_serialization_flattens_domain_state_and_derives_controls() {
             "language": "en-US",
             "allowedControls": ["pause", "cancel"],
             "error": null,
+            "blockedProcesses": [],
             "updatedAt": 20
         })
     );
@@ -132,6 +134,13 @@ fn catalog_and_details_serialization_match_the_frontend_contract() {
         "en-US".to_owned(),
         vec![Architecture::X64, Architecture::Arm64],
         selection_preview(),
+        LocalProductAction {
+            kind: LocalProductActionKind::Update,
+            deployment_scope: Some(ApiDeploymentScope::CurrentUser),
+            installed_version: Some("1.0.0.0".to_owned()),
+            available_version: Some("1.2.3.4".to_owned()),
+            launchable: true,
+        },
     )
     .expect("safe details should map to the API");
 
@@ -174,6 +183,13 @@ fn catalog_and_details_serialization_match_the_frontend_contract() {
                 },
                 "dependencyCount": 1,
                 "rejectionReason": null
+            },
+            "localAction": {
+                "kind": "update",
+                "deploymentScope": "current_user",
+                "installedVersion": "1.0.0.0",
+                "availableVersion": "1.2.3.4",
+                "launchable": true
             }
         })
     );
@@ -276,6 +292,23 @@ fn reconciliation_snapshot_exposes_no_user_controls() {
         .expect("reconciliation snapshot should map to API");
 
     assert!(api.allowed_controls.is_empty());
+}
+
+#[test]
+fn awaiting_process_exit_snapshot_exposes_only_retry_deployment_and_cancel() {
+    let mut snapshot = downloading_job();
+    snapshot.job.stage = JobStage::AwaitingProcessExit;
+    snapshot.job.bytes_done = 100;
+    snapshot.job.bytes_total = Some(100);
+    snapshot.job.deployment_progress = Some(0);
+
+    let api =
+        ApiJobSnapshot::from_domain(snapshot, None).expect("waiting snapshot should map to API");
+
+    assert_eq!(
+        api.allowed_controls,
+        vec![JobControl::RetryDeployment, JobControl::Cancel]
+    );
 }
 
 #[test]
@@ -400,6 +433,13 @@ impl ApiBackend for FixtureBackend {
                 product: catalog_product(),
                 supported_architectures: vec![Architecture::X64, Architecture::Arm64],
                 selection_preview: selection_preview(),
+                local_action: LocalProductAction {
+                    kind: LocalProductActionKind::Install,
+                    deployment_scope: None,
+                    installed_version: None,
+                    available_version: Some("1.2.3.4".to_owned()),
+                    launchable: false,
+                },
             })
         })
     }
@@ -447,11 +487,33 @@ impl ApiBackend for FixtureBackend {
     ) -> ApiFuture<'_, TerminatePackageProcessesResult> {
         Box::pin(async {
             Ok(TerminatePackageProcessesResult {
-                matched: 2,
-                terminated: 2,
-                failed: 0,
+                matched: vec![
+                    ProcessDescriptor {
+                        pid: 420,
+                        name: "Terminal.exe".to_owned(),
+                    },
+                    ProcessDescriptor {
+                        pid: 421,
+                        name: "OpenConsole.exe".to_owned(),
+                    },
+                ],
+                terminated: vec![
+                    ProcessDescriptor {
+                        pid: 420,
+                        name: "Terminal.exe".to_owned(),
+                    },
+                    ProcessDescriptor {
+                        pid: 421,
+                        name: "OpenConsole.exe".to_owned(),
+                    },
+                ],
+                remaining: Vec::new(),
             })
         })
+    }
+
+    fn launch_installed_app(&self, _product_id: String) -> ApiFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 
     fn get_job(&self, _job_id: String) -> ApiFuture<'_, Option<JobView>> {
@@ -643,16 +705,47 @@ async fn facade_exposes_the_complete_closed_command_set() {
         ThemeMode::Dark
     );
     api.clear_cache().await.expect("cache clear should succeed");
+    api.launch_installed_app("9NBLGGH4NNS1".to_owned())
+        .await
+        .expect("installed application launch should succeed");
     assert_eq!(
         api.terminate_job_package_processes("job-1".to_owned())
             .await
             .expect("safe job process termination should succeed"),
         TerminatePackageProcessesResult {
-            matched: 2,
-            terminated: 2,
-            failed: 0,
+            matched: vec![
+                ProcessDescriptor {
+                    pid: 420,
+                    name: "Terminal.exe".to_owned()
+                },
+                ProcessDescriptor {
+                    pid: 421,
+                    name: "OpenConsole.exe".to_owned()
+                },
+            ],
+            terminated: vec![
+                ProcessDescriptor {
+                    pid: 420,
+                    name: "Terminal.exe".to_owned()
+                },
+                ProcessDescriptor {
+                    pid: 421,
+                    name: "OpenConsole.exe".to_owned()
+                },
+            ],
+            remaining: Vec::new(),
         }
     );
+}
+
+#[tokio::test]
+async fn installed_application_launch_rejects_an_untrusted_product_identifier() {
+    let api = TauriApi::new(FixtureBackend::default());
+    let error = api
+        .launch_installed_app(r"product\other".to_owned())
+        .await
+        .expect_err("untrusted product id must fail before reaching the backend");
+    assert_eq!(error.code, ErrorCode::DeploymentDenied);
 }
 
 #[tokio::test]

@@ -39,6 +39,7 @@ use crate::{
         SystemDeploymentPort, SystemHostEnvironment, WorkerConfig, WorkerError,
     },
     jobs::{Job, JobKind, JobSnapshot, JobStage},
+    package_application::{PackageApplicationError, PackageApplicationManager},
     package_process::{PackageProcessManager, TerminatePackageProcessesResult},
     persistence::{Persistence, PersistenceError},
     resolver::{PackageGraph, PackageResolver, StoreLibResolverAdapter},
@@ -47,7 +48,7 @@ use crate::{
         ApiAppSettings, ApiBackend, ApiCatalogProduct, ApiDeploymentScope, ApiFuture,
         ApiUpdateCandidate, ApiUpdateScanResult, ApiUpdateSkipReason, ApiUpdateSkipped,
         AppDetailsSource, DetailsRequest, JobControlRequest, JobView, ListJobEventsRequest,
-        SearchRequest, StartJobSpec,
+        LocalProductAction, LocalProductActionKind, SearchRequest, StartJobSpec,
     },
 };
 
@@ -253,6 +254,7 @@ impl ProductionApiBackend {
             architecture: None,
             language: None,
             error: None,
+            blocked_processes: Vec::new(),
             created_at: now,
             updated_at: now,
         };
@@ -333,24 +335,86 @@ impl ApiBackend for ProductionApiBackend {
                 .await
                 .map_err(|error| AppErrorDto::from(&error))?;
             validate_resolved_product(&graph, &request.product_id, &request.market)?;
+            let inventory = tokio::task::spawn_blocking(|| {
+                DeploymentCoordinator::scan(DeploymentScope::AllUsers)
+            })
+            .await
+            .map_err(|_| runtime_error(ErrorCode::DeploymentFailed, RetryAdvice::Retry))?
+            .map_err(|error| AppErrorDto::from(&error))?;
+            let installed = product.package_family_name.as_deref().and_then(|family| {
+                inventory
+                    .records
+                    .iter()
+                    .filter(|record| {
+                        record.package_kind == InventoryPackageKind::Main
+                            && record.package_family_name.eq_ignore_ascii_case(family)
+                    })
+                    .max_by_key(|record| record.version)
+            });
             let host = system_host_capabilities()?;
             let preferred_languages = prioritized_languages(&settings);
+            let installed_selection = installed
+                .map(|record| {
+                    let architecture =
+                        parse_architecture(&record.architecture).ok_or_else(|| {
+                            runtime_error(ErrorCode::UnsupportedPackageType, RetryAdvice::Never)
+                        })?;
+                    Ok::<InstalledPackage, AppErrorDto>(InstalledPackage {
+                        identity_name: record.identity_name.clone(),
+                        publisher: Some(record.publisher.clone()),
+                        version: PackageVersion::new(
+                            record.version[0],
+                            record.version[1],
+                            record.version[2],
+                            record.version[3],
+                        ),
+                        architecture,
+                    })
+                })
+                .transpose()?
+                .into_iter()
+                .collect::<Vec<_>>();
             let preferences = SelectionPreferences {
                 market: request.market,
                 preferred_architectures: settings.preferred_architectures,
                 preferred_languages,
-                mode: SelectionMode::Install,
+                mode: if installed.is_some() {
+                    SelectionMode::Update
+                } else {
+                    SelectionMode::Install
+                },
             };
-            let selection_preview = preview_packages(&graph, &host, &preferences, &[]);
+            let selection_preview =
+                preview_packages(&graph, &host, &preferences, &installed_selection);
             let supported_architectures = selection_preview
                 .main
                 .as_ref()
                 .map(|main| vec![main.architecture])
                 .unwrap_or_default();
+            let launchable = if installed.is_some_and(|record| record.installed_for_current_user) {
+                let family = product.package_family_name.clone().ok_or_else(|| {
+                    runtime_error(ErrorCode::SourceIdentityMismatch, RetryAdvice::Never)
+                })?;
+                tokio::task::spawn_blocking(move || {
+                    PackageApplicationManager::is_launchable(&family)
+                })
+                .await
+                .map_err(|_| runtime_error(ErrorCode::DeploymentFailed, RetryAdvice::Retry))?
+                .or_else(|error| match error {
+                    PackageApplicationError::NotInstalled
+                    | PackageApplicationError::NotLaunchable => Ok(false),
+                    error => Err(package_application_error(error)),
+                })?
+            } else {
+                false
+            };
+            let local_action =
+                derive_local_product_action(&product, installed, &selection_preview, launchable)?;
             Ok(AppDetailsSource {
                 product,
                 supported_architectures,
                 selection_preview,
+                local_action,
             })
         })
     }
@@ -548,7 +612,7 @@ impl ApiBackend for ProductionApiBackend {
                 .job_snapshot(&job_id)
                 .map_err(persistence_error)?
                 .ok_or_else(|| runtime_error(ErrorCode::DeploymentDenied, RetryAdvice::Never))?;
-            if snapshot.job.stage != JobStage::Failed
+            if snapshot.job.stage != JobStage::AwaitingProcessExit
                 || !snapshot
                     .job
                     .error
@@ -570,6 +634,26 @@ impl ApiBackend for ProductionApiBackend {
             })
             .await
             .map_err(|_| runtime_error(ErrorCode::PackageInUse, RetryAdvice::Retry))?
+        })
+    }
+
+    fn launch_installed_app(&self, product_id: String) -> ApiFuture<'_, ()> {
+        let backend = self.clone();
+        Box::pin(async move {
+            let product = backend
+                .open_persistence()?
+                .product(&product_id)
+                .map_err(persistence_error)?
+                .ok_or_else(|| runtime_error(ErrorCode::DeploymentDenied, RetryAdvice::Never))?;
+            let package_family_name = product.package_family_name.ok_or_else(|| {
+                runtime_error(ErrorCode::SourceIdentityMismatch, RetryAdvice::Never)
+            })?;
+            tokio::task::spawn_blocking(move || {
+                PackageApplicationManager::launch(&package_family_name)
+                    .map_err(package_application_error)
+            })
+            .await
+            .map_err(|_| runtime_error(ErrorCode::DeploymentFailed, RetryAdvice::Retry))?
         })
     }
 
@@ -910,6 +994,80 @@ impl UpdateResolutionOutcome {
     }
 }
 
+fn derive_local_product_action(
+    product: &CatalogProduct,
+    installed: Option<&PackageInventoryRecord>,
+    selection_preview: &crate::applicability::SelectionPreview,
+    launchable: bool,
+) -> Result<LocalProductAction, AppErrorDto> {
+    let available_version = selection_preview
+        .main
+        .as_ref()
+        .map(|package| package.version.to_string());
+    let Some(installed) = installed else {
+        return Ok(LocalProductAction {
+            kind: LocalProductActionKind::Install,
+            deployment_scope: None,
+            installed_version: None,
+            available_version,
+            launchable: false,
+        });
+    };
+
+    let identity_matches = product
+        .package_family_name
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(&installed.package_family_name))
+        && product
+            .package_name
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(&installed.identity_name))
+        && product
+            .package_publisher
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(&installed.publisher));
+    if !identity_matches {
+        return Err(runtime_error(
+            ErrorCode::SourceIdentityMismatch,
+            RetryAdvice::Never,
+        ));
+    }
+
+    let installed_version = PackageVersion::new(
+        installed.version[0],
+        installed.version[1],
+        installed.version[2],
+        installed.version[3],
+    );
+    let catalog_version = selection_preview
+        .main
+        .as_ref()
+        .map(|package| package.version);
+    if selection_preview.installable
+        && catalog_version.is_some_and(|version| version > installed_version)
+    {
+        let deployment_scope = derive_update_scope(installed);
+        return Ok(LocalProductAction {
+            kind: LocalProductActionKind::Update,
+            deployment_scope: Some(match deployment_scope {
+                DeploymentScope::CurrentUser => ApiDeploymentScope::CurrentUser,
+                DeploymentScope::AllUsers => ApiDeploymentScope::AllUsers,
+            }),
+            installed_version: Some(installed_version.to_string()),
+            available_version,
+            launchable,
+        });
+    }
+
+    Ok(LocalProductAction {
+        kind: LocalProductActionKind::Open,
+        deployment_scope: None,
+        installed_version: Some(installed_version.to_string()),
+        available_version,
+        launchable,
+    })
+}
+
 async fn resolve_update_package(
     job: UpdateResolutionJob,
     host: &HostCapabilities,
@@ -1189,6 +1347,22 @@ fn persistence_error(_error: PersistenceError) -> AppErrorDto {
     runtime_error(ErrorCode::DeploymentFailed, RetryAdvice::Retry)
 }
 
+fn package_application_error(error: PackageApplicationError) -> AppErrorDto {
+    match error {
+        PackageApplicationError::InvalidPackageFamilyName
+        | PackageApplicationError::NotInstalled
+        | PackageApplicationError::NotLaunchable => {
+            runtime_error(ErrorCode::DeploymentDenied, RetryAdvice::Never)
+        }
+        PackageApplicationError::UnsupportedPlatform => {
+            runtime_error(ErrorCode::UnsupportedPackageType, RetryAdvice::Never)
+        }
+        PackageApplicationError::WindowsApi(_) => {
+            runtime_error(ErrorCode::DeploymentFailed, RetryAdvice::Retry)
+        }
+    }
+}
+
 fn worker_error(error: WorkerError) -> AppErrorDto {
     match error {
         WorkerError::Persistence(error) => persistence_error(error),
@@ -1414,8 +1588,151 @@ mod tests {
     };
 
     use super::{
-        collect_bounded, default_settings, prioritized_languages, UPDATE_SCAN_CONCURRENCY_LIMIT,
+        collect_bounded, default_settings, derive_local_product_action, prioritized_languages,
+        UPDATE_SCAN_CONCURRENCY_LIMIT,
     };
+    use crate::{
+        applicability::{SelectedMainPackage, SelectionPreview},
+        catalog::{CatalogMetadataState, CatalogProduct},
+        domain::{Architecture, PackageFormat, PackageVersion},
+        inventory::{PackageInventoryRecord, PackageKind},
+        tauri_api::LocalProductActionKind,
+    };
+
+    fn product() -> CatalogProduct {
+        CatalogProduct {
+            product_id: "9DETAILS".to_owned(),
+            package_family_name: Some("Example.App_123".to_owned()),
+            app_name: Some("Example".to_owned()),
+            package_name: Some("Example.App".to_owned()),
+            publisher: Some("Example Publisher".to_owned()),
+            package_publisher: Some("CN=Example".to_owned()),
+            icon_url: None,
+            metadata_state: CatalogMetadataState::Complete,
+            package_formats: vec!["msix".to_owned()],
+            framework_dependencies: Vec::new(),
+        }
+    }
+
+    fn installed(version: [u16; 4]) -> PackageInventoryRecord {
+        PackageInventoryRecord {
+            app_name: "Example".to_owned(),
+            package_name: "Example.App".to_owned(),
+            identity_name: "Example.App".to_owned(),
+            publisher: "CN=Example".to_owned(),
+            package_family_name: "Example.App_123".to_owned(),
+            package_full_name: format!(
+                "Example.App_{}.{}.{}.{}_x64__123",
+                version[0], version[1], version[2], version[3]
+            ),
+            version,
+            architecture: "x64".to_owned(),
+            resource_id: String::new(),
+            package_kind: PackageKind::Main,
+            signature_kind: "Store".to_owned(),
+            status: "Ok".to_owned(),
+            installed_for_current_user: true,
+            installed_user_count: 1,
+            has_other_users: false,
+            provisioned_for_future_users: false,
+        }
+    }
+
+    fn preview(version: Option<PackageVersion>) -> SelectionPreview {
+        SelectionPreview {
+            installable: version.is_some(),
+            main: version.map(|version| SelectedMainPackage {
+                version,
+                architecture: Architecture::X64,
+                format: PackageFormat::Msix,
+                language: None,
+            }),
+            dependency_count: 0,
+            rejection_reason: None,
+        }
+    }
+
+    #[test]
+    fn details_action_installs_only_when_the_product_is_not_installed() {
+        let action = derive_local_product_action(
+            &product(),
+            None,
+            &preview(Some(PackageVersion::new(2, 0, 0, 0))),
+            false,
+        )
+        .expect("uninstalled product should be installable");
+
+        assert_eq!(action.kind, LocalProductActionKind::Install);
+        assert_eq!(action.installed_version, None);
+        assert_eq!(action.available_version.as_deref(), Some("2.0.0.0"));
+    }
+
+    #[test]
+    fn details_action_updates_only_to_a_strictly_newer_catalog_version() {
+        let record = installed([1, 0, 0, 0]);
+        let action = derive_local_product_action(
+            &product(),
+            Some(&record),
+            &preview(Some(PackageVersion::new(2, 0, 0, 0))),
+            true,
+        )
+        .expect("newer catalog package should be an update");
+
+        assert_eq!(action.kind, LocalProductActionKind::Update);
+        assert_eq!(action.installed_version.as_deref(), Some("1.0.0.0"));
+        assert_eq!(action.available_version.as_deref(), Some("2.0.0.0"));
+    }
+
+    #[test]
+    fn details_action_opens_current_or_catalog_ahead_installations() {
+        for (installed_version, catalog_version) in [
+            ([2, 0, 0, 0], PackageVersion::new(2, 0, 0, 0)),
+            ([3, 0, 0, 0], PackageVersion::new(2, 0, 0, 0)),
+        ] {
+            let record = installed(installed_version);
+            let action = derive_local_product_action(
+                &product(),
+                Some(&record),
+                &preview(Some(catalog_version)),
+                true,
+            )
+            .expect("installed current or ahead package should open");
+
+            assert_eq!(action.kind, LocalProductActionKind::Open);
+            assert!(action.launchable);
+        }
+    }
+
+    #[test]
+    fn details_action_keeps_unlaunchable_installed_packages_as_open() {
+        let record = installed([2, 0, 0, 0]);
+        let action = derive_local_product_action(
+            &product(),
+            Some(&record),
+            &preview(Some(PackageVersion::new(2, 0, 0, 0))),
+            false,
+        )
+        .expect("installed package remains installed even without an app entry");
+
+        assert_eq!(action.kind, LocalProductActionKind::Open);
+        assert!(!action.launchable);
+    }
+
+    #[test]
+    fn details_action_rejects_catalog_and_inventory_identity_mismatch() {
+        let mut record = installed([1, 0, 0, 0]);
+        record.publisher = "CN=Someone Else".to_owned();
+
+        let error = derive_local_product_action(
+            &product(),
+            Some(&record),
+            &preview(Some(PackageVersion::new(2, 0, 0, 0))),
+            true,
+        )
+        .expect_err("mismatched publisher must fail closed");
+
+        assert_eq!(error.code, crate::error::ErrorCode::SourceIdentityMismatch);
+    }
 
     #[test]
     fn language_priorities_preserve_order_and_add_one_english_fallback() {

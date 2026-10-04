@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use crate::{
     job_events::{
-        safe_identifier, validate_command, CommandOutcome, JobCommand, JobControl, JobEvent,
-        JobEventKind, JobTarget, StoredJobEvent, WorkerLease,
+        safe_identifier, validate_command, CommandOutcome, DeploymentCheckpoint, JobCommand,
+        JobControl, JobEvent, JobEventKind, JobTarget, StoredJobEvent, WorkerLease,
     },
     jobs::{Job, JobSnapshot, JobStage},
     persistence::{load_job, save_job_projection, PersistenceError},
@@ -51,6 +51,80 @@ pub(crate) fn append_leased(
     )?;
     transaction.commit()?;
     Ok(result)
+}
+
+pub(crate) fn save_deployment_checkpoint_leased(
+    connection: &Connection,
+    job_id: &str,
+    expected_sequence: u64,
+    checkpoint: &DeploymentCheckpoint,
+    occurred_at: i64,
+    lease: &WorkerLease,
+    now: i64,
+) -> Result<JobSnapshot, PersistenceError> {
+    if !checkpoint.is_safe() {
+        return Err(PersistenceError::UnsafeJobEvent);
+    }
+    let transaction = connection.unchecked_transaction()?;
+    let snapshot = append_in_transaction(
+        &transaction,
+        job_id,
+        expected_sequence,
+        JobEvent::DeploymentCheckpointReady,
+        occurred_at,
+        Some((lease, now)),
+    )?;
+    transaction.execute(
+        "INSERT INTO deployment_checkpoints (job_id, sequence, checkpoint_json, created_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(job_id) DO UPDATE SET sequence = excluded.sequence,
+             checkpoint_json = excluded.checkpoint_json, created_at = excluded.created_at",
+        params![
+            job_id,
+            as_i64(snapshot.sequence, "deployment_checkpoint.sequence")?,
+            serde_json::to_string(checkpoint)?,
+            occurred_at
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(snapshot)
+}
+
+pub(crate) fn deployment_checkpoint(
+    connection: &Connection,
+    job_id: &str,
+) -> Result<Option<DeploymentCheckpoint>, PersistenceError> {
+    let row: Option<(i64, String)> = connection
+        .query_row(
+            "SELECT sequence, checkpoint_json FROM deployment_checkpoints WHERE job_id = ?1",
+            [job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((sequence, json)) = row else {
+        return Ok(None);
+    };
+    let sequence = as_u64(sequence, "deployment_checkpoint.sequence")?;
+    let snapshot =
+        current_snapshot(connection, job_id)?.ok_or(PersistenceError::EventHistoryInvalid)?;
+    if sequence > snapshot.sequence {
+        return Err(PersistenceError::EventHistoryInvalid);
+    }
+    let event_kind: String = connection.query_row(
+        "SELECT event_kind FROM job_events WHERE job_id = ?1 AND sequence = ?2",
+        params![job_id, as_i64(sequence, "deployment_checkpoint.sequence")?],
+        |row| row.get(0),
+    )?;
+    if event_kind != "deployment_checkpoint_ready" {
+        return Err(PersistenceError::EventHistoryInvalid);
+    }
+    let checkpoint: DeploymentCheckpoint = serde_json::from_str(&json)?;
+    if !checkpoint.is_safe() {
+        return Err(PersistenceError::InvalidStoredValue(
+            "deployment_checkpoint",
+        ));
+    }
+    Ok(Some(checkpoint))
 }
 
 fn append_in_transaction(
@@ -111,6 +185,19 @@ fn append_in_transaction(
     }
     if let JobEvent::SelectionRecorded { targets, .. } = &event {
         insert_targets(transaction, job_id, targets)?;
+    }
+    if matches!(
+        &event,
+        JobEvent::StageChanged {
+            stage: JobStage::Resolving
+        } | JobEvent::Failed { .. }
+            | JobEvent::Completed
+            | JobEvent::Cancelled
+    ) {
+        transaction.execute(
+            "DELETE FROM deployment_checkpoints WHERE job_id = ?1",
+            [job_id],
+        )?;
     }
     save_job_projection(transaction, &job)?;
     transaction.execute(
@@ -371,7 +458,14 @@ pub(crate) fn enqueue_command(
             | JobStage::NeedsReconciliation
             | JobStage::Completed
             | JobStage::Cancelled
-    ) {
+    ) || (snapshot.job.stage == JobStage::AwaitingProcessExit
+        && !matches!(
+            command.control,
+            JobControl::RetryDeployment | JobControl::Cancel
+        ))
+        || (command.control == JobControl::RetryDeployment
+            && snapshot.job.stage != JobStage::AwaitingProcessExit)
+    {
         return Err(PersistenceError::CommandConflict);
     }
     transaction.execute(
@@ -497,6 +591,12 @@ pub(crate) fn apply_command(
                 JobControl::Resume,
                 JobEvent::StageChanged {
                     stage: JobStage::Resolving
+                }
+            )
+            | (
+                JobControl::RetryDeployment,
+                JobEvent::StageChanged {
+                    stage: JobStage::Deploying
                 }
             )
     );
@@ -801,6 +901,7 @@ fn control_text(control: JobControl) -> &'static str {
     match control {
         JobControl::Pause => "pause",
         JobControl::Resume => "resume",
+        JobControl::RetryDeployment => "retry_deployment",
         JobControl::Cancel => "cancel",
     }
 }
@@ -809,6 +910,7 @@ fn parse_control(value: &str) -> Result<JobControl, PersistenceError> {
     match value {
         "pause" => Ok(JobControl::Pause),
         "resume" => Ok(JobControl::Resume),
+        "retry_deployment" => Ok(JobControl::RetryDeployment),
         "cancel" => Ok(JobControl::Cancel),
         _ => Err(PersistenceError::InvalidStoredValue("job_command.control")),
     }
@@ -830,6 +932,8 @@ fn kind_text(kind: JobEventKind) -> &'static str {
         JobEventKind::StageChanged => "stage_changed",
         JobEventKind::ProgressRecorded => "progress_recorded",
         JobEventKind::DeploymentProgressRecorded => "deployment_progress_recorded",
+        JobEventKind::DeploymentCheckpointReady => "deployment_checkpoint_ready",
+        JobEventKind::DeploymentBlocked => "deployment_blocked",
         JobEventKind::SelectionRecorded => "selection_recorded",
         JobEventKind::Failed => "failed",
         JobEventKind::Completed => "completed",

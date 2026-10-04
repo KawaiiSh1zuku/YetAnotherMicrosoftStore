@@ -3,10 +3,14 @@ use std::{fs, path::PathBuf};
 use rusqlite::Connection;
 use yet_another_microsoft_store_lib::{
     deployment::DeploymentScope,
-    domain::{Architecture, PackageKind},
+    domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
     error::{AppErrorDto, ErrorCode, RetryAdvice},
-    job_events::{CommandOutcome, JobCommand, JobControl, JobEvent, JobTarget, JobTargetRole},
+    job_events::{
+        CommandOutcome, DeploymentCheckpoint, DeploymentCheckpointPackage, JobCommand, JobControl,
+        JobEvent, JobTarget, JobTargetRole,
+    },
     jobs::{Job, JobKind, JobStage},
+    package_process::ProcessDescriptor,
     persistence::{Persistence, PersistenceError},
 };
 
@@ -48,6 +52,7 @@ fn job(job_id: &str) -> Job {
         architecture: None,
         language: None,
         error: None,
+        blocked_processes: Vec::new(),
         created_at: 100,
         updated_at: 100,
     }
@@ -434,6 +439,103 @@ fn semantic_events_reject_illegal_terminal_transition_and_progress_regression() 
         ),
         Err(PersistenceError::EventHistoryInvalid)
     ));
+}
+
+#[test]
+fn checkpoint_ready_and_blocked_events_require_a_deploying_job_and_retry_control() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("open database");
+    created(&store, "job-checkpoint-events");
+    let mut sequence = 1;
+    for stage in [
+        JobStage::Resolving,
+        JobStage::Selecting,
+        JobStage::Downloading,
+        JobStage::Verifying,
+        JobStage::Deploying,
+    ] {
+        store
+            .append_job_event(
+                "job-checkpoint-events",
+                sequence,
+                JobEvent::StageChanged { stage },
+                100 + sequence as i64,
+            )
+            .expect("advance job");
+        sequence += 1;
+    }
+    let lease = store
+        .acquire_worker_lease("worker", 200, 100)
+        .unwrap()
+        .unwrap();
+    let checkpoint = DeploymentCheckpoint {
+        product_id: "product".to_owned(),
+        main_update_id: "update-main".to_owned(),
+        main_version: PackageVersion::new(1, 2, 3, 4),
+        content_id: Some("content-main".to_owned()),
+        packages: vec![DeploymentCheckpointPackage {
+            role: JobTargetRole::Main,
+            order: 0,
+            cache_key: "cache-main".to_owned(),
+            update_id: "update-main".to_owned(),
+            identity_name: "Example.App".to_owned(),
+            publisher: "CN=Example".to_owned(),
+            version: "1.2.3.4".to_owned(),
+            architecture: Architecture::X64,
+            resource_id: None,
+            package_kind: PackageKind::Main,
+            format: PackageFormat::Msix,
+            expected_size: 4096,
+            sha256: "abcdef".to_owned(),
+        }],
+    };
+    let ready = store
+        .save_deployment_checkpoint_leased(
+            "job-checkpoint-events",
+            sequence,
+            &checkpoint,
+            210,
+            &lease,
+            210,
+        )
+        .expect("checkpoint becomes ready atomically");
+    let waiting = store
+        .append_job_event_leased(
+            "job-checkpoint-events",
+            ready.sequence,
+            JobEvent::DeploymentBlocked {
+                processes: vec![ProcessDescriptor {
+                    pid: 420,
+                    name: "Example.exe".to_owned(),
+                }],
+            },
+            211,
+            &lease,
+            211,
+        )
+        .expect("deployment block should persist");
+    assert_eq!(waiting.job.stage, JobStage::AwaitingProcessExit);
+
+    let resume = JobCommand {
+        command_id: "resume-blocked".to_owned(),
+        job_id: "job-checkpoint-events".to_owned(),
+        control: JobControl::Resume,
+        expected_sequence: waiting.sequence,
+        created_at: 212,
+        processed_at: None,
+        outcome: None,
+    };
+    assert!(matches!(
+        store.enqueue_job_command(&resume),
+        Err(PersistenceError::CommandConflict)
+    ));
+    store
+        .enqueue_job_command(&JobCommand {
+            command_id: "retry-blocked".to_owned(),
+            control: JobControl::RetryDeployment,
+            ..resume
+        })
+        .expect("dedicated retry deployment control is accepted");
 }
 
 #[test]

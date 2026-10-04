@@ -79,3 +79,13 @@
 - 部署调用为 `AddPackageAsync`、`StagePackageAsync` 与 `ProvisionPackageForAllUsersAsync` 安装进度处理器；进度作为单调事件持久化，完成前排空回调队列。
 - 更新部署在进入 `deploying` 前检查同 PFN 活跃进程；发现占用时返回 `package_in_use`。强制结束命令只允许该失败任务触发，并在获取终止句柄后再次查询 PFN，避免 PID 复用导致误杀。
 - 安装进度列和事件类型已合并进唯一初始 migration；没有偏离“未发布、不维护旧开发数据库升级链”的既定架构。
+
+## 2026-10-04 方案 B 根因与实现事实
+
+- 搜索进入详情页后始终显示“安装”的根因是前端只消费通用 selection preview，没有消费本机安装清单。当前详情 DTO 由后端基于 PFN、identity、publisher、版本和安装范围产生封闭的 `install | update | open` 动作；前端不再自行推断。
+- 验证阶段显示下载 100% 的根因是队列把完成的下载字节进度跨阶段保留展示。现在只有 `downloading` 展示字节进度，`verifying` 只展示“正在验证签名”，`deploying` 展示部署百分比。
+- 旧实现以部署前进程枚举预测包占用，可能在全新启动后产生永久假阳性。该行为已删除；只有 Windows 原生部署返回 `0x80073D02` 才进入 `package_in_use`。
+- 包占用不再投影为终态 `failed`。任务进入活动态 `awaiting_process_exit`，持久化安全进程描述符和部署 checkpoint；重启保持等待状态。
+- 专用 `retry_deployment` 从 checkpoint 和当前 verified cache 重建部署计划，不调用目录 resolver 或 downloader。缓存缺失、大小/哈希变化、越界路径、identity 或签名失败均关闭式失败。
+- 强制结束命令只接受可信 job ID，重新枚举 PFN，并返回 `matched/terminated/remaining` 描述符数组。残留进程以 `name (PID n)` 显示，不能由前端传 PID 触发终止。
+- 10 月 3 日记录中的“部署前检查占用、失败后 resume”已被本节方案替代，不再代表当前实现。

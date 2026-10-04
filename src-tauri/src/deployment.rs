@@ -37,6 +37,7 @@ pub enum DeploymentError {
     DeploymentFailed {
         operation: &'static str,
         message: String,
+        hresult: i32,
     },
     MissingPackageIdentity,
     PackageNotFound,
@@ -48,7 +49,9 @@ impl fmt::Display for DeploymentError {
             Self::UnsupportedPlatform => formatter.write_str("deployment probing requires Windows"),
             Self::WindowsApi(message) => formatter.write_str(message),
             Self::InvalidPackagePath(message) => formatter.write_str(message),
-            Self::DeploymentFailed { operation, message } => {
+            Self::DeploymentFailed {
+                operation, message, ..
+            } => {
                 write!(formatter, "{operation} failed: {message}")
             }
             Self::MissingPackageIdentity => {
@@ -391,7 +394,11 @@ fn deployment_result(
         } else {
             format!("HRESULT 0x{extended_error_code:08X}: {error_text}")
         };
-        Err(DeploymentError::DeploymentFailed { operation, message })
+        Err(DeploymentError::DeploymentFailed {
+            operation,
+            message,
+            hresult: extended_error_code,
+        })
     } else {
         Ok(())
     }

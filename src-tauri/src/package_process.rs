@@ -1,11 +1,27 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProcessDescriptor {
+    pub pid: u32,
+    pub name: String,
+}
+
+impl ProcessDescriptor {
+    pub fn is_safe(&self) -> bool {
+        self.pid != 0
+            && !self.name.is_empty()
+            && self.name.len() <= 520
+            && !self.name.chars().any(char::is_control)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminatePackageProcessesResult {
-    pub matched: u32,
-    pub terminated: u32,
-    pub failed: u32,
+    pub matched: Vec<ProcessDescriptor>,
+    pub terminated: Vec<ProcessDescriptor>,
+    pub remaining: Vec<ProcessDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,9 +44,11 @@ impl std::error::Error for PackageProcessError {}
 pub struct PackageProcessManager;
 
 impl PackageProcessManager {
-    pub fn matching_process_count(package_family_name: &str) -> Result<u32, PackageProcessError> {
+    pub fn matching_processes(
+        package_family_name: &str,
+    ) -> Result<Vec<ProcessDescriptor>, PackageProcessError> {
         validate_package_family(package_family_name)?;
-        platform::matching_process_ids(package_family_name).map(|processes| processes.len() as u32)
+        platform::matching_processes(package_family_name)
     }
 
     pub fn terminate(
@@ -79,10 +97,11 @@ mod platform {
         },
     };
 
-    use super::{PackageProcessError, TerminatePackageProcessesResult};
+    use super::{PackageProcessError, ProcessDescriptor, TerminatePackageProcessesResult};
 
     const SYNCHRONIZE_PROCESS: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
     const TERMINATION_WAIT_MS: u32 = 5_000;
+    const MAX_MATCHED_PROCESSES: usize = 128;
 
     struct OwnedHandle(HANDLE);
 
@@ -94,9 +113,9 @@ mod platform {
         }
     }
 
-    pub(super) fn matching_process_ids(
+    pub(super) fn matching_processes(
         package_family_name: &str,
-    ) -> Result<Vec<u32>, PackageProcessError> {
+    ) -> Result<Vec<ProcessDescriptor>, PackageProcessError> {
         let snapshot = OwnedHandle(
             unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
                 .map_err(|_| PackageProcessError::EnumerationFailed)?,
@@ -124,7 +143,13 @@ mod platform {
                             candidate.eq_ignore_ascii_case(package_family_name)
                         })
                     {
-                        matches.push(process_id);
+                        matches.push(ProcessDescriptor {
+                            pid: process_id,
+                            name: process_name(&entry),
+                        });
+                        if matches.len() >= MAX_MATCHED_PROCESSES {
+                            break;
+                        }
                     }
                 }
             }
@@ -138,17 +163,17 @@ mod platform {
     pub(super) fn terminate(
         package_family_name: &str,
     ) -> Result<TerminatePackageProcessesResult, PackageProcessError> {
-        let process_ids = matching_process_ids(package_family_name)?;
+        let matched = matching_processes(package_family_name)?;
         let mut result = TerminatePackageProcessesResult {
-            matched: process_ids.len() as u32,
-            terminated: 0,
-            failed: 0,
+            matched: matched.clone(),
+            terminated: Vec::new(),
+            remaining: Vec::new(),
         };
-        for process_id in process_ids {
+        for descriptor in matched {
             let access =
                 PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_PROCESS;
-            let Ok(handle) = (unsafe { OpenProcess(access, false, process_id) }) else {
-                result.failed += 1;
+            let Ok(handle) = (unsafe { OpenProcess(access, false, descriptor.pid) }) else {
+                result.remaining.push(descriptor);
                 continue;
             };
             let handle = OwnedHandle(handle);
@@ -157,18 +182,37 @@ mod platform {
                 .flatten()
                 .is_some_and(|candidate| candidate.eq_ignore_ascii_case(package_family_name));
             if !still_matches {
-                result.failed += 1;
+                result.remaining.push(descriptor);
                 continue;
             }
             let terminated = unsafe { TerminateProcess(handle.0, 1) }.is_ok()
                 && unsafe { WaitForSingleObject(handle.0, TERMINATION_WAIT_MS) } == WAIT_OBJECT_0;
             if terminated {
-                result.terminated += 1;
+                result.terminated.push(descriptor);
             } else {
-                result.failed += 1;
+                result.remaining.push(descriptor);
             }
         }
         Ok(result)
+    }
+
+    fn process_name(entry: &PROCESSENTRY32W) -> String {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+        let sanitized = name
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(260)
+            .collect::<String>();
+        if sanitized.is_empty() {
+            "unknown".to_owned()
+        } else {
+            sanitized
+        }
     }
 
     fn package_family_name_for_process(
@@ -200,11 +244,11 @@ mod platform {
 
 #[cfg(not(windows))]
 mod platform {
-    use super::{PackageProcessError, TerminatePackageProcessesResult};
+    use super::{PackageProcessError, ProcessDescriptor, TerminatePackageProcessesResult};
 
-    pub(super) fn matching_process_ids(
+    pub(super) fn matching_processes(
         _package_family_name: &str,
-    ) -> Result<Vec<u32>, PackageProcessError> {
+    ) -> Result<Vec<ProcessDescriptor>, PackageProcessError> {
         Err(PackageProcessError::EnumerationFailed)
     }
 
@@ -222,7 +266,7 @@ mod tests {
     #[test]
     fn rejects_untrusted_package_family_names_before_process_enumeration() {
         assert_eq!(
-            PackageProcessManager::matching_process_count("Family\\Other"),
+            PackageProcessManager::matching_processes("Family\\Other"),
             Err(PackageProcessError::InvalidPackageFamily)
         );
     }

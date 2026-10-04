@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{deployment::DeploymentScope, domain::Architecture, error::AppErrorDto};
+use crate::{
+    deployment::DeploymentScope, domain::Architecture, error::AppErrorDto,
+    package_process::ProcessDescriptor,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +22,7 @@ pub enum JobStage {
     Paused,
     Verifying,
     Deploying,
+    AwaitingProcessExit,
     Interrupted,
     NeedsReconciliation,
     Completed,
@@ -72,6 +76,8 @@ pub struct Job {
     pub architecture: Option<Architecture>,
     pub language: Option<String>,
     pub error: Option<AppErrorDto>,
+    #[serde(default)]
+    pub blocked_processes: Vec<ProcessDescriptor>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -146,8 +152,12 @@ impl JobStage {
             ),
             Self::Deploying => matches!(
                 next,
-                Self::Completed | Self::Failed | Self::NeedsReconciliation
+                Self::AwaitingProcessExit
+                    | Self::Completed
+                    | Self::Failed
+                    | Self::NeedsReconciliation
             ),
+            Self::AwaitingProcessExit => matches!(next, Self::Deploying | Self::Cancelled),
             Self::NeedsReconciliation => {
                 matches!(next, Self::Completed | Self::Failed | Self::Resolving)
             }

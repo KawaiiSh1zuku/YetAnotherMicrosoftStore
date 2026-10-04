@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyEventPage, replayJobEvents, shouldReplayHint } from "../lib/tauri";
+import { applyEventPage, mergeJobSnapshots, replayJobEvents, shouldReplayHint } from "../lib/tauri";
 import { job } from "./fixtures";
 
 describe("job event cursor handling", () => {
+  it("never replaces a newer event snapshot with an older list snapshot", () => {
+    const current = new Map([[job.jobId, { ...job, sequence: 8, stage: "verifying" as const }]]);
+    const merged = mergeJobSnapshots(current, [{ ...job, sequence: 7, stage: "downloading" }]);
+
+    expect(merged.get(job.jobId)?.sequence).toBe(8);
+    expect(merged.get(job.jobId)?.stage).toBe("verifying");
+  });
+
   it("does not replay duplicate or older changed hints", () => {
     expect(shouldReplayHint({ jobId: job.jobId, sequence: 4, updatedAt: 21 }, job)).toBe(false);
     expect(shouldReplayHint({ jobId: job.jobId, sequence: 3, updatedAt: 22 }, job)).toBe(false);
