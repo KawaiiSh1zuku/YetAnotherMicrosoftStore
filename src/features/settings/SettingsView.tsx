@@ -168,7 +168,7 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
         <SettingsSection icon={<Network aria-hidden="true" />} title="网络与代理">
           <Field label="代理模式">
             <select className="select" {...register("proxyMode")}>
-              <option value="disabled">直连</option><option value="system">Windows 系统代理</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option>
+              <option value="disabled">直连</option><option value="system">Windows 系统代理</option><option value="http">HTTP / CONNECT</option><option value="https">HTTPS（TLS 代理）</option><option value="socks5">SOCKS5</option>
             </select>
           </Field>
           <div className="field-grid">

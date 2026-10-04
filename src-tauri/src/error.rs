@@ -1,9 +1,13 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    applicability::ApplicabilityError, catalog::CatalogError,
-    deployment_coordinator::CoordinatorError, deployment_plan::DeploymentPlanError,
-    download::DownloadError, package_validation::ValidationError, resolver::ResolverError,
+    applicability::ApplicabilityError,
+    catalog::CatalogError,
+    deployment_coordinator::CoordinatorError,
+    deployment_plan::DeploymentPlanError,
+    download::{DownloadError, DownloadTransportError},
+    package_validation::ValidationError,
+    resolver::ResolverError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +20,14 @@ pub enum ErrorCode {
     NoCompatiblePackage,
     DependencyUnresolved,
     DownloadFailed,
+    DownloadProxyFailed,
+    DownloadProxyAuthRequired,
+    DownloadTimeout,
+    DownloadConnectionFailed,
+    DownloadResponseFailed,
+    DownloadHttpStatus,
+    DownloadRedirectRejected,
+    DownloadIoFailed,
     DownloadUrlExpired,
     HashMismatch,
     SignatureInvalid,
@@ -41,6 +53,14 @@ impl ErrorCode {
             Self::NoCompatiblePackage => "errors.noCompatiblePackage",
             Self::DependencyUnresolved => "errors.dependencyUnresolved",
             Self::DownloadFailed => "errors.downloadFailed",
+            Self::DownloadProxyFailed => "errors.downloadProxyFailed",
+            Self::DownloadProxyAuthRequired => "errors.downloadProxyAuthRequired",
+            Self::DownloadTimeout => "errors.downloadTimeout",
+            Self::DownloadConnectionFailed => "errors.downloadConnectionFailed",
+            Self::DownloadResponseFailed => "errors.downloadResponseFailed",
+            Self::DownloadHttpStatus => "errors.downloadHttpStatus",
+            Self::DownloadRedirectRejected => "errors.downloadRedirectRejected",
+            Self::DownloadIoFailed => "errors.downloadIoFailed",
             Self::DownloadUrlExpired => "errors.downloadUrlExpired",
             Self::HashMismatch => "errors.hashMismatch",
             Self::SignatureInvalid => "errors.signatureInvalid",
@@ -81,6 +101,7 @@ pub enum SafeField {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SafeErrorDetail {
     Field { field: SafeField },
+    HttpStatus { status: u16 },
     Redacted,
 }
 
@@ -88,6 +109,7 @@ pub enum SafeErrorDetail {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CurrentSafeErrorDetail {
     Field { field: SafeField },
+    HttpStatus { status: u16 },
     Redacted,
 }
 
@@ -112,6 +134,13 @@ impl<'de> Deserialize<'de> for SafeErrorDetail {
         Ok(match SafeErrorDetailWire::deserialize(deserializer)? {
             SafeErrorDetailWire::Current(CurrentSafeErrorDetail::Field { field }) => {
                 Self::Field { field }
+            }
+            SafeErrorDetailWire::Current(CurrentSafeErrorDetail::HttpStatus { status }) => {
+                if (100..=599).contains(&status) {
+                    Self::HttpStatus { status }
+                } else {
+                    Self::Redacted
+                }
             }
             SafeErrorDetailWire::Current(CurrentSafeErrorDetail::Redacted) => Self::Redacted,
             SafeErrorDetailWire::Legacy(detail) => {
@@ -241,15 +270,40 @@ impl From<&DownloadError> for AppErrorDto {
             DownloadError::UrlExpired | DownloadError::InvalidResumeResponse => {
                 Self::new(ErrorCode::DownloadUrlExpired, RetryAdvice::ReResolve)
             }
+            DownloadError::UrlExpiredStatus(status) => {
+                Self::new(ErrorCode::DownloadUrlExpired, RetryAdvice::ReResolve)
+                    .with_safe_detail(SafeErrorDetail::HttpStatus { status: *status })
+            }
             DownloadError::SizeMismatch | DownloadError::HashMismatch => {
                 Self::new(ErrorCode::HashMismatch, RetryAdvice::ReResolve)
             }
-            DownloadError::Transport | DownloadError::Io | DownloadError::HttpStatus => {
-                Self::new(ErrorCode::DownloadFailed, RetryAdvice::Retry)
+            DownloadError::Transport(DownloadTransportError::ProxyConnection) => {
+                Self::new(ErrorCode::DownloadProxyFailed, RetryAdvice::Retry)
             }
+            DownloadError::Transport(DownloadTransportError::Timeout) => {
+                Self::new(ErrorCode::DownloadTimeout, RetryAdvice::Retry)
+            }
+            DownloadError::Transport(DownloadTransportError::Connection)
+            | DownloadError::Transport(DownloadTransportError::Request) => {
+                Self::new(ErrorCode::DownloadConnectionFailed, RetryAdvice::Retry)
+            }
+            DownloadError::Transport(DownloadTransportError::ResponseBody) => {
+                Self::new(ErrorCode::DownloadResponseFailed, RetryAdvice::Retry)
+            }
+            DownloadError::HttpStatus(407) => {
+                Self::new(ErrorCode::DownloadProxyAuthRequired, RetryAdvice::Never)
+                    .with_safe_detail(SafeErrorDetail::HttpStatus { status: 407 })
+            }
+            DownloadError::HttpStatus(status) => {
+                Self::new(ErrorCode::DownloadHttpStatus, RetryAdvice::Retry)
+                    .with_safe_detail(SafeErrorDetail::HttpStatus { status: *status })
+            }
+            DownloadError::RedirectRejected => {
+                Self::new(ErrorCode::DownloadRedirectRejected, RetryAdvice::Never)
+            }
+            DownloadError::Io => Self::new(ErrorCode::DownloadIoFailed, RetryAdvice::Retry),
             DownloadError::InvalidRequest
             | DownloadError::InvalidNetworkPolicy
-            | DownloadError::RedirectRejected
             | DownloadError::Cancelled => Self::new(ErrorCode::DownloadFailed, RetryAdvice::Never),
         }
     }

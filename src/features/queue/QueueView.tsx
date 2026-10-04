@@ -1,5 +1,6 @@
-import { CirclePause, CirclePlay, XCircle } from "lucide-react";
+import { CirclePause, CirclePlay, OctagonX, XCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ConfirmDialog } from "../../components/ui/alert-dialog";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Progress } from "../../components/ui/progress";
@@ -23,6 +24,7 @@ export function QueueView({ client, seedJobs, onJobsChanged }: QueueViewProps) {
   const [filter, setFilter] = useState<QueueFilter>("active");
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [terminatingJobId, setTerminatingJobId] = useState<string | null>(null);
 
   function replaceJobs(next: Map<string, JobSnapshot>) {
     jobsRef.current = next;
@@ -75,6 +77,23 @@ export function QueueView({ client, seedJobs, onJobsChanged }: QueueViewProps) {
     }
   }
 
+  async function terminateAndRetry(job: JobSnapshot) {
+    setTerminatingJobId(job.jobId);
+    setError(null);
+    try {
+      const result = await client.terminateJobPackageProcesses(job.jobId);
+      if (result.failed > 0) {
+        setError(`仍有 ${result.failed} 个相关进程无法结束，请关闭应用后重试。`);
+        return;
+      }
+      await control(job, "resume");
+    } catch (value) {
+      setError(localizeError(value));
+    } finally {
+      setTerminatingJobId(null);
+    }
+  }
+
   return (
     <section className="view" aria-labelledby="queue-heading">
       <header className="view-header">
@@ -92,14 +111,21 @@ export function QueueView({ client, seedJobs, onJobsChanged }: QueueViewProps) {
       {status === "loading" && <div role="status">正在加载任务...</div>}
       {status !== "loading" && visibleJobs.length === 0 && <div className="empty-state"><strong>没有任务</strong></div>}
       <div className="queue-list">
-        {visibleJobs.map((job) => <JobRow key={job.jobId} job={job} onControl={control} />)}
+        {visibleJobs.map((job) => <JobRow key={job.jobId} job={job} onControl={control} onTerminateAndRetry={terminateAndRetry} terminating={terminatingJobId === job.jobId} />)}
       </div>
     </section>
   );
 }
 
-function JobRow({ job, onControl }: { job: JobSnapshot; onControl: (job: JobSnapshot, control: JobControl) => void }) {
-  const percent = job.bytesTotal && job.bytesTotal > 0 ? Math.round(job.bytesDone / job.bytesTotal * 100) : 0;
+function JobRow({ job, onControl, onTerminateAndRetry, terminating }: {
+  job: JobSnapshot;
+  onControl: (job: JobSnapshot, control: JobControl) => void;
+  onTerminateAndRetry: (job: JobSnapshot) => void | Promise<void>;
+  terminating: boolean;
+}) {
+  const downloadPercent = job.bytesTotal && job.bytesTotal > 0 ? Math.round(job.bytesDone / job.bytesTotal * 100) : 0;
+  const progress = job.stage === "deploying" ? (job.deploymentProgress ?? 0) : downloadPercent;
+  const progressKind = job.stage === "deploying" ? "安装" : "下载";
   const icons = { pause: CirclePause, resume: CirclePlay, cancel: XCircle } as const;
   return (
     <article className="queue-item" aria-label={`${job.title ?? job.productId}，${jobStageLabel(job.stage)}`}>
@@ -107,11 +133,19 @@ function JobRow({ job, onControl }: { job: JobSnapshot; onControl: (job: JobSnap
         <div><strong>{job.title ?? job.productId}</strong><span>{job.packageFamilyName ?? "正在解析包身份"}</span></div>
         <Badge className={`stage stage--${job.stage}`}>{jobStageLabel(job.stage)}</Badge>
       </div>
-      {job.stage === "downloading" && <div className="queue-progress"><Progress value={percent} label={`${job.title ?? job.productId} 下载进度`} /><span>{percent}%</span></div>}
+      {(job.stage === "downloading" || job.stage === "deploying") && <div className="queue-progress"><Progress value={progress} label={`${job.title ?? job.productId} ${progressKind}进度`} /><span>{progress}%</span></div>}
       {safeErrorLabel(job.error) && <p className="job-error">{safeErrorLabel(job.error)}</p>}
       <div className="queue-item__footer">
         <span>序列 {job.sequence}{job.version ? ` · ${job.version}` : ""}</span>
         <div className="row-actions">
+          {job.error?.code === "package_in_use" && <ConfirmDialog
+            trigger={<Button compact variant="danger" disabled={terminating}><OctagonX aria-hidden="true" size={16} />{terminating ? "正在结束..." : "结束相关进程并重试"}</Button>}
+            title="结束相关应用进程"
+            description="这会强制结束属于该应用包的进程，未保存的数据可能丢失。系统进程和其他应用不会被结束。"
+            confirmLabel="确认结束"
+            destructive
+            onConfirm={() => onTerminateAndRetry(job)}
+          />}
           {job.allowedControls.map((action) => {
             const Icon = icons[action];
             return <Button key={action} compact variant={action === "cancel" ? "ghost" : "secondary"} onClick={() => void onControl(job, action)}><Icon aria-hidden="true" size={16} />{jobControlLabel(action)}</Button>;

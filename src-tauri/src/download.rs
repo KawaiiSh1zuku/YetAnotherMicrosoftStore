@@ -71,13 +71,23 @@ pub enum DownloadError {
     InvalidNetworkPolicy,
     RedirectRejected,
     UrlExpired,
-    HttpStatus,
-    Transport,
+    UrlExpiredStatus(u16),
+    HttpStatus(u16),
+    Transport(DownloadTransportError),
     Io,
     InvalidResumeResponse,
     Cancelled,
     SizeMismatch,
     HashMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadTransportError {
+    ProxyConnection,
+    Timeout,
+    Connection,
+    Request,
+    ResponseBody,
 }
 
 impl fmt::Display for DownloadError {
@@ -87,8 +97,14 @@ impl fmt::Display for DownloadError {
             Self::InvalidNetworkPolicy => formatter.write_str("download URL is not permitted"),
             Self::RedirectRejected => formatter.write_str("download redirect was rejected"),
             Self::UrlExpired => formatter.write_str("download URL must be resolved again"),
-            Self::HttpStatus => formatter.write_str("download server returned an error"),
-            Self::Transport => formatter.write_str("download transport failed"),
+            Self::UrlExpiredStatus(status) => {
+                write!(
+                    formatter,
+                    "download URL returned HTTP {status} and must be resolved again"
+                )
+            }
+            Self::HttpStatus(status) => write!(formatter, "download server returned HTTP {status}"),
+            Self::Transport(kind) => write!(formatter, "download transport failed: {kind:?}"),
             Self::Io => formatter.write_str("download file operation failed"),
             Self::InvalidResumeResponse => {
                 formatter.write_str("download resume response is invalid")
@@ -210,6 +226,7 @@ pub struct DownloadManager {
     semaphore: Arc<Semaphore>,
     rate_limiter: Arc<AggregateRateLimiter>,
     cache_key_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+    proxy_configured: bool,
 }
 
 impl DownloadManager {
@@ -223,6 +240,7 @@ impl DownloadManager {
             return Err(DownloadError::InvalidRequest);
         }
         let redirect_policy = network_policy.clone();
+        let proxy_configured = !matches!(proxy, ProxyRoute::Disabled);
         let client = proxy
             .apply(
                 Client::builder()
@@ -258,6 +276,7 @@ impl DownloadManager {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             rate_limiter: Arc::new(AggregateRateLimiter::new(bytes_per_second)?),
             cache_key_locks: Arc::new(Mutex::new(HashMap::new())),
+            proxy_configured,
         })
     }
 
@@ -266,30 +285,18 @@ impl DownloadManager {
         request: DownloadRequest,
         cancellation: CancellationToken,
     ) -> Result<VerifiedDownload, DownloadError> {
-        validate_request(&request)?;
-        let cache_key_lock = self.cache_key_lock(&request.cache_key).await;
-        let _cache_key_guard = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(DownloadError::Cancelled),
-            guard = cache_key_lock.lock_owned() => guard,
-        };
-        let _permit = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(DownloadError::Cancelled),
-            permit = self.semaphore.acquire() => permit.map_err(|_| DownloadError::Cancelled)?,
-        };
-        self.perform_download(&request, &cancellation).await
+        self.download_with_progress(request, cancellation, |_, _| {})
+            .await
     }
 
-    pub async fn download_with_refresh<F, Fut>(
+    pub async fn download_with_progress<P>(
         &self,
-        mut request: DownloadRequest,
+        request: DownloadRequest,
         cancellation: CancellationToken,
-        mut refresh: F,
+        mut progress: P,
     ) -> Result<VerifiedDownload, DownloadError>
     where
-        F: FnMut(&str) -> Fut,
-        Fut: std::future::Future<Output = Result<String, DownloadError>>,
+        P: FnMut(u64, u64),
     {
         validate_request(&request)?;
         let cache_key_lock = self.cache_key_lock(&request.cache_key).await;
@@ -303,14 +310,60 @@ impl DownloadManager {
             _ = cancellation.cancelled() => return Err(DownloadError::Cancelled),
             permit = self.semaphore.acquire() => permit.map_err(|_| DownloadError::Cancelled)?,
         };
-        match self.perform_download(&request, &cancellation).await {
-            Err(DownloadError::UrlExpired) => {
+        self.perform_download(&request, &cancellation, &mut progress)
+            .await
+    }
+
+    pub async fn download_with_refresh<F, Fut>(
+        &self,
+        request: DownloadRequest,
+        cancellation: CancellationToken,
+        refresh: F,
+    ) -> Result<VerifiedDownload, DownloadError>
+    where
+        F: FnMut(&str) -> Fut,
+        Fut: std::future::Future<Output = Result<String, DownloadError>>,
+    {
+        self.download_with_refresh_and_progress(request, cancellation, refresh, |_, _| {})
+            .await
+    }
+
+    pub async fn download_with_refresh_and_progress<F, Fut, P>(
+        &self,
+        mut request: DownloadRequest,
+        cancellation: CancellationToken,
+        mut refresh: F,
+        mut progress: P,
+    ) -> Result<VerifiedDownload, DownloadError>
+    where
+        F: FnMut(&str) -> Fut,
+        Fut: std::future::Future<Output = Result<String, DownloadError>>,
+        P: FnMut(u64, u64),
+    {
+        validate_request(&request)?;
+        let cache_key_lock = self.cache_key_lock(&request.cache_key).await;
+        let _cache_key_guard = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(DownloadError::Cancelled),
+            guard = cache_key_lock.lock_owned() => guard,
+        };
+        let _permit = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(DownloadError::Cancelled),
+            permit = self.semaphore.acquire() => permit.map_err(|_| DownloadError::Cancelled)?,
+        };
+        match self
+            .perform_download(&request, &cancellation, &mut progress)
+            .await
+        {
+            Err(DownloadError::UrlExpired | DownloadError::UrlExpiredStatus(_)) => {
                 request.url = tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => return Err(DownloadError::Cancelled),
                     url = refresh(&request.update_id) => url?,
                 };
-                self.perform_download(&request, &cancellation).await
+                self.perform_download(&request, &cancellation, &mut progress)
+                    .await
             }
             result => result,
         }
@@ -340,11 +393,15 @@ impl DownloadManager {
         .await
     }
 
-    async fn perform_download(
+    async fn perform_download<P>(
         &self,
         request: &DownloadRequest,
         cancellation: &CancellationToken,
-    ) -> Result<VerifiedDownload, DownloadError> {
+        progress: &mut P,
+    ) -> Result<VerifiedDownload, DownloadError>
+    where
+        P: FnMut(u64, u64),
+    {
         validate_request(request)?;
         self.network_policy
             .validate_url(&request.url)
@@ -406,7 +463,10 @@ impl DownloadManager {
                 if error.is_redirect() {
                     DownloadError::RedirectRejected
                 } else {
-                    DownloadError::Transport
+                    DownloadError::Transport(classify_transport_error(
+                        &error,
+                        self.proxy_configured,
+                    ))
                 }
             })?;
             if matches!(
@@ -416,7 +476,7 @@ impl DownloadManager {
                     | StatusCode::NOT_FOUND
                     | StatusCode::GONE
             ) {
-                return Err(DownloadError::UrlExpired);
+                return Err(DownloadError::UrlExpiredStatus(response.status().as_u16()));
             }
             if offset > 0 && response.status() == StatusCode::PARTIAL_CONTENT {
                 let response_etag = header_text(response.headers().get(ETAG));
@@ -443,7 +503,7 @@ impl DownloadManager {
                     offset = 0;
                 }
             } else {
-                return Err(DownloadError::HttpStatus);
+                return Err(DownloadError::HttpStatus(response.status().as_u16()));
             }
 
             if response.content_length().is_some_and(|length| {
@@ -497,7 +557,8 @@ impl DownloadManager {
                     next = stream.next() => next,
                 };
                 let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(|_| DownloadError::Transport)?;
+                let chunk = chunk
+                    .map_err(|_| DownloadError::Transport(DownloadTransportError::ResponseBody))?;
                 let next_written = written
                     .checked_add(chunk.len() as u64)
                     .ok_or(DownloadError::SizeMismatch)?;
@@ -511,6 +572,7 @@ impl DownloadManager {
                     .await
                     .map_err(|_| DownloadError::Io)?;
                 written = next_written;
+                progress(written, request.expected_size);
                 self.rate_limiter.consume(chunk.len(), cancellation).await?;
             }
             output.sync_all().await.map_err(|_| DownloadError::Io)?;
@@ -555,6 +617,23 @@ fn map_cache_path_error(error: CacheError) -> DownloadError {
     match error {
         CacheError::InvalidRoot => DownloadError::InvalidRequest,
         CacheError::Io | CacheError::Persistence(_) => DownloadError::Io,
+    }
+}
+
+fn classify_transport_error(
+    error: &reqwest::Error,
+    proxy_configured: bool,
+) -> DownloadTransportError {
+    if error.is_timeout() {
+        DownloadTransportError::Timeout
+    } else if error.is_connect() && proxy_configured {
+        DownloadTransportError::ProxyConnection
+    } else if error.is_connect() {
+        DownloadTransportError::Connection
+    } else if error.is_body() || error.is_decode() {
+        DownloadTransportError::ResponseBody
+    } else {
+        DownloadTransportError::Request
     }
 }
 

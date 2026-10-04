@@ -14,6 +14,7 @@ pub enum JobEventKind {
     Imported,
     StageChanged,
     ProgressRecorded,
+    DeploymentProgressRecorded,
     SelectionRecorded,
     Failed,
     Completed,
@@ -60,6 +61,9 @@ pub enum JobEvent {
         bytes_done: u64,
         bytes_total: Option<u64>,
     },
+    DeploymentProgressRecorded {
+        percentage: u8,
+    },
     SelectionRecorded {
         selected_update_id: String,
         package_family_name: String,
@@ -85,6 +89,7 @@ impl JobEvent {
             Self::Imported { .. } => JobEventKind::Imported,
             Self::StageChanged { .. } => JobEventKind::StageChanged,
             Self::ProgressRecorded { .. } => JobEventKind::ProgressRecorded,
+            Self::DeploymentProgressRecorded { .. } => JobEventKind::DeploymentProgressRecorded,
             Self::SelectionRecorded { .. } => JobEventKind::SelectionRecorded,
             Self::Failed { .. } => JobEventKind::Failed,
             Self::Completed => JobEventKind::Completed,
@@ -108,6 +113,7 @@ impl JobEvent {
                     && job.package_family_name.is_none()
                     && job.bytes_done == 0
                     && job.bytes_total.is_none()
+                    && job.deployment_progress.is_none()
                     && job.version.is_none()
                     && job.architecture.is_none()
                     && job.language.is_none()
@@ -149,6 +155,9 @@ impl JobEvent {
                             next.architecture = None;
                             next.language = None;
                             next.error = None;
+                            next.deployment_progress = None;
+                        } else if *stage == JobStage::Deploying {
+                            next.deployment_progress = Some(0);
                         }
                     }
                     Self::ProgressRecorded {
@@ -165,6 +174,17 @@ impl JobEvent {
                         }
                         next.bytes_done = *bytes_done;
                         next.bytes_total = *bytes_total;
+                    }
+                    Self::DeploymentProgressRecorded { percentage } => {
+                        if old.stage != JobStage::Deploying
+                            || *percentage > 100
+                            || old
+                                .deployment_progress
+                                .is_some_and(|before| *percentage < before)
+                        {
+                            return Err(PersistenceError::EventHistoryInvalid);
+                        }
+                        next.deployment_progress = Some(*percentage);
                     }
                     Self::SelectionRecorded {
                         selected_update_id,
@@ -220,6 +240,9 @@ impl JobEvent {
                             return Err(PersistenceError::EventHistoryInvalid);
                         }
                         next.stage = JobStage::Completed;
+                        if old.stage == JobStage::Deploying {
+                            next.deployment_progress = Some(100);
+                        }
                     }
                     Self::Cancelled => {
                         if !old.stage.can_transition_to(JobStage::Cancelled) {

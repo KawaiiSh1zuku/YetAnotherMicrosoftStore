@@ -74,6 +74,8 @@ CREATE TABLE jobs (
     stage TEXT NOT NULL,
     bytes_done INTEGER NOT NULL,
     bytes_total INTEGER,
+    deployment_progress INTEGER
+        CHECK (deployment_progress IS NULL OR deployment_progress BETWEEN 0 AND 100),
     version TEXT,
     architecture TEXT,
     language TEXT,
@@ -92,7 +94,8 @@ CREATE TABLE job_events (
     sequence INTEGER NOT NULL CHECK (sequence > 0),
     event_kind TEXT NOT NULL CHECK (event_kind IN (
         'created', 'imported', 'stage_changed', 'progress_recorded',
-        'selection_recorded', 'failed', 'completed', 'cancelled', 'recovered'
+        'deployment_progress_recorded', 'selection_recorded', 'failed',
+        'completed', 'cancelled', 'recovered'
     )),
     payload_json TEXT NOT NULL,
     projection_json TEXT NOT NULL,

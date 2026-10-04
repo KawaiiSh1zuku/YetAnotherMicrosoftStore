@@ -8,6 +8,14 @@ const errorMessages: Record<ErrorCode, string> = {
   no_compatible_package: "没有与此设备兼容的安装包。",
   dependency_unresolved: "无法解析应用依赖，请重新获取应用信息。",
   download_failed: "下载失败，请检查网络后重试。",
+  download_proxy_failed: "无法连接代理服务器，请检查代理协议、地址和端口。",
+  download_proxy_auth_required: "代理服务器要求身份验证，请检查代理凭据。",
+  download_timeout: "下载连接超时，请稍后重试。",
+  download_connection_failed: "无法连接下载服务器，TLS 握手或网络连接失败。",
+  download_response_failed: "下载响应在传输完成前中断，请重试。",
+  download_http_status: "下载服务器返回了错误状态。",
+  download_redirect_rejected: "下载地址重定向到了不受信任的位置，已停止下载。",
+  download_io_failed: "无法写入下载缓存，请检查磁盘空间和文件权限。",
   download_url_expired: "下载地址已过期，正在等待重新解析。",
   hash_mismatch: "下载内容校验失败，未执行安装。",
   signature_invalid: "安装包签名未通过系统信任校验。",
@@ -46,8 +54,8 @@ const controlLabels: Record<JobControl, string> = {
 
 export function localizeError(value: unknown): string {
   if (typeof value === "object" && value !== null && "code" in value) {
-    const code = (value as { code?: string }).code as ErrorCode;
-    if (code in errorMessages) return errorMessages[code];
+    const error = value as SafeError;
+    if (error.code in errorMessages) return errorLabel(error);
   }
   return "操作未完成，请稍后重试。";
 }
@@ -61,5 +69,11 @@ export function jobControlLabel(control: JobControl): string {
 }
 
 export function safeErrorLabel(error: SafeError | null): string | null {
-  return error ? errorMessages[error.code] : null;
+  return error ? errorLabel(error) : null;
+}
+
+function errorLabel(error: SafeError): string {
+  const message = errorMessages[error.code];
+  const status = error.details?.find((detail) => detail.kind === "http_status");
+  return status?.kind === "http_status" ? `${message}（HTTP ${status.status}）` : message;
 }

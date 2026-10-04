@@ -513,7 +513,7 @@ impl Persistence {
             "SELECT job_id, kind, product_id, requested_market,
                     requested_architectures_json, requested_languages_json, deployment_scope,
                     selected_update_id, package_family_name, stage, bytes_done, bytes_total,
-                    version, architecture, language, error_json,
+                    deployment_progress, version, architecture, language, error_json,
                     created_at, updated_at
              FROM jobs ORDER BY job_id",
         )?;
@@ -906,11 +906,11 @@ pub(crate) fn save_job_projection(
         "INSERT INTO jobs (
             job_id, kind, product_id, requested_market, requested_architectures_json,
             requested_languages_json, deployment_scope, selected_update_id,
-            package_family_name, stage, bytes_done, bytes_total, version, architecture,
-            language, error_json, created_at, updated_at
+            package_family_name, stage, bytes_done, bytes_total, deployment_progress,
+            version, architecture, language, error_json, created_at, updated_at
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-            ?17, ?18
+            ?17, ?18, ?19
          )
          ON CONFLICT(job_id) DO UPDATE SET
             kind = excluded.kind,
@@ -924,6 +924,7 @@ pub(crate) fn save_job_projection(
             stage = excluded.stage,
             bytes_done = excluded.bytes_done,
             bytes_total = excluded.bytes_total,
+            deployment_progress = excluded.deployment_progress,
             version = excluded.version,
             architecture = excluded.architecture,
             language = excluded.language,
@@ -944,6 +945,7 @@ pub(crate) fn save_job_projection(
             job.bytes_total
                 .map(|value| to_i64(value, "job.bytes_total"))
                 .transpose()?,
+            job.deployment_progress,
             job.version,
             job.architecture.map(enum_text).transpose()?,
             job.language,
@@ -964,7 +966,7 @@ pub(crate) fn load_job(
             "SELECT job_id, kind, product_id, requested_market,
                 requested_architectures_json, requested_languages_json, deployment_scope,
                 selected_update_id, package_family_name, stage, bytes_done, bytes_total,
-                version, architecture, language, error_json,
+                deployment_progress, version, architecture, language, error_json,
                 created_at, updated_at FROM jobs WHERE job_id = ?1",
             [job_id],
             read_job_row,
@@ -1126,6 +1128,7 @@ struct JobRow {
     stage: String,
     bytes_done: i64,
     bytes_total: Option<i64>,
+    deployment_progress: Option<u8>,
     version: Option<String>,
     architecture: Option<String>,
     language: Option<String>,
@@ -1148,12 +1151,13 @@ fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         stage: row.get(9)?,
         bytes_done: row.get(10)?,
         bytes_total: row.get(11)?,
-        version: row.get(12)?,
-        architecture: row.get(13)?,
-        language: row.get(14)?,
-        error_json: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        deployment_progress: row.get(12)?,
+        version: row.get(13)?,
+        architecture: row.get(14)?,
+        language: row.get(15)?,
+        error_json: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
     })
 }
 
@@ -1180,6 +1184,7 @@ impl TryFrom<JobRow> for Job {
                 .bytes_total
                 .map(|value| from_i64(value, "job.bytes_total"))
                 .transpose()?,
+            deployment_progress: row.deployment_progress,
             version: row.version,
             architecture: row
                 .architecture

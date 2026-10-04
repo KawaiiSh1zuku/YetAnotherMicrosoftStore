@@ -17,7 +17,7 @@ use yet_another_microsoft_store_lib::{
     deployment::DeploymentScope,
     domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
     download::{CancellationToken, DownloadManager, VerifiedDownload},
-    error::{AppErrorDto, ErrorCode, RetryAdvice},
+    error::{AppErrorDto, ErrorCode, RetryAdvice, SafeErrorDetail},
     job_events::{CommandOutcome, JobCommand, JobControl, JobEvent, JobTarget},
     job_worker::{
         Clock, DeploymentPort, DeploymentPreparation, DownloadArtifact, DownloadPort,
@@ -269,6 +269,7 @@ impl DeploymentPort for FakeDeployment {
         _scope: DeploymentScope,
         _mode: yet_another_microsoft_store_lib::applicability::SelectionMode,
         _plan: yet_another_microsoft_store_lib::deployment_plan::DeploymentPlan,
+        _package_family_name: Option<String>,
     ) -> WorkerFuture<'a, Result<DeploymentPreparation<Self::Prepared>, AppErrorDto>> {
         self.calls
             .lock()
@@ -288,6 +289,7 @@ impl DeploymentPort for FakeDeployment {
     fn commit<'a>(
         &'a mut self,
         _prepared: Self::Prepared,
+        progress: tokio::sync::mpsc::UnboundedSender<u8>,
     ) -> WorkerFuture<'a, Result<(), AppErrorDto>> {
         self.calls.lock().expect("calls").committed += 1;
         if let Some(clock) = &self.expire_clock {
@@ -295,7 +297,9 @@ impl DeploymentPort for FakeDeployment {
         }
         let delay = self.commit_delay;
         Box::pin(async move {
+            let _ = progress.send(35);
             tokio::time::sleep(delay).await;
+            let _ = progress.send(100);
             Ok(())
         })
     }
@@ -356,6 +360,7 @@ fn queued_job(job_id: &str, now: i64) -> Job {
         stage: JobStage::Queued,
         bytes_done: 0,
         bytes_total: None,
+        deployment_progress: None,
         version: None,
         architecture: None,
         language: None,
@@ -563,6 +568,17 @@ async fn happy_path_freezes_safe_targets_and_persists_deploying_before_commit() 
     assert!(!json.contains("secret.msix"));
     assert!(!json.contains("verified"));
     assert_eq!(store.job_targets("job-safe").expect("targets").len(), 1);
+    let snapshot = store
+        .job_snapshot("job-safe")
+        .expect("snapshot query")
+        .expect("job snapshot");
+    assert_eq!(snapshot.job.bytes_done, 1);
+    assert_eq!(snapshot.job.bytes_total, Some(1));
+    assert_eq!(snapshot.job.deployment_progress, Some(100));
+    assert!(events.iter().any(|stored| matches!(
+        stored.event,
+        JobEvent::DeploymentProgressRecorded { percentage: 35 }
+    )));
 }
 
 #[tokio::test]
@@ -1035,6 +1051,7 @@ async fn manager_download_port_re_resolves_an_expired_url_at_most_once() {
     let mut expected_error =
         AppErrorDto::new(ErrorCode::DownloadUrlExpired, RetryAdvice::ReResolve);
     expected_error.job_id = Some(job.job_id.clone());
+    expected_error.details = vec![SafeErrorDetail::HttpStatus { status: 403 }];
     assert_eq!(snapshot.job.error, Some(expected_error));
     assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
     let refresh_jobs = refresh_jobs.lock().expect("refresh jobs");

@@ -1,4 +1,4 @@
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +63,8 @@ impl std::error::Error for DeploymentError {}
 
 pub struct WindowsDeploymentBackend;
 
+pub type DeploymentProgressCallback = Arc<dyn Fn(u8) + Send + Sync + 'static>;
+
 impl WindowsDeploymentBackend {
     pub fn probe() -> Result<DeploymentProbe, DeploymentError> {
         #[cfg(windows)]
@@ -92,6 +94,13 @@ impl WindowsDeploymentBackend {
     pub fn install_current_user(
         package: &VerifiedPackageSet,
     ) -> Result<DeploymentOutcome, DeploymentError> {
+        Self::install_current_user_with_progress(package, Arc::new(|_| {}))
+    }
+
+    pub fn install_current_user_with_progress(
+        package: &VerifiedPackageSet,
+        progress: DeploymentProgressCallback,
+    ) -> Result<DeploymentOutcome, DeploymentError> {
         #[cfg(windows)]
         {
             let package_uri = file_uri(&package.main.path)?;
@@ -104,13 +113,24 @@ impl WindowsDeploymentBackend {
                 .then(|| windows_collections::IIterable::from(dependency_uris));
             let manager = windows::Management::Deployment::PackageManager::new()
                 .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
-            let result = manager
+            let operation = manager
                 .AddPackageAsync(
                     &package_uri,
                     dependency_uris.as_ref(),
                     windows::Management::Deployment::DeploymentOptions::None,
                 )
-                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?
+                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
+            let progress_callback = Arc::clone(&progress);
+            operation
+                .SetProgress(&windows_future::AsyncOperationProgressHandler::<
+                    windows::Management::Deployment::DeploymentResult,
+                    windows::Management::Deployment::DeploymentProgress,
+                >::new(move |_, update| {
+                    progress_callback(update.percentage.min(100) as u8);
+                    Ok(())
+                }))
+                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
+            let result = operation
                 .join()
                 .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
 
@@ -124,7 +144,7 @@ impl WindowsDeploymentBackend {
 
         #[cfg(not(windows))]
         {
-            let _ = package;
+            let _ = (package, progress);
             Err(DeploymentError::UnsupportedPlatform)
         }
     }
@@ -168,6 +188,14 @@ impl WindowsDeploymentBackend {
         package: &VerifiedPackageSet,
         protected_root: &Path,
     ) -> Result<DeploymentOutcome, DeploymentError> {
+        Self::stage_and_provision_all_users_with_progress(package, protected_root, Arc::new(|_| {}))
+    }
+
+    pub fn stage_and_provision_all_users_with_progress(
+        package: &VerifiedPackageSet,
+        protected_root: &Path,
+        progress: DeploymentProgressCallback,
+    ) -> Result<DeploymentOutcome, DeploymentError> {
         #[cfg(windows)]
         {
             let main = copy_and_verify_to_protected_root(&package.main, protected_root)
@@ -195,9 +223,20 @@ impl WindowsDeploymentBackend {
                 .then(|| windows_collections::IIterable::from(dependency_uris));
             let manager = windows::Management::Deployment::PackageManager::new()
                 .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
-            let stage_result = manager
+            let stage_operation = manager
                 .StagePackageAsync(&package_uri, dependency_uris.as_ref())
-                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?
+                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
+            let stage_progress = Arc::clone(&progress);
+            stage_operation
+                .SetProgress(&windows_future::AsyncOperationProgressHandler::<
+                    windows::Management::Deployment::DeploymentResult,
+                    windows::Management::Deployment::DeploymentProgress,
+                >::new(move |_, update| {
+                    stage_progress((update.percentage.min(100) * 80 / 100) as u8);
+                    Ok(())
+                }))
+                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
+            let stage_result = stage_operation
                 .join()
                 .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
             deployment_result("all-users stage", stage_result)?;
@@ -208,11 +247,22 @@ impl WindowsDeploymentBackend {
                 .as_ref()
                 .ok_or(DeploymentError::MissingPackageIdentity)?;
             let package_family_name = find_package_family_name(&manager, identity)?;
-            let provision_result = manager
+            let provision_operation = manager
                 .ProvisionPackageForAllUsersAsync(&windows::core::HSTRING::from(
                     &package_family_name,
                 ))
-                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?
+                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
+            let provision_progress = Arc::clone(&progress);
+            provision_operation
+                .SetProgress(&windows_future::AsyncOperationProgressHandler::<
+                    windows::Management::Deployment::DeploymentResult,
+                    windows::Management::Deployment::DeploymentProgress,
+                >::new(move |_, update| {
+                    provision_progress(80 + (update.percentage.min(100) * 20 / 100) as u8);
+                    Ok(())
+                }))
+                .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
+            let provision_result = provision_operation
                 .join()
                 .map_err(|error| DeploymentError::WindowsApi(error.to_string()))?;
             deployment_result("all-users provision", provision_result)?;
@@ -226,7 +276,7 @@ impl WindowsDeploymentBackend {
 
         #[cfg(not(windows))]
         {
-            let _ = (package, protected_root);
+            let _ = (package, protected_root, progress);
             Err(DeploymentError::UnsupportedPlatform)
         }
     }

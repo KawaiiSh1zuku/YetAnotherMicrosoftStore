@@ -32,6 +32,7 @@ use crate::{
         WorkerLease,
     },
     jobs::{Job, JobKind, JobSnapshot, JobStage},
+    package_process::PackageProcessManager,
     persistence::{Persistence, PersistenceError},
     resolver::{PackageGraph, PackageResolver, ResolverError, StoreLibResolverAdapter},
 };
@@ -251,11 +252,13 @@ pub trait DeploymentPort {
         scope: DeploymentScope,
         mode: SelectionMode,
         plan: DeploymentPlan,
+        package_family_name: Option<String>,
     ) -> WorkerFuture<'a, Result<DeploymentPreparation<Self::Prepared>, AppErrorDto>>;
 
     fn commit<'a>(
         &'a mut self,
         prepared: Self::Prepared,
+        progress: mpsc::UnboundedSender<u8>,
     ) -> WorkerFuture<'a, Result<(), AppErrorDto>>;
 
     fn reconcile<'a>(
@@ -285,10 +288,22 @@ impl DeploymentPort for SystemDeploymentPort {
         scope: DeploymentScope,
         mode: SelectionMode,
         plan: DeploymentPlan,
+        package_family_name: Option<String>,
     ) -> WorkerFuture<'a, Result<DeploymentPreparation<Self::Prepared>, AppErrorDto>> {
         let database_path = self.database_path.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
+                if mode == SelectionMode::Update
+                    && package_family_name.as_deref().is_some_and(|family| {
+                        PackageProcessManager::matching_process_count(family)
+                            .is_ok_and(|count| count > 0)
+                    })
+                {
+                    return Err(AppErrorDto::new(
+                        ErrorCode::PackageInUse,
+                        RetryAdvice::Retry,
+                    ));
+                }
                 let persistence =
                     Persistence::open(&database_path).map_err(|_| blocking_error())?;
                 let mut orchestrator =
@@ -310,6 +325,7 @@ impl DeploymentPort for SystemDeploymentPort {
     fn commit<'a>(
         &'a mut self,
         prepared: Self::Prepared,
+        progress: mpsc::UnboundedSender<u8>,
     ) -> WorkerFuture<'a, Result<(), AppErrorDto>> {
         let database_path = self.database_path.clone();
         Box::pin(async move {
@@ -318,7 +334,15 @@ impl DeploymentPort for SystemDeploymentPort {
                     Persistence::open(&database_path).map_err(|_| blocking_error())?;
                 let mut orchestrator =
                     DeploymentOrchestrator::new(SystemDeploymentBackend, SystemPackagePreflight);
-                orchestrator.commit(prepared, &persistence).map(|_| ())
+                orchestrator
+                    .commit_with_progress(
+                        prepared,
+                        &persistence,
+                        Arc::new(move |percentage| {
+                            let _ = progress.send(percentage);
+                        }),
+                    )
+                    .map(|_| ())
             })
             .await
             .map_err(|_| blocking_error())?
@@ -397,31 +421,51 @@ where
                 let expected_file_name = request.file_name.clone();
                 let expected_size = request.expected_size;
                 let expected_sha256 = request.expected_sha256.clone();
+                let update_id = request.update_id.clone();
                 let resolver = Arc::clone(&self.resolver);
+                let completed_bytes = bytes_done;
+                let progress_sender = progress.clone();
+                let mut last_reported_percent = completed_bytes.saturating_mul(100) / bytes_total;
                 let result = self
                     .manager
-                    .download_with_refresh(request, cancellation.clone(), move |update_id| {
-                        let resolver = Arc::clone(&resolver);
-                        let refresh_job = refresh_job.clone();
-                        let update_id = update_id.to_owned();
-                        let expected_file_name = expected_file_name.clone();
-                        let expected_sha256 = expected_sha256.clone();
-                        async move {
-                            let graph = {
-                                let mut resolver = resolver.lock().await;
-                                resolver.resolve(&refresh_job).await
+                    .download_with_refresh_and_progress(
+                        request,
+                        cancellation.clone(),
+                        move |update_id| {
+                            let resolver = Arc::clone(&resolver);
+                            let refresh_job = refresh_job.clone();
+                            let update_id = update_id.to_owned();
+                            let expected_file_name = expected_file_name.clone();
+                            let expected_sha256 = expected_sha256.clone();
+                            async move {
+                                let graph = {
+                                    let mut resolver = resolver.lock().await;
+                                    resolver.resolve(&refresh_job).await
+                                }
+                                .map_err(|_| DownloadError::UrlExpired)?;
+                                refreshed_package_url(
+                                    &graph,
+                                    &refresh_job,
+                                    &update_id,
+                                    &expected_file_name,
+                                    expected_size,
+                                    &expected_sha256,
+                                )
                             }
-                            .map_err(|_| DownloadError::UrlExpired)?;
-                            refreshed_package_url(
-                                &graph,
-                                &refresh_job,
-                                &update_id,
-                                &expected_file_name,
-                                expected_size,
-                                &expected_sha256,
-                            )
-                        }
-                    })
+                        },
+                        move |artifact_done, _| {
+                            let aggregate_done = completed_bytes.saturating_add(artifact_done);
+                            let percent = aggregate_done.saturating_mul(100) / bytes_total;
+                            if percent > last_reported_percent || aggregate_done == bytes_total {
+                                last_reported_percent = percent;
+                                let _ = progress_sender.send(DownloadProgress {
+                                    update_id: update_id.clone(),
+                                    bytes_done: aggregate_done,
+                                    bytes_total,
+                                });
+                            }
+                        },
+                    )
                     .await
                     .map_err(|error| AppErrorDto::from(&error))?;
                 bytes_done = bytes_done.saturating_add(result.size);
@@ -782,7 +826,12 @@ where
         };
         let preparation = match self
             .await_with_heartbeat(lease, |deployment| {
-                deployment.prepare(snapshot.job.deployment_scope, mode, plan)
+                deployment.prepare(
+                    snapshot.job.deployment_scope,
+                    mode,
+                    plan,
+                    snapshot.job.package_family_name.clone(),
+                )
             })
             .await
         {
@@ -803,16 +852,23 @@ where
                 stage: JobStage::Deploying,
             },
         )?;
-        match self
-            .await_with_heartbeat(lease, |deployment| deployment.commit(prepared))
-            .await
+        match run_deployment(
+            &self.store,
+            &self.clock,
+            &self.config,
+            &mut self.deployment,
+            snapshot,
+            lease,
+            prepared,
+        )
+        .await?
         {
-            LeaseAware::LeaseLost => Ok(RunOnceOutcome::LeaseLost),
-            LeaseAware::Ready(Ok(())) => {
+            DeploymentRun::LeaseLost => Ok(RunOnceOutcome::LeaseLost),
+            DeploymentRun::Completed(snapshot) => {
                 let completed = self.append(lease, snapshot, JobEvent::Completed)?;
                 Ok(processed(completed))
             }
-            LeaseAware::Ready(Err(error)) => {
+            DeploymentRun::Failed { snapshot, error } => {
                 let failed = self.append(
                     lease,
                     snapshot,
@@ -899,6 +955,76 @@ enum DownloadRun {
     LeaseLost,
 }
 
+enum DeploymentRun {
+    Completed(JobSnapshot),
+    Failed {
+        snapshot: JobSnapshot,
+        error: AppErrorDto,
+    },
+    LeaseLost,
+}
+
+async fn run_deployment<P, C>(
+    store: &Persistence,
+    clock: &C,
+    config: &WorkerConfig,
+    deployment: &mut P,
+    mut snapshot: JobSnapshot,
+    lease: &mut WorkerLease,
+    prepared: P::Prepared,
+) -> Result<DeploymentRun, WorkerError>
+where
+    P: DeploymentPort,
+    C: Clock,
+{
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+    let future = deployment.commit(prepared, progress_tx);
+    tokio::pin!(future);
+    let mut heartbeat = tokio::time::interval(config.heartbeat_interval);
+    heartbeat.tick().await;
+    loop {
+        tokio::select! {
+            result = &mut future => {
+                while let Ok(percentage) = progress_rx.try_recv() {
+                    let now = clock.now();
+                    snapshot = store.append_job_event_leased(
+                        &snapshot.job.job_id,
+                        snapshot.sequence,
+                        JobEvent::DeploymentProgressRecorded { percentage },
+                        now,
+                        lease,
+                        now,
+                    )?;
+                }
+                return Ok(match result {
+                    Ok(()) => DeploymentRun::Completed(snapshot),
+                    Err(error) => DeploymentRun::Failed { snapshot, error },
+                });
+            }
+            progress = progress_rx.recv() => {
+                if let Some(percentage) = progress {
+                    let now = clock.now();
+                    snapshot = store.append_job_event_leased(
+                        &snapshot.job.job_id,
+                        snapshot.sequence,
+                        JobEvent::DeploymentProgressRecorded { percentage },
+                        now,
+                        lease,
+                        now,
+                    )?;
+                }
+            }
+            _ = heartbeat.tick() => {
+                let now = clock.now();
+                match store.renew_worker_lease(lease, now, config.lease_ttl) {
+                    Ok(Some(renewed)) => *lease = renewed,
+                    Ok(None) | Err(_) => return Ok(DeploymentRun::LeaseLost),
+                }
+            }
+        }
+    }
+}
+
 async fn run_download<D, C>(
     store: &Persistence,
     clock: &C,
@@ -923,6 +1049,20 @@ where
     loop {
         tokio::select! {
             result = &mut future => {
+                while let Ok(progress) = progress_rx.try_recv() {
+                    let now = clock.now();
+                    snapshot = store.append_job_event_leased(
+                        &snapshot.job.job_id,
+                        snapshot.sequence,
+                        JobEvent::ProgressRecorded {
+                            bytes_done: progress.bytes_done,
+                            bytes_total: Some(progress.bytes_total),
+                        },
+                        now,
+                        lease,
+                        now,
+                    )?;
+                }
                 return Ok(match result {
                     Ok(downloads) => DownloadRun::Completed { snapshot, downloads },
                     Err(_) if cancellation.is_cancelled() => DownloadRun::Stopped(snapshot),

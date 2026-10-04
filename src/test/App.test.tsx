@@ -3,9 +3,26 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { axe } from "vitest-axe";
 import App from "../App";
-import { catalogProduct, createClient, settings } from "./fixtures";
+import { localizeError } from "../lib/i18n";
+import { catalogProduct, createClient, job, settings } from "./fixtures";
 
 describe("M6 desktop workbench", () => {
+  it("shows the concrete HTTP status for download failures", () => {
+    expect(localizeError({
+      code: "download_http_status",
+      messageKey: "errors.downloadHttpStatus",
+      retry: "retry",
+      details: [{ kind: "http_status", status: 429 }],
+    })).toBe("下载服务器返回了错误状态。（HTTP 429）");
+
+    expect(localizeError({
+      code: "download_url_expired",
+      messageKey: "errors.downloadUrlExpired",
+      retry: "re_resolve",
+      details: [{ kind: "http_status", status: 404 }],
+    })).toBe("下载地址已过期，正在等待重新解析。（HTTP 404）");
+  });
+
   it("restores focus to the selected result after closing details", async () => {
     const user = userEvent.setup();
     const client = createClient();
@@ -107,6 +124,128 @@ describe("M6 desktop workbench", () => {
         expect.objectContaining({ preferredLanguages: ["ja-JP", "zh-CN"] }),
       ),
     );
+  });
+
+  it("orders applications with available updates before the remaining installed apps", async () => {
+    const user = userEvent.setup();
+    const client = createClient({
+      scanInstalledPackages: vi.fn().mockResolvedValue({
+        source: "all_users_elevated",
+        capturedAt: "2026-10-03T00:00:00Z",
+        osBuild: "19045",
+        complete: true,
+        records: [
+          {
+            appName: "No Update",
+            packageName: "No.Update",
+            identityName: "No.Update",
+            publisher: "Example",
+            packageFamilyName: "No.Update_example",
+            packageFullName: "No.Update_1.0.0.0_x64__example",
+            version: [1, 0, 0, 0],
+            architecture: "x64",
+            packageKind: "main",
+            installedForCurrentUser: true,
+            hasOtherUsers: false,
+            provisionedForFutureUsers: false,
+          },
+          {
+            appName: "Has Update",
+            packageName: "Has.Update",
+            identityName: "Has.Update",
+            publisher: "Example",
+            packageFamilyName: "Has.Update_example",
+            packageFullName: "Has.Update_1.0.0.0_x64__example",
+            version: [1, 0, 0, 0],
+            architecture: "x64",
+            packageKind: "main",
+            installedForCurrentUser: true,
+            hasOtherUsers: false,
+            provisionedForFutureUsers: false,
+          },
+        ],
+        warnings: [],
+      }),
+      scanUpdates: vi.fn().mockResolvedValue({
+        scannedMainPackages: 2,
+        associatedPackages: 2,
+        candidates: [{
+          appName: "Has Update",
+          packageName: "Has.Update",
+          publisher: "Example",
+          packageFamilyName: "Has.Update_example",
+          currentVersion: "1.0.0.0",
+          availableVersion: "2.0.0.0",
+          productId: "9UPDATE",
+          deploymentScope: "current_user",
+        }],
+        skipped: [],
+        complete: true,
+      }),
+    });
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "已安装" }));
+    await screen.findByText("No Update");
+    await user.click(screen.getByRole("button", { name: "扫描更新" }));
+    await screen.findByText(/发现 1 个更新/);
+
+    const rows = within(screen.getByRole("table")).getAllByRole("row").slice(1);
+    expect(within(rows[0]).getByText("Has Update")).toBeVisible();
+    expect(within(rows[1]).getByText("No Update")).toBeVisible();
+  });
+
+  it("shows deployment progress while an installation is running", async () => {
+    const client = createClient({
+      listJobs: vi.fn().mockResolvedValue([{
+        ...job,
+        stage: "deploying",
+        deploymentProgress: 42,
+        allowedControls: [],
+      }]),
+    });
+    render(<App client={client} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "队列" }));
+
+    expect(await screen.findByRole("progressbar", { name: "Windows Terminal 安装进度" })).toHaveAttribute("aria-valuenow", "42");
+    expect(screen.getByText("42%")).toBeVisible();
+  });
+
+  it("confirms, terminates related package processes, and retries an in-use job", async () => {
+    const user = userEvent.setup();
+    const failedJob = {
+      ...job,
+      sequence: 7,
+      stage: "failed" as const,
+      allowedControls: ["resume", "cancel"] as const,
+      error: {
+        code: "package_in_use" as const,
+        messageKey: "errors.packageInUse",
+        retry: "retry" as const,
+        jobId: job.jobId,
+        details: [],
+      },
+    };
+    const terminateJobPackageProcesses = vi.fn().mockResolvedValue({ matched: 2, terminated: 2, failed: 0 });
+    const client = Object.assign(createClient({
+      listJobs: vi.fn().mockResolvedValue([failedJob]),
+      requestJobControl: vi.fn().mockResolvedValue({ ...failedJob, sequence: 8, stage: "queued", error: null }),
+    }), { terminateJobPackageProcesses });
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "队列" }));
+    await user.click(await screen.findByRole("button", { name: "已结束" }));
+    await user.click(screen.getByRole("button", { name: "结束相关进程并重试" }));
+    await user.click(screen.getByRole("button", { name: "确认结束" }));
+
+    await waitFor(() => expect(terminateJobPackageProcesses).toHaveBeenCalledWith(job.jobId));
+    expect(client.requestJobControl).toHaveBeenCalledWith({
+      jobId: job.jobId,
+      expectedSequence: 7,
+      control: "resume",
+      commandId: expect.stringMatching(/^ui-/),
+    });
   });
 
   it("renders loading, empty, and localized safe error states", async () => {

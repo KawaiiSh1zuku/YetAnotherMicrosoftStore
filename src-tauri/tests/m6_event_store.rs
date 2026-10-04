@@ -43,6 +43,7 @@ fn job(job_id: &str) -> Job {
         stage: JobStage::Queued,
         bytes_done: 0,
         bytes_total: None,
+        deployment_progress: None,
         version: None,
         architecture: None,
         language: None,
@@ -430,6 +431,56 @@ fn semantic_events_reject_illegal_terminal_transition_and_progress_regression() 
                 bytes_total: None
             },
             302
+        ),
+        Err(PersistenceError::EventHistoryInvalid)
+    ));
+}
+
+#[test]
+fn deployment_progress_is_persisted_only_while_deploying_and_never_regresses() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("open database");
+    created(&store, "job-deployment-progress");
+    for (sequence, stage) in [
+        (1, JobStage::Resolving),
+        (2, JobStage::Selecting),
+        (3, JobStage::Downloading),
+        (4, JobStage::Verifying),
+        (5, JobStage::Deploying),
+    ] {
+        store
+            .append_job_event(
+                "job-deployment-progress",
+                sequence,
+                JobEvent::StageChanged { stage },
+                200 + sequence as i64,
+            )
+            .expect("advance stage");
+    }
+    let snapshot = store
+        .append_job_event(
+            "job-deployment-progress",
+            6,
+            JobEvent::DeploymentProgressRecorded { percentage: 42 },
+            300,
+        )
+        .expect("record deployment progress");
+    assert_eq!(snapshot.job.deployment_progress, Some(42));
+    assert!(matches!(
+        store.append_job_event(
+            "job-deployment-progress",
+            7,
+            JobEvent::DeploymentProgressRecorded { percentage: 41 },
+            301,
+        ),
+        Err(PersistenceError::EventHistoryInvalid)
+    ));
+    assert!(matches!(
+        store.append_job_event(
+            "job-deployment-progress",
+            7,
+            JobEvent::DeploymentProgressRecorded { percentage: 101 },
+            302,
         ),
         Err(PersistenceError::EventHistoryInvalid)
     ));

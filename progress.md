@@ -47,3 +47,30 @@
 - 生产路径静态检索无 Broker/elevation 旧契约；migration 目录只有 `0001_initial.sql`；`git diff --check` 通过（仅行尾转换提示）。
 - `cargo test --all-targets` 因 Windows 拒绝直接启动要求提升的 bin test harness 返回 740；使用 `--lib --tests` 覆盖全部实际 Rust 测试，binary 编译由 Clippy/Tauri build 覆盖。
 - 真实 Store/CDN、UAC 取消、CurrentUser/AllUsers 可逆部署和 ARM64 验收未执行，不声明 E2/E3 通过。
+
+## 2026-10-03 回归修复
+
+- 收到四项现场反馈：下载进度恒为 0%、任何代理模式下载失败、安装状态卡住且未观察到文件句柄安装操作、有更新应用需要置顶。
+- 确认工作树初始干净，分支 `main` 与 `origin/main` 一致，HEAD 为 `64d38b5`。
+- 读取当前规划、设计规格和历史 M4/M5 约束；当前只完成 E0 调查准备，未改生产代码。
+- 两次并行只读命令因 PowerShell/Git Bash 嵌套引号解析失败；未产生仓库副作用，后续改用直接包装格式。
+- 读取本机只含安全字段的任务投影：代理失败记录为 `download_failed`；直连后 911,998,170 字节包已进入 verified cache，但任务仍记录 0/NULL 下载进度。
+- 确认卡住更新目标为正在运行的 `OpenAI.Codex`；不采用 `ForceApplicationShutdown`，改为包占用失败、用户确认后精确终止同 PFN 进程并重试。
+- 查阅本机 Windows 0.62.2 bindings 与 Microsoft 文档，确认 `AddPackageAsync` 原生提供 `DeploymentProgress`，`GetPackageFamilyName` 需要查询权限，`TerminateProcess` 需要终止权限且调用后应等待退出。
+- 用户批准实现推荐的包占用行为，并追加“结束相关进程”按钮需求。
+- 完成下载逐块进度、worker 完成竞态修复及聚合进度持久化。
+- 完成下载错误细分与 HTTP 状态详情；4xx、5xx 和非 HTTP 传输失败均有对应错误码或说明。
+- 完成 Windows 部署进度事件、任务投影、队列安装进度条和完成队列排空。
+- 完成包占用前置检查、可信任务级进程终止命令、确认按钮及终止后的自动重试；终止前二次校验 PFN。
+- 完成有更新应用稳定置顶，并补齐大小写不敏感 PFN 匹配。
+- 代理选项区分 HTTP/CONNECT 与 HTTPS TLS 代理；受控 HTTP 代理下载测试通过，真实 Store CDN 经本机代理仍返回上游 502/连接关闭，现会显示具体错误而不是笼统“网络问题”。
+- 保持单一 `0001_initial.sql` 和 schema version 1；未新增旧开发数据库升级链。
+
+## 回归修复验证
+
+- Rust `cargo test --lib --tests`：181 passed / 9 ignored；忽略项均需显式 E2/E3 环境。
+- Rust `cargo clippy --all-targets -- -D warnings`：通过。
+- Vitest：17/17 通过；TypeScript/Vite production build：通过。
+- Playwright：2/2 通过，覆盖桌面键盘/axe 与 360 px 窄屏。
+- 受控代理、下载进度、部署进度、错误状态码、列表排序和终止命令均有自动化回归。
+- 尚未执行真实签名包的可逆 Windows 安装/更新，也未强制终止当前正在运行的 OpenAI.Codex；不声明 E2/E3 安装验收通过。

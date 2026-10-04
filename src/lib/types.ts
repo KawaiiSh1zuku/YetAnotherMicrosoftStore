@@ -25,6 +25,14 @@ export type ErrorCode =
   | "no_compatible_package"
   | "dependency_unresolved"
   | "download_failed"
+  | "download_proxy_failed"
+  | "download_proxy_auth_required"
+  | "download_timeout"
+  | "download_connection_failed"
+  | "download_response_failed"
+  | "download_http_status"
+  | "download_redirect_rejected"
+  | "download_io_failed"
   | "download_url_expired"
   | "hash_mismatch"
   | "signature_invalid"
@@ -44,7 +52,11 @@ export interface SafeError {
   messageKey: string;
   retry?: "never" | "retry" | "re_resolve" | "reconcile_inventory";
   jobId?: string;
-  details?: ReadonlyArray<{ kind: "field"; field: string } | { kind: "redacted" }>;
+  details?: ReadonlyArray<
+    { kind: "field"; field: string }
+    | { kind: "http_status"; status: number }
+    | { kind: "redacted" }
+  >;
 }
 
 export interface CatalogProduct {
@@ -87,6 +99,7 @@ export interface JobSnapshot {
   stage: JobStage;
   bytesDone: number;
   bytesTotal: number | null;
+  deploymentProgress: number | null;
   version: string | null;
   architecture: Architecture | null;
   language: string | null;
@@ -181,4 +194,10 @@ export interface UpdateScanResult {
 export interface DiagnosticExport {
   fileName: string;
   destination: "downloads";
+}
+
+export interface TerminatePackageProcessesResult {
+  matched: number;
+  terminated: number;
+  failed: number;
 }

@@ -66,6 +66,8 @@ pub struct Job {
     pub stage: JobStage,
     pub bytes_done: u64,
     pub bytes_total: Option<u64>,
+    #[serde(default)]
+    pub deployment_progress: Option<u8>,
     pub version: Option<String>,
     pub architecture: Option<Architecture>,
     pub language: Option<String>,

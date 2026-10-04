@@ -39,6 +39,7 @@ use crate::{
         SystemDeploymentPort, SystemHostEnvironment, WorkerConfig, WorkerError,
     },
     jobs::{Job, JobKind, JobSnapshot, JobStage},
+    package_process::{PackageProcessManager, TerminatePackageProcessesResult},
     persistence::{Persistence, PersistenceError},
     resolver::{PackageGraph, PackageResolver, StoreLibResolverAdapter},
     settings::{DefaultProxyProvider, NetworkPolicy, ProxyProvider, MICROSOFT_PACKAGE_HOSTS},
@@ -247,6 +248,7 @@ impl ProductionApiBackend {
             stage: JobStage::Queued,
             bytes_done: 0,
             bytes_total: None,
+            deployment_progress: None,
             version: None,
             architecture: None,
             language: None,
@@ -532,6 +534,42 @@ impl ApiBackend for ProductionApiBackend {
             let view = backend.job_view(&persistence, snapshot)?;
             backend.wake.wake();
             Ok(view)
+        })
+    }
+
+    fn terminate_job_package_processes(
+        &self,
+        job_id: String,
+    ) -> ApiFuture<'_, TerminatePackageProcessesResult> {
+        let backend = self.clone();
+        Box::pin(async move {
+            let snapshot = backend
+                .open_persistence()?
+                .job_snapshot(&job_id)
+                .map_err(persistence_error)?
+                .ok_or_else(|| runtime_error(ErrorCode::DeploymentDenied, RetryAdvice::Never))?;
+            if snapshot.job.stage != JobStage::Failed
+                || !snapshot
+                    .job
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == ErrorCode::PackageInUse)
+            {
+                return Err(runtime_error(
+                    ErrorCode::DeploymentDenied,
+                    RetryAdvice::Never,
+                ));
+            }
+            let package_family_name = snapshot
+                .job
+                .package_family_name
+                .ok_or_else(|| runtime_error(ErrorCode::DeploymentDenied, RetryAdvice::Never))?;
+            tokio::task::spawn_blocking(move || {
+                PackageProcessManager::terminate(&package_family_name)
+                    .map_err(|_| runtime_error(ErrorCode::PackageInUse, RetryAdvice::Retry))
+            })
+            .await
+            .map_err(|_| runtime_error(ErrorCode::PackageInUse, RetryAdvice::Retry))?
         })
     }
 

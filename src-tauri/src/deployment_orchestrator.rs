@@ -1,6 +1,6 @@
 use crate::{
     applicability::SelectionMode,
-    deployment::DeploymentScope,
+    deployment::{DeploymentProgressCallback, DeploymentScope},
     deployment_coordinator::{CoordinatorError, DeploymentCoordinator},
     deployment_plan::DeploymentPlan,
     domain::{InstallObservation, InstallSource, PackageVersion},
@@ -19,6 +19,20 @@ pub trait DeploymentBackend {
         scope: DeploymentScope,
         package: &VerifiedPackageSet,
     ) -> Result<InventorySnapshot, CoordinatorError>;
+
+    fn install_with_progress(
+        &mut self,
+        scope: DeploymentScope,
+        package: &VerifiedPackageSet,
+        progress: DeploymentProgressCallback,
+    ) -> Result<InventorySnapshot, CoordinatorError> {
+        progress(0);
+        let result = self.install(scope, package);
+        if result.is_ok() {
+            progress(100);
+        }
+        result
+    }
 }
 
 pub struct SystemDeploymentBackend;
@@ -34,6 +48,15 @@ impl DeploymentBackend for SystemDeploymentBackend {
         package: &VerifiedPackageSet,
     ) -> Result<InventorySnapshot, CoordinatorError> {
         DeploymentCoordinator::install(scope, package)
+    }
+
+    fn install_with_progress(
+        &mut self,
+        scope: DeploymentScope,
+        package: &VerifiedPackageSet,
+        progress: DeploymentProgressCallback,
+    ) -> Result<InventorySnapshot, CoordinatorError> {
+        DeploymentCoordinator::install_with_progress(scope, package, progress)
     }
 }
 
@@ -192,6 +215,15 @@ where
         prepared: PreparedDeployment,
         persistence: &Persistence,
     ) -> Result<OrchestrationOutcome, AppErrorDto> {
+        self.commit_with_progress(prepared, persistence, std::sync::Arc::new(|_| {}))
+    }
+
+    pub fn commit_with_progress(
+        &mut self,
+        prepared: PreparedDeployment,
+        persistence: &Persistence,
+        progress: DeploymentProgressCallback,
+    ) -> Result<OrchestrationOutcome, AppErrorDto> {
         let PreparedDeployment {
             scope,
             plan,
@@ -206,7 +238,7 @@ where
             .ok_or_else(identity_error)?;
         let post_scan = self
             .backend
-            .install(scope, &plan.package_set)
+            .install_with_progress(scope, &plan.package_set, progress)
             .map_err(|error| AppErrorDto::from(&error))?;
         ensure_complete(&post_scan)?;
         verify_postcondition(&post_scan, scope, &plan)?;

@@ -92,6 +92,7 @@ fn job(job_id: &str) -> Job {
         stage: JobStage::Queued,
         bytes_done: 0,
         bytes_total: None,
+        deployment_progress: None,
         version: None,
         architecture: None,
         language: None,
@@ -135,6 +136,14 @@ fn schema_migration_is_replayable() {
         )
         .expect("inspect jobs columns");
     assert_eq!(elevation_columns, 0);
+    let deployment_progress_columns: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'deployment_progress'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("inspect deployment progress column");
+    assert_eq!(deployment_progress_columns, 1);
 }
 
 #[test]

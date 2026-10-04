@@ -11,6 +11,7 @@ import type {
   JobControl,
   JobEventPage,
   JobSnapshot,
+  TerminatePackageProcessesResult,
   UpdateScanResult,
 } from "./types";
 
@@ -50,6 +51,7 @@ export interface StoreClient {
   startInstall(request: StartJobRequest): Promise<JobSnapshot>;
   startUpdate(request: StartJobRequest): Promise<JobSnapshot>;
   requestJobControl(request: JobControlRequest): Promise<JobSnapshot>;
+  terminateJobPackageProcesses(jobId: string): Promise<TerminatePackageProcessesResult>;
   getJob(jobId: string): Promise<JobSnapshot | null>;
   listJobs(): Promise<JobSnapshot[]>;
   listJobEvents(request: ListJobEventsRequest): Promise<JobEventPage>;
@@ -68,6 +70,7 @@ export const tauriClient: StoreClient = {
   startInstall: (request) => invoke("start_install", { request }),
   startUpdate: (request) => invoke("start_update", { request }),
   requestJobControl: (request) => invoke("request_job_control", { request }),
+  terminateJobPackageProcesses: (jobId) => invoke("terminate_job_package_processes", { jobId }),
   getJob: (jobId) => invoke("get_job", { jobId }),
   listJobs: () => invoke("list_jobs"),
   listJobEvents: (request) => invoke("list_job_events", { request }),

@@ -17,7 +17,8 @@ use std::{
 use sha2::{Digest, Sha256};
 use yet_another_microsoft_store_lib::{
     download::{
-        CancellationToken, DownloadError, DownloadManager, DownloadRequest, VerifiedDownload,
+        CancellationToken, DownloadError, DownloadManager, DownloadRequest, DownloadTransportError,
+        VerifiedDownload,
     },
     error::{AppErrorDto, ErrorCode, RetryAdvice},
     settings::{NetworkPolicy, ProxyRoute},
@@ -291,6 +292,65 @@ async fn fresh_download_streams_to_a_hash_named_verified_file() {
     assert_eq!(fs::read(&verified.path).expect("verified payload"), payload);
     assert!(verified.path.starts_with(cache.0.join("verified")));
     assert!(!cache.0.join("partial/fresh-key.part").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fresh_download_reports_stream_progress_before_returning() {
+    let payload = vec![7_u8; 16 * 1024];
+    let server = TestServer::start(vec![ResponseSpec::ok(&payload).with_header("ETag", "v1")]);
+    let cache = TestDirectory::new("progress");
+    let request = request(
+        &cache.0,
+        server.url("/package.msix"),
+        &payload,
+        "progress-key",
+    );
+    let mut progress = Vec::new();
+
+    manager(1, None)
+        .download_with_progress(request, CancellationToken::new(), |done, total| {
+            progress.push((done, total));
+        })
+        .await
+        .expect("download succeeds");
+
+    assert!(!progress.is_empty());
+    assert_eq!(
+        progress.last(),
+        Some(&(payload.len() as u64, payload.len() as u64))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_http_proxy_downloads_an_allowed_microsoft_package_url() {
+    let payload = b"package returned by the configured proxy";
+    let proxy = TestServer::start(vec![ResponseSpec::ok(payload).with_header("ETag", "v1")]);
+    let cache = TestDirectory::new("http-proxy");
+    let request = request(
+        &cache.0,
+        "http://dl.delivery.mp.microsoft.com/package.msix".to_owned(),
+        payload,
+        "http-proxy-key",
+    );
+    let manager = DownloadManager::new(
+        ProxyRoute::Custom {
+            endpoint: format!("http://{}/", proxy.address),
+            credentials: None,
+        },
+        NetworkPolicy::production(["dl.delivery.mp.microsoft.com"]).expect("production policy"),
+        1,
+        None,
+    )
+    .expect("proxied manager");
+
+    let verified = manager
+        .download(request, CancellationToken::new())
+        .await
+        .expect("proxy download succeeds");
+
+    assert_eq!(fs::read(verified.path).expect("proxy payload"), payload);
+    assert!(proxy.requests()[0]
+        .starts_with("GET http://dl.delivery.mp.microsoft.com/package.msix HTTP/1.1"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -696,15 +756,81 @@ fn download_errors_map_to_stable_redacted_frontend_codes() {
     assert_eq!(expired.retry, RetryAdvice::ReResolve);
     assert!(expired.details.is_empty());
 
+    let expired_status = AppErrorDto::from(&DownloadError::UrlExpiredStatus(403));
+    assert_eq!(expired_status.code, ErrorCode::DownloadUrlExpired);
+    assert_eq!(expired_status.retry, RetryAdvice::ReResolve);
+    assert_eq!(
+        serde_json::to_value(expired_status.details).expect("safe expired status detail"),
+        serde_json::json!([{ "kind": "http_status", "status": 403 }])
+    );
+
     let hash = AppErrorDto::from(&DownloadError::HashMismatch);
     assert_eq!(hash.code, ErrorCode::HashMismatch);
     assert_eq!(hash.retry, RetryAdvice::ReResolve);
     assert!(hash.details.is_empty());
 
-    let transport = AppErrorDto::from(&DownloadError::Transport);
-    assert_eq!(transport.code, ErrorCode::DownloadFailed);
-    assert_eq!(transport.retry, RetryAdvice::Retry);
-    assert!(transport.details.is_empty());
+    for (transport, expected_code) in [
+        (
+            DownloadTransportError::ProxyConnection,
+            ErrorCode::DownloadProxyFailed,
+        ),
+        (DownloadTransportError::Timeout, ErrorCode::DownloadTimeout),
+        (
+            DownloadTransportError::Connection,
+            ErrorCode::DownloadConnectionFailed,
+        ),
+        (
+            DownloadTransportError::Request,
+            ErrorCode::DownloadConnectionFailed,
+        ),
+        (
+            DownloadTransportError::ResponseBody,
+            ErrorCode::DownloadResponseFailed,
+        ),
+    ] {
+        let error = AppErrorDto::from(&DownloadError::Transport(transport));
+        assert_eq!(error.code, expected_code);
+        assert_eq!(error.retry, RetryAdvice::Retry);
+        assert!(error.details.is_empty());
+    }
+
+    let proxy_auth = AppErrorDto::from(&DownloadError::HttpStatus(407));
+    assert_eq!(proxy_auth.code, ErrorCode::DownloadProxyAuthRequired);
+    assert_eq!(proxy_auth.retry, RetryAdvice::Never);
+    assert_eq!(
+        serde_json::to_value(proxy_auth.details).expect("safe proxy status detail"),
+        serde_json::json!([{ "kind": "http_status", "status": 407 }])
+    );
+
+    let status = AppErrorDto::from(&DownloadError::HttpStatus(502));
+    assert_eq!(status.code, ErrorCode::DownloadHttpStatus);
+    assert_eq!(status.retry, RetryAdvice::Retry);
+    assert_eq!(
+        serde_json::to_value(status.details).expect("safe status detail"),
+        serde_json::json!([{ "kind": "http_status", "status": 502 }])
+    );
+
+    for (source, expected_code, expected_retry) in [
+        (
+            DownloadError::RedirectRejected,
+            ErrorCode::DownloadRedirectRejected,
+            RetryAdvice::Never,
+        ),
+        (
+            DownloadError::Io,
+            ErrorCode::DownloadIoFailed,
+            RetryAdvice::Retry,
+        ),
+        (
+            DownloadError::InvalidRequest,
+            ErrorCode::DownloadFailed,
+            RetryAdvice::Never,
+        ),
+    ] {
+        let error = AppErrorDto::from(&source);
+        assert_eq!(error.code, expected_code);
+        assert_eq!(error.retry, expected_retry);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

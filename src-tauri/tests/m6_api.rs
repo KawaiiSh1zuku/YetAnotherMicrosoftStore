@@ -1,5 +1,5 @@
 pub use yet_another_microsoft_store_lib::{
-    applicability, catalog, deployment, domain, error, inventory, job_events, jobs,
+    applicability, catalog, deployment, domain, error, inventory, job_events, jobs, package_process,
 };
 
 #[path = "../src/tauri_api.rs"]
@@ -27,6 +27,7 @@ use yet_another_microsoft_store_lib::{
     },
     job_events::{JobControl, JobEvent, StoredJobEvent},
     jobs::{Job, JobKind, JobSnapshot, JobStage},
+    package_process::TerminatePackageProcessesResult,
 };
 
 fn catalog_product() -> CatalogProduct {
@@ -82,6 +83,7 @@ fn downloading_job() -> JobSnapshot {
             stage: JobStage::Downloading,
             bytes_done: 25,
             bytes_total: Some(100),
+            deployment_progress: None,
             version: Some("1.2.3.4".to_owned()),
             architecture: Some(Architecture::X64),
             language: Some("en-US".to_owned()),
@@ -109,6 +111,7 @@ fn job_snapshot_serialization_flattens_domain_state_and_derives_controls() {
             "stage": "downloading",
             "bytesDone": 25,
             "bytesTotal": 100,
+            "deploymentProgress": null,
             "version": "1.2.3.4",
             "architecture": "x64",
             "language": "en-US",
@@ -438,6 +441,19 @@ impl ApiBackend for FixtureBackend {
         Box::pin(async { Ok(job_view()) })
     }
 
+    fn terminate_job_package_processes(
+        &self,
+        _job_id: String,
+    ) -> ApiFuture<'_, TerminatePackageProcessesResult> {
+        Box::pin(async {
+            Ok(TerminatePackageProcessesResult {
+                matched: 2,
+                terminated: 2,
+                failed: 0,
+            })
+        })
+    }
+
     fn get_job(&self, _job_id: String) -> ApiFuture<'_, Option<JobView>> {
         Box::pin(async { Ok(Some(job_view())) })
     }
@@ -627,6 +643,26 @@ async fn facade_exposes_the_complete_closed_command_set() {
         ThemeMode::Dark
     );
     api.clear_cache().await.expect("cache clear should succeed");
+    assert_eq!(
+        api.terminate_job_package_processes("job-1".to_owned())
+            .await
+            .expect("safe job process termination should succeed"),
+        TerminatePackageProcessesResult {
+            matched: 2,
+            terminated: 2,
+            failed: 0,
+        }
+    );
+}
+
+#[tokio::test]
+async fn process_termination_rejects_an_untrusted_job_identifier() {
+    let api = TauriApi::new(FixtureBackend::default());
+    let error = api
+        .terminate_job_package_processes(r"job\\other".to_owned())
+        .await
+        .expect_err("untrusted job id must fail before reaching the backend");
+    assert_eq!(error.code, ErrorCode::DeploymentDenied);
 }
 
 #[tokio::test]

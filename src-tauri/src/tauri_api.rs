@@ -13,6 +13,7 @@ use crate::{
     },
     job_events::{JobControl, StoredJobEvent},
     jobs::{JobSnapshot, JobStage},
+    package_process::TerminatePackageProcessesResult,
 };
 
 pub const JOB_CHANGED_EVENT: &str = "job://changed";
@@ -111,6 +112,13 @@ pub trait ApiBackend: Send + Sync {
     fn start_update(&self, request: StartJobSpec) -> ApiFuture<'_, JobView>;
 
     fn request_job_control(&self, request: JobControlRequest) -> ApiFuture<'_, JobView>;
+
+    fn terminate_job_package_processes(
+        &self,
+        _job_id: String,
+    ) -> ApiFuture<'_, TerminatePackageProcessesResult> {
+        Box::pin(async { Err(boundary_error(ErrorCode::DeploymentDenied)) })
+    }
 
     fn get_job(&self, job_id: String) -> ApiFuture<'_, Option<JobView>>;
 
@@ -256,6 +264,28 @@ where
             .await
             .map_err(sanitize_error)?;
         map_job_view(view)
+    }
+
+    pub async fn terminate_job_package_processes(
+        &self,
+        job_id: String,
+    ) -> Result<TerminatePackageProcessesResult, AppErrorDto> {
+        if !safe_identifier(&job_id) {
+            return Err(boundary_error(ErrorCode::DeploymentDenied));
+        }
+        let result = self
+            .backend
+            .terminate_job_package_processes(job_id)
+            .await
+            .map_err(sanitize_error)?;
+        if result.terminated > result.matched
+            || result.failed > result.matched
+            || result.terminated.saturating_add(result.failed) > result.matched
+            || result.matched > 10_000
+        {
+            return Err(boundary_error(ErrorCode::DeploymentFailed));
+        }
+        Ok(result)
     }
 
     pub async fn get_job(&self, job_id: String) -> Result<Option<ApiJobSnapshot>, AppErrorDto> {
@@ -726,6 +756,7 @@ pub struct ApiJobSnapshot {
     pub stage: JobStage,
     pub bytes_done: u64,
     pub bytes_total: Option<u64>,
+    pub deployment_progress: Option<u8>,
     pub version: Option<String>,
     pub architecture: Option<Architecture>,
     pub language: Option<String>,
@@ -764,6 +795,7 @@ impl ApiJobSnapshot {
             stage: job.stage,
             bytes_done: job.bytes_done,
             bytes_total: job.bytes_total,
+            deployment_progress: job.deployment_progress,
             version: job.version,
             architecture: job.architecture,
             language: job.language,
@@ -803,6 +835,9 @@ impl ApiJobSnapshot {
             || self
                 .bytes_total
                 .is_some_and(|total| self.bytes_done > total)
+            || self
+                .deployment_progress
+                .is_some_and(|percentage| percentage > 100)
             || self.allowed_controls != allowed_controls(self.stage)
             || self
                 .error

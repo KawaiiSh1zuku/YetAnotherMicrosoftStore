@@ -55,11 +55,21 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
     } catch (value) { setError(localizeError(value)); }
   }
 
+  const candidatesByPackage = useMemo(() => new Map(
+    (updateResult?.candidates ?? []).map((candidate) => [candidate.packageFamilyName.toLocaleLowerCase(), candidate]),
+  ), [updateResult]);
+
   const records = useMemo(() => snapshot?.records.filter((record) => {
     const needle = query.trim().toLocaleLowerCase();
     return !needle || [record.appName, record.packageName, record.packageFamilyName, record.publisher]
       .some((value) => value.toLocaleLowerCase().includes(needle));
-  }) ?? [], [query, snapshot]);
+  }).map((record, index) => ({ record, index }))
+    .sort((left, right) => {
+      const leftHasUpdate = candidatesByPackage.has(left.record.packageFamilyName.toLocaleLowerCase());
+      const rightHasUpdate = candidatesByPackage.has(right.record.packageFamilyName.toLocaleLowerCase());
+      return Number(rightHasUpdate) - Number(leftHasUpdate) || left.index - right.index;
+    })
+    .map(({ record }) => record) ?? [], [candidatesByPackage, query, snapshot]);
 
   return (
     <section className="view" aria-labelledby="installed-heading">
@@ -84,7 +94,7 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
         <div className="table-wrap">
           <table><thead><tr><th>应用包</th><th>版本</th><th>架构</th><th>来源</th><th><span className="sr-only">操作</span></th></tr></thead>
             <tbody>{records.map((record) => {
-              const candidate = updateResult?.candidates.find((item) => item.packageFamilyName === record.packageFamilyName);
+              const candidate = candidatesByPackage.get(record.packageFamilyName.toLocaleLowerCase());
               return <tr key={record.packageFullName}>
                 <td data-label="应用包"><strong title={record.appName}>{record.appName}</strong><span title={record.packageName}>{record.packageName || record.packageFamilyName}</span><span title={record.publisher}>{record.publisher}</span></td>
                 <td data-label="版本">{record.version.join(".")}</td><td data-label="架构">{record.architecture}</td>

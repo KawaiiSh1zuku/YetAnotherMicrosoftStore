@@ -829,6 +829,7 @@ fn kind_text(kind: JobEventKind) -> &'static str {
         JobEventKind::Imported => "imported",
         JobEventKind::StageChanged => "stage_changed",
         JobEventKind::ProgressRecorded => "progress_recorded",
+        JobEventKind::DeploymentProgressRecorded => "deployment_progress_recorded",
         JobEventKind::SelectionRecorded => "selection_recorded",
         JobEventKind::Failed => "failed",
         JobEventKind::Completed => "completed",

@@ -65,6 +65,14 @@ async fn request_job_control(
 }
 
 #[tauri::command]
+async fn terminate_job_package_processes(
+    state: tauri::State<'_, RuntimeState>,
+    job_id: String,
+) -> Result<package_process::TerminatePackageProcessesResult, error::AppErrorDto> {
+    api(&state).terminate_job_package_processes(job_id).await
+}
+
+#[tauri::command]
 async fn get_job(
     state: tauri::State<'_, RuntimeState>,
     job_id: String,
@@ -252,6 +260,7 @@ pub fn run() {
             start_install,
             start_update,
             request_job_control,
+            terminate_job_package_processes,
             get_job,
             list_jobs,
             list_job_events,
@@ -288,6 +297,7 @@ pub mod job_store;
 pub mod job_worker;
 pub mod jobs;
 pub mod package;
+pub mod package_process;
 pub mod package_validation;
 pub mod persistence;
 pub mod resolver;

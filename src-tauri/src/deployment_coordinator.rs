@@ -3,7 +3,7 @@ use std::{fmt, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    deployment::{DeploymentScope, WindowsDeploymentBackend},
+    deployment::{DeploymentProgressCallback, DeploymentScope, WindowsDeploymentBackend},
     inventory::{InventorySnapshot, WindowsInventory},
     package_validation::{verify_package_request, ValidationError, VerifiedPackageSet},
 };
@@ -53,19 +53,28 @@ impl DeploymentCoordinator {
         scope: DeploymentScope,
         package: &VerifiedPackageSet,
     ) -> Result<InventorySnapshot, CoordinatorError> {
+        Self::install_with_progress(scope, package, std::sync::Arc::new(|_| {}))
+    }
+
+    pub fn install_with_progress(
+        scope: DeploymentScope,
+        package: &VerifiedPackageSet,
+        progress: DeploymentProgressCallback,
+    ) -> Result<InventorySnapshot, CoordinatorError> {
         verify_package_request(&package.main).map_err(validation_error)?;
         for dependency in &package.dependencies {
             verify_package_request(dependency).map_err(validation_error)?;
         }
         match route_for_scope(scope) {
             DeploymentRoute::CurrentUserDirect => {
-                WindowsDeploymentBackend::install_current_user(package)
+                WindowsDeploymentBackend::install_current_user_with_progress(package, progress)
                     .map_err(deployment_error)?;
             }
             DeploymentRoute::AllUsersDirect => {
                 let root = protected_root();
-                let result =
-                    WindowsDeploymentBackend::stage_and_provision_all_users(package, &root);
+                let result = WindowsDeploymentBackend::stage_and_provision_all_users_with_progress(
+                    package, &root, progress,
+                );
                 let _ = std::fs::remove_dir_all(&root);
                 result.map_err(deployment_error)?;
             }
