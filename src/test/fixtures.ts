@@ -43,6 +43,7 @@ export const appDetails: AppDetails = {
 export const job: JobSnapshot = {
   jobId: "job-1",
   sequence: 4,
+  progressRevision: 0,
   productId: catalogProduct.productId,
   packageFamilyName: catalogProduct.packageFamilyName,
   title: catalogProduct.appName,
@@ -110,6 +111,13 @@ export function createClient(overrides: Partial<StoreClient> = {}): StoreClient 
     getSettings: vi.fn().mockResolvedValue(settings),
     updateSettings: vi.fn().mockResolvedValue(settings),
     clearCache: vi.fn().mockResolvedValue(undefined),
+    cleanupDatabase: vi.fn().mockResolvedValue({
+      removedJobs: 0,
+      removedEvents: 0,
+      removedCommands: 0,
+      removedDiagnostics: 0,
+      removedProgress: 0,
+    }),
     exportDiagnostics: vi.fn().mockResolvedValue({
       fileName: "yamstore-diagnostics-1.json",
       destination: "downloads",

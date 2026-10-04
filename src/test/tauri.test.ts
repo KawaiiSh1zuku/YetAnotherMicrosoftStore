@@ -11,6 +11,24 @@ describe("job event cursor handling", () => {
     expect(merged.get(job.jobId)?.stage).toBe("verifying");
   });
 
+  it("accepts a newer progress revision without changing the event sequence", () => {
+    const current = new Map([[job.jobId, job]]);
+    const merged = mergeJobSnapshots(current, [{
+      ...job,
+      progressRevision: 2,
+      bytesDone: 75,
+    }]);
+    const stale = mergeJobSnapshots(merged, [{
+      ...job,
+      progressRevision: 1,
+      bytesDone: 50,
+    }]);
+
+    expect(stale.get(job.jobId)?.sequence).toBe(job.sequence);
+    expect(stale.get(job.jobId)?.progressRevision).toBe(2);
+    expect(stale.get(job.jobId)?.bytesDone).toBe(75);
+  });
+
   it("does not replay duplicate or older changed hints", () => {
     expect(shouldReplayHint({ jobId: job.jobId, sequence: 4, updatedAt: 21 }, job)).toBe(false);
     expect(shouldReplayHint({ jobId: job.jobId, sequence: 3, updatedAt: 22 }, job)).toBe(false);

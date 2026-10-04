@@ -136,6 +136,13 @@ async fn clear_cache(state: tauri::State<'_, RuntimeState>) -> Result<(), error:
 }
 
 #[tauri::command]
+async fn cleanup_database(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<tauri_api::ApiDatabaseCleanupReport, error::AppErrorDto> {
+    api(&state).cleanup_database().await
+}
+
+#[tauri::command]
 fn export_diagnostics(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<diagnostics::DiagnosticExport, error::AppErrorDto> {
@@ -276,6 +283,7 @@ pub fn run() {
             get_settings,
             update_settings,
             clear_cache,
+            cleanup_database,
             export_diagnostics
         ])
         .build(tauri::generate_context!())

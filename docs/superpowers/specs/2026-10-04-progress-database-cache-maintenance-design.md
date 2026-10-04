@@ -123,7 +123,7 @@ API 快照以 `job_progress` 覆盖这些展示值；事件重放和投影一致
 
 ## 数据库维护
 
-新增 `clean_database` Tauri 命令和结构化 `DatabaseCleanupReport`。设置页使用危险操作确认
+新增 `cleanup_database` Tauri 命令和结构化 `DatabaseCleanupReport`。设置页使用危险操作确认
 对话框，文案明确说明它清理任务历史而不会卸载应用或重置设置。
 
 维护操作在存在未过期 worker lease、待处理命令，或存在除 `Completed`、`Cancelled`、

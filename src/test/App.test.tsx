@@ -89,6 +89,34 @@ describe("M6 desktop workbench", () => {
     );
   });
 
+  it("saves installed payload retention and confirms database cleanup", async () => {
+    const user = userEvent.setup();
+    const client = createClient({
+      cleanupDatabase: vi.fn().mockResolvedValue({
+        removedJobs: 2,
+        removedEvents: 10,
+        removedCommands: 1,
+        removedDiagnostics: 1,
+        removedProgress: 0,
+      }),
+    });
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const retention = await screen.findByRole("checkbox", { name: /安装后保留载荷/ });
+    await user.click(retention);
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(client.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ keepInstalledPayloads: true }),
+    ));
+
+    await user.click(screen.getByRole("button", { name: "清理任务数据库" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("失败任务和应用设置会保留");
+    await user.click(screen.getByRole("button", { name: "确认清理" }));
+    expect(client.cleanupDatabase).toHaveBeenCalledOnce();
+    expect(await screen.findByRole("status")).toHaveTextContent("已清理 2 个任务和 10 条历史事件");
+  });
+
   it("saves an independent update scan concurrency up to sixty four", async () => {
     const user = userEvent.setup();
     const client = createClient();
@@ -229,6 +257,15 @@ describe("M6 desktop workbench", () => {
 
     expect(await screen.findByRole("progressbar", { name: "Windows Terminal 安装进度" })).toHaveAttribute("aria-valuenow", "42");
     expect(screen.getByText("42%")).toBeVisible();
+  });
+
+  it("polls list_jobs while the queue contains an active task", async () => {
+    const client = createClient();
+    render(<App client={client} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "队列" }));
+    await screen.findByRole("article", { name: /Windows Terminal/ });
+    await waitFor(() => expect(client.listJobs).toHaveBeenCalledTimes(2), { timeout: 1_200 });
   });
 
   it("shows CPU-heavy package preparation separately from Windows deployment", async () => {

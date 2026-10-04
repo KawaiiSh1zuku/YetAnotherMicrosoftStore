@@ -104,6 +104,7 @@ export interface SelectionPreview {
 export interface JobSnapshot {
   jobId: string;
   sequence: number;
+  progressRevision: number;
   productId: string;
   packageFamilyName: string | null;
   title?: string;

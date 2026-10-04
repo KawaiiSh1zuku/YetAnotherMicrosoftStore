@@ -14,7 +14,9 @@ Evidence levels used here:
 | Process privilege | Main executable embeds `requireAdministrator`; UAC cancellation prevents startup | E0 manifest extraction and release regression |
 | Deployment scopes | CurrentUser means the running administrator account; AllUsers uses direct stage/provision/remove | E1 coordinator/orchestrator tests |
 | Privilege helper | No Broker crate, IPC protocol, sidecar, or task-level elevation stage | E0 source and bundle audit |
-| Database | Pre-release schema is created by the single `0001_initial.sql`, schema version 1 | E1 persistence tests |
+| Database | Schema version 2 upgrades v1 with `job_progress`; terminal-history cleanup checkpoints WAL and vacuums while preserving failed jobs and settings | E1 persistence tests |
+| Progress storage | Intermediate callbacks overwrite one lease-fenced row per active job; each phase emits at most one final audit event | E1 event-store and worker tests |
+| Installed payload cache | Successful jobs release verified cache references by default; retention setting and shared-file references are honored | E1 cache and worker tests; E2 install cleanup pending |
 | Frontend loading | Cargo and Tauri build outputs use the embedded custom protocol; only `tauri dev` depends on the localhost Vite server | E1 Cargo metadata and production-debug launch probe |
 | Search metadata | Bounded detail hydration exposes app name, package name, PFN, publisher, formats, and allowlisted icon | E1 protocol/API/UI tests |
 | Package selection | Host capability is a hard gate; architecture settings rank compatible candidates; ordered language preferences fall back to `en-US` and then any available language resource | E1 applicability/worker tests |

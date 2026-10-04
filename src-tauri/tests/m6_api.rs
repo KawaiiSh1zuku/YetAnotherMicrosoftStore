@@ -6,10 +6,10 @@ pub use yet_another_microsoft_store_lib::{
 mod tauri_api;
 
 use tauri_api::{
-    ApiAppDetails, ApiAppSettings, ApiBackend, ApiCatalogProduct, ApiDeploymentScope, ApiFuture,
-    ApiInventorySnapshot, ApiJobSnapshot, ApiUpdateCandidate, ApiUpdateScanResult,
-    AppDetailsSource, DetailsRequest, JobChangedHint, JobControlRequest, JobView,
-    ListJobEventsRequest, LocalProductAction, LocalProductActionKind, SearchRequest,
+    ApiAppDetails, ApiAppSettings, ApiBackend, ApiCatalogProduct, ApiDatabaseCleanupReport,
+    ApiDeploymentScope, ApiFuture, ApiInventorySnapshot, ApiJobSnapshot, ApiUpdateCandidate,
+    ApiUpdateScanResult, AppDetailsSource, DetailsRequest, JobChangedHint, JobControlRequest,
+    JobView, ListJobEventsRequest, LocalProductAction, LocalProductActionKind, SearchRequest,
     StartJobRequest, StartJobSpec, TauriApi, JOB_CHANGED_EVENT,
 };
 use yet_another_microsoft_store_lib::{
@@ -106,6 +106,7 @@ fn job_snapshot_serialization_flattens_domain_state_and_derives_controls() {
         serde_json::json!({
             "jobId": "job-1",
             "sequence": 4,
+            "progressRevision": 0,
             "productId": "9NBLGGH4NNS1",
             "packageFamilyName": "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
             "title": "Windows Terminal",
@@ -399,6 +400,7 @@ fn job_view() -> JobView {
     JobView {
         snapshot: downloading_job(),
         title: Some("Windows Terminal".to_owned()),
+        progress_revision: 0,
     }
 }
 
@@ -579,6 +581,18 @@ impl ApiBackend for FixtureBackend {
     fn clear_cache(&self) -> ApiFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
+
+    fn cleanup_database(&self) -> ApiFuture<'_, ApiDatabaseCleanupReport> {
+        Box::pin(async {
+            Ok(ApiDatabaseCleanupReport {
+                removed_jobs: 2,
+                removed_events: 10,
+                removed_commands: 1,
+                removed_diagnostics: 1,
+                removed_progress: 0,
+            })
+        })
+    }
 }
 
 fn selection_preview() -> SelectionPreview {
@@ -708,6 +722,13 @@ async fn facade_exposes_the_complete_closed_command_set() {
         ThemeMode::Dark
     );
     api.clear_cache().await.expect("cache clear should succeed");
+    assert_eq!(
+        api.cleanup_database()
+            .await
+            .expect("database cleanup should succeed")
+            .removed_events,
+        10
+    );
     api.launch_installed_app("9NBLGGH4NNS1".to_owned())
         .await
         .expect("installed application launch should succeed");

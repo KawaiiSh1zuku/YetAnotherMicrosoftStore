@@ -127,7 +127,7 @@ pub(crate) fn deployment_checkpoint(
     Ok(Some(checkpoint))
 }
 
-fn append_in_transaction(
+pub(crate) fn append_in_transaction(
     transaction: &Connection,
     job_id: &str,
     expected_sequence: u64,
@@ -198,6 +198,17 @@ fn append_in_transaction(
             "DELETE FROM deployment_checkpoints WHERE job_id = ?1",
             [job_id],
         )?;
+    }
+    if matches!(
+        &event,
+        JobEvent::StageChanged { .. }
+            | JobEvent::DeploymentBlocked { .. }
+            | JobEvent::Failed { .. }
+            | JobEvent::Completed
+            | JobEvent::Cancelled
+            | JobEvent::Recovered { .. }
+    ) {
+        transaction.execute("DELETE FROM job_progress WHERE job_id = ?1", [job_id])?;
     }
     save_job_projection(transaction, &job)?;
     transaction.execute(

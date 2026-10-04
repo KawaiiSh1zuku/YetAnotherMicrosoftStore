@@ -27,6 +27,7 @@ const settingsSchema = z.object({
   proxyHost: z.string().optional(),
   proxyPort: z.number().int().min(0).max(65535).nullable().optional(),
   cacheEnabled: z.boolean(),
+  keepInstalledPayloads: z.boolean(),
   maxCacheGiB: z.number().int().min(1).max(1024),
   retentionDays: z.number().int().min(1).max(365),
   maxConcurrentDownloads: z.number().int().min(1).max(8),
@@ -78,6 +79,7 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
       proxyHost: isCustomProxy(values.proxyMode) ? values.proxyHost ?? null : null,
       proxyPort: isCustomProxy(values.proxyMode) ? values.proxyPort ?? null : null,
       cacheEnabled: values.cacheEnabled,
+      keepInstalledPayloads: values.keepInstalledPayloads,
       maxCacheBytes: values.maxCacheGiB * 1024 ** 3,
       retentionDays: values.retentionDays,
       maxConcurrentDownloads: values.maxConcurrentDownloads,
@@ -96,6 +98,14 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
     setError(null);
     try { await client.clearCache(); setMessage("已清理未被任务使用的缓存。"); }
     catch (value) { setError(localizeError(value)); }
+  }
+
+  async function cleanupDatabase() {
+    setError(null);
+    try {
+      const report = await client.cleanupDatabase();
+      setMessage(`已清理 ${report.removedJobs} 个任务和 ${report.removedEvents} 条历史事件。`);
+    } catch (value) { setError(localizeError(value)); }
   }
 
   async function exportDiagnostics() {
@@ -183,6 +193,7 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
 
         <SettingsSection icon={<Database aria-hidden="true" />} title="缓存与并发">
           <label className="toggle-row"><span><strong>启用已验证包缓存</strong><small>重复安装时复用通过校验的载荷</small></span><input type="checkbox" {...register("cacheEnabled")} /></label>
+          <label className="toggle-row"><span><strong>安装后保留载荷</strong><small>关闭时，安装成功后删除该任务的已验证包文件</small></span><input type="checkbox" {...register("keepInstalledPayloads")} /></label>
           <div className="field-grid">
             <Field label="缓存上限（GiB）" error={errors.maxCacheGiB?.message}><Input type="number" {...register("maxCacheGiB", { valueAsNumber: true })} /></Field>
             <Field label="保留天数" error={errors.retentionDays?.message}><Input type="number" {...register("retentionDays", { valueAsNumber: true })} /></Field>
@@ -190,6 +201,7 @@ export function SettingsView({ client, settings, loadError, onSettingsChanged }:
             <Field label="更新扫描并发数" error={errors.maxConcurrentUpdateScans?.message}><Input type="number" min={1} max={64} {...register("maxConcurrentUpdateScans", { valueAsNumber: true })} /></Field>
           </div>
           <ConfirmDialog trigger={<Button variant="danger">清理缓存</Button>} title="清理可回收缓存" description="只会删除未被任务占用的缓存，不会卸载应用。" confirmLabel="确认清理" destructive onConfirm={clearCache} />
+          <ConfirmDialog trigger={<Button variant="danger">清理任务数据库</Button>} title="清理已结束任务" description="将删除已完成和已取消任务的历史记录，并压缩数据库。失败任务和应用设置会保留。" confirmLabel="确认清理" destructive onConfirm={cleanupDatabase} />
         </SettingsSection>
 
         <SettingsSection icon={<Palette aria-hidden="true" />} title="外观与诊断">
@@ -214,6 +226,7 @@ function formValues(settings: AppSettings | null): SettingsForm {
     languages: (settings?.preferredLanguages ?? ["en-US"]).map((tag) => ({ tag })),
     proxyMode: settings?.proxyMode ?? "disabled", proxyHost: settings?.proxyHost ?? "", proxyPort: settings?.proxyPort ?? null,
     cacheEnabled: settings?.cacheEnabled ?? true, maxCacheGiB: Math.max(1, Math.round((settings?.maxCacheBytes ?? 10 * 1024 ** 3) / 1024 ** 3)),
+    keepInstalledPayloads: settings?.keepInstalledPayloads ?? false,
     retentionDays: settings?.retentionDays ?? 30, maxConcurrentDownloads: settings?.maxConcurrentDownloads ?? 2,
     maxConcurrentUpdateScans: settings?.maxConcurrentUpdateScans ?? 16,
     theme: settings?.theme ?? "system", diagnosticsEnabled: settings?.diagnosticsEnabled ?? false,

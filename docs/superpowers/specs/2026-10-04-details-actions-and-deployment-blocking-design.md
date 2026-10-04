@@ -127,7 +127,7 @@ Generic Resume remains for Paused, Interrupted, and retryable Failed jobs. It mu
 
 ## Persistence
 
-The application is not released and retains the repository's single final `0001_initial.sql` schema. Extend that schema rather than creating an upgrade chain.
+`0001_initial.sql` remains the immutable compatibility baseline. Current development databases upgrade through additive migrations; the progress and maintenance work introduces schema v2 in `0002_job_progress_and_maintenance.sql`.
 
 Persist:
 

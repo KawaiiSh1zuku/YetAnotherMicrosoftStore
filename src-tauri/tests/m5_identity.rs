@@ -235,7 +235,7 @@ fn initial_schema_round_trips_association_confidence() {
         .upsert_package_association(&association)
         .expect("persist association");
 
-    assert_eq!(store.schema_version().expect("schema version"), 1);
+    assert_eq!(store.schema_version().expect("schema version"), 2);
     assert_eq!(
         store
             .package_association("Example.App_abc")

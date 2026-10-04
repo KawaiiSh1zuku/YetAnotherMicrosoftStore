@@ -11,7 +11,7 @@ use yet_another_microsoft_store_lib::{
     },
     jobs::{Job, JobKind, JobStage},
     package_process::ProcessDescriptor,
-    persistence::{Persistence, PersistenceError},
+    persistence::{JobProgressPhase, JobProgressUpdate, Persistence, PersistenceError},
 };
 
 struct TestDatabase(PathBuf);
@@ -477,6 +477,192 @@ fn semantic_events_reject_illegal_terminal_transition_and_progress_regression() 
         ),
         Err(PersistenceError::EventHistoryInvalid)
     ));
+}
+
+#[test]
+fn runtime_download_progress_overwrites_without_event_growth_and_finalizes_once() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("open database");
+    created(&store, "job-runtime-download");
+    for (sequence, stage) in [
+        (1, JobStage::Resolving),
+        (2, JobStage::Selecting),
+        (3, JobStage::Downloading),
+    ] {
+        store
+            .append_job_event(
+                "job-runtime-download",
+                sequence,
+                JobEvent::StageChanged { stage },
+                100 + sequence as i64,
+            )
+            .expect("advance job");
+    }
+    let lease = store
+        .acquire_worker_lease("worker", 200, 100)
+        .expect("acquire lease")
+        .expect("lease available");
+    let event_count = store.list_job_events(0, 100).expect("events").len();
+
+    let first = store
+        .record_job_progress_leased(
+            "job-runtime-download",
+            4,
+            JobProgressUpdate::Download {
+                bytes_done: 100,
+                bytes_total: Some(1_000),
+            },
+            201,
+            &lease,
+            201,
+        )
+        .expect("record first progress");
+    assert_eq!(first.revision, 1);
+    let second = store
+        .record_job_progress_leased(
+            "job-runtime-download",
+            4,
+            JobProgressUpdate::Download {
+                bytes_done: 250,
+                bytes_total: Some(1_000),
+            },
+            202,
+            &lease,
+            202,
+        )
+        .expect("overwrite runtime progress");
+    assert_eq!(second.revision, 2);
+    assert_eq!(
+        store.list_job_events(0, 100).expect("events").len(),
+        event_count
+    );
+
+    let (projected, revision) = store
+        .job_snapshot_with_progress("job-runtime-download")
+        .expect("load progress projection")
+        .expect("job exists");
+    assert_eq!((projected.sequence, revision), (4, 2));
+    assert_eq!(
+        (projected.job.bytes_done, projected.job.bytes_total),
+        (250, Some(1_000))
+    );
+
+    for update in [
+        JobProgressUpdate::Download {
+            bytes_done: 250,
+            bytes_total: Some(1_000),
+        },
+        JobProgressUpdate::Download {
+            bytes_done: 200,
+            bytes_total: Some(1_000),
+        },
+    ] {
+        assert!(matches!(
+            store.record_job_progress_leased("job-runtime-download", 4, update, 203, &lease, 203,),
+            Err(PersistenceError::EventHistoryInvalid)
+        ));
+    }
+
+    let finalized = store
+        .finalize_job_progress_leased(
+            "job-runtime-download",
+            4,
+            JobProgressPhase::Downloading,
+            204,
+            &lease,
+            204,
+        )
+        .expect("finalize progress")
+        .expect("progress existed");
+    assert_eq!(finalized.sequence, 5);
+    assert_eq!(finalized.job.bytes_done, 250);
+    assert_eq!(
+        store.list_job_events(0, 100).expect("events").len(),
+        event_count + 1
+    );
+    assert!(store
+        .finalize_job_progress_leased(
+            "job-runtime-download",
+            5,
+            JobProgressPhase::Downloading,
+            205,
+            &lease,
+            205,
+        )
+        .expect("repeat finalize")
+        .is_none());
+}
+
+#[test]
+fn runtime_progress_rejects_stale_leases_and_wrong_phases() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("open database");
+    created(&store, "job-runtime-lease");
+    for (sequence, stage) in [
+        (1, JobStage::Resolving),
+        (2, JobStage::Selecting),
+        (3, JobStage::Downloading),
+    ] {
+        store
+            .append_job_event(
+                "job-runtime-lease",
+                sequence,
+                JobEvent::StageChanged { stage },
+                100 + sequence as i64,
+            )
+            .expect("advance job");
+    }
+    let expired = store
+        .acquire_worker_lease("old-owner", 200, 10)
+        .expect("acquire old lease")
+        .expect("lease available");
+    store
+        .record_job_progress_leased(
+            "job-runtime-lease",
+            4,
+            JobProgressUpdate::Download {
+                bytes_done: 100,
+                bytes_total: Some(1_000),
+            },
+            201,
+            &expired,
+            201,
+        )
+        .expect("old owner records progress");
+    let current = store
+        .acquire_worker_lease("new-owner", 210, 100)
+        .expect("take over lease")
+        .expect("expired lease can be replaced");
+    assert!(matches!(
+        store.record_job_progress_leased(
+            "job-runtime-lease",
+            4,
+            JobProgressUpdate::Download {
+                bytes_done: 200,
+                bytes_total: Some(1_000),
+            },
+            211,
+            &expired,
+            211,
+        ),
+        Err(PersistenceError::LeaseConflict)
+    ));
+    assert!(matches!(
+        store.record_job_progress_leased(
+            "job-runtime-lease",
+            4,
+            JobProgressUpdate::Deployment { percentage: 20 },
+            211,
+            &current,
+            211,
+        ),
+        Err(PersistenceError::EventHistoryInvalid)
+    ));
+    let (projected, revision) = store
+        .job_snapshot_with_progress("job-runtime-lease")
+        .expect("load projection")
+        .expect("job exists");
+    assert_eq!((projected.job.bytes_done, revision), (100, 1));
 }
 
 #[test]
@@ -1103,6 +1289,84 @@ fn recovery_noop_is_rejected_and_verifying_can_finish_without_deployment() {
         .transition_to(JobStage::Completed, 200)
         .expect("already-current verification can complete");
     assert_eq!(domain_job.stage, JobStage::Completed);
+}
+
+#[test]
+fn legacy_direct_deploying_transition_is_replay_only_compatible() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("open database");
+    created(&store, "job-legacy-deploy");
+    for (sequence, stage) in [
+        (1, JobStage::Resolving),
+        (2, JobStage::Selecting),
+        (3, JobStage::Downloading),
+        (4, JobStage::Verifying),
+    ] {
+        store
+            .append_job_event(
+                "job-legacy-deploy",
+                sequence,
+                JobEvent::StageChanged { stage },
+                100 + sequence as i64,
+            )
+            .expect("advance legacy fixture");
+    }
+    assert!(matches!(
+        store.append_job_event(
+            "job-legacy-deploy",
+            5,
+            JobEvent::StageChanged {
+                stage: JobStage::Deploying,
+            },
+            106,
+        ),
+        Err(PersistenceError::EventHistoryInvalid)
+    ));
+    let mut projected = store
+        .job_snapshot("job-legacy-deploy")
+        .expect("snapshot")
+        .expect("job exists")
+        .job;
+    projected.stage = JobStage::Deploying;
+    projected.deployment_progress = Some(0);
+    projected.updated_at = 106;
+    drop(store);
+
+    let connection = Connection::open(&database.0).expect("open legacy fixture database");
+    connection
+        .execute(
+            "INSERT INTO job_events
+             (job_id, sequence, event_kind, payload_json, projection_json, occurred_at)
+             VALUES (?1, 6, 'stage_changed', ?2, ?3, 106)",
+            rusqlite::params![
+                "job-legacy-deploy",
+                serde_json::to_string(&JobEvent::StageChanged {
+                    stage: JobStage::Deploying,
+                })
+                .expect("serialize event"),
+                serde_json::to_string(&projected).expect("serialize projection"),
+            ],
+        )
+        .expect("insert legacy direct transition");
+    connection
+        .execute(
+            "UPDATE jobs SET stage = 'deploying', deployment_progress = 0,
+             event_sequence = 6, updated_at = 106 WHERE job_id = 'job-legacy-deploy'",
+            [],
+        )
+        .expect("update legacy projection");
+    drop(connection);
+
+    let reopened = Persistence::open(&database.0).expect("replay legacy history");
+    assert_eq!(
+        reopened
+            .job_snapshot("job-legacy-deploy")
+            .expect("snapshot")
+            .expect("job exists")
+            .job
+            .stage,
+        JobStage::Deploying
+    );
 }
 
 #[test]

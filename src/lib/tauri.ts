@@ -45,6 +45,14 @@ export interface ListJobEventsRequest {
   limit: number;
 }
 
+export interface DatabaseCleanupReport {
+  removedJobs: number;
+  removedEvents: number;
+  removedCommands: number;
+  removedDiagnostics: number;
+  removedProgress: number;
+}
+
 export interface StoreClient {
   searchApps(request: SearchRequest): Promise<CatalogProduct[]>;
   getAppDetails(request: DetailsRequest): Promise<AppDetails>;
@@ -61,6 +69,7 @@ export interface StoreClient {
   getSettings(): Promise<AppSettings>;
   updateSettings(settings: AppSettings): Promise<AppSettings>;
   clearCache(): Promise<void>;
+  cleanupDatabase(): Promise<DatabaseCleanupReport>;
   exportDiagnostics(): Promise<DiagnosticExport>;
   subscribeJobChanges(listener: (hint: JobChangedHint) => void): Promise<UnlistenFn>;
 }
@@ -81,6 +90,7 @@ export const tauriClient: StoreClient = {
   getSettings: () => invoke("get_settings"),
   updateSettings: (settings) => invoke("update_settings", { settings }),
   clearCache: () => invoke("clear_cache"),
+  cleanupDatabase: () => invoke("cleanup_database"),
   exportDiagnostics: () => invoke("export_diagnostics"),
   subscribeJobChanges: async (listener) =>
     listen<JobChangedHint>("job://changed", ({ payload }) => listener(payload)),
@@ -97,7 +107,11 @@ export function mergeJobSnapshots(
   const jobs = new Map(current);
   for (const snapshot of incoming) {
     const existing = jobs.get(snapshot.jobId);
-    if (existing === undefined || snapshot.sequence > existing.sequence) {
+    if (
+      existing === undefined
+      || snapshot.sequence > existing.sequence
+      || (snapshot.sequence === existing.sequence && snapshot.progressRevision > existing.progressRevision)
+    ) {
       jobs.set(snapshot.jobId, {
         ...snapshot,
         title: snapshot.title ?? existing?.title,

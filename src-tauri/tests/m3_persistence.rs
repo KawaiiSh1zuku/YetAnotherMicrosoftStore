@@ -26,7 +26,7 @@ impl Drop for TestDatabase {
 fn initial_schema_contains_final_applicability_identity_and_event_tables() {
     let database = TestDatabase::new();
     let store = Persistence::open(&database.0).expect("create final schema");
-    assert_eq!(store.schema_version().expect("schema version"), 1);
+    assert_eq!(store.schema_version().expect("schema version"), 2);
     drop(store);
 
     let connection = Connection::open(&database.0).expect("inspect final schema");
@@ -39,6 +39,7 @@ fn initial_schema_contains_final_applicability_identity_and_event_tables() {
         "job_commands",
         "worker_leases",
         "job_targets",
+        "job_progress",
     ] {
         let present: i64 = connection
             .query_row(

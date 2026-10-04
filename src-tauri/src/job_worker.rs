@@ -21,7 +21,9 @@ use crate::{
         SystemDeploymentBackend, SystemPackagePreflight,
     },
     deployment_plan::{build_deployment_plan, DeploymentPlan},
-    domain::{Architecture, CacheEntry, PackageKind, PackageVersion},
+    domain::{
+        Architecture, CacheEntry, DiagnosticEvent, DiagnosticOperation, PackageKind, PackageVersion,
+    },
     download::{
         CancellationToken, DownloadError, DownloadManager, DownloadRequest, VerifiedDownload,
     },
@@ -34,7 +36,7 @@ use crate::{
     jobs::{Job, JobKind, JobSnapshot, JobStage},
     package_process::{PackageProcessManager, ProcessDescriptor},
     package_validation::verify_package_request,
-    persistence::{Persistence, PersistenceError},
+    persistence::{JobProgressPhase, JobProgressUpdate, Persistence, PersistenceError},
     resolver::{PackageGraph, PackageResolver, ResolverError, StoreLibResolverAdapter},
 };
 
@@ -60,6 +62,8 @@ pub struct WorkerConfig {
     pub owner_id: String,
     pub lease_ttl: i64,
     pub heartbeat_interval: Duration,
+    pub progress_flush_interval: Duration,
+    pub keep_installed_payloads: bool,
     pub cache_root: PathBuf,
 }
 
@@ -605,6 +609,7 @@ where
         if self.config.owner_id.is_empty()
             || self.config.lease_ttl <= 0
             || self.config.heartbeat_interval.is_zero()
+            || self.config.progress_flush_interval.is_zero()
             || !self.config.cache_root.is_absolute()
         {
             return Err(WorkerError::InvalidConfiguration);
@@ -681,8 +686,7 @@ where
         match result {
             LeaseAware::LeaseLost => Ok(RunOnceOutcome::LeaseLost),
             LeaseAware::Ready(Ok(ReconciliationOutcome::Converged)) => {
-                let completed = self.append(lease, snapshot, JobEvent::Completed)?;
-                Ok(processed(completed))
+                self.complete(lease, snapshot)
             }
             LeaseAware::Ready(Ok(ReconciliationOutcome::NotConverged)) => {
                 let failed = self.append(
@@ -894,8 +898,7 @@ where
             }
         };
         let DeploymentPreparation::Ready(prepared) = preparation else {
-            let completed = self.append(lease, snapshot, JobEvent::Completed)?;
-            return Ok(processed(completed));
+            return self.complete(lease, snapshot);
         };
         snapshot = self.append(
             lease,
@@ -979,8 +982,7 @@ where
             }
         };
         let DeploymentPreparation::Ready(prepared) = preparation else {
-            let completed = self.append(lease, snapshot, JobEvent::Completed)?;
-            return Ok(processed(completed));
+            return self.complete(lease, snapshot);
         };
         let result = run_deployment(
             &self.store,
@@ -1002,10 +1004,7 @@ where
     ) -> Result<RunOnceOutcome, WorkerError> {
         match result {
             DeploymentRun::LeaseLost => Ok(RunOnceOutcome::LeaseLost),
-            DeploymentRun::Completed(snapshot) => {
-                let completed = self.append(lease, snapshot, JobEvent::Completed)?;
-                Ok(processed(completed))
-            }
+            DeploymentRun::Completed(snapshot) => self.complete(lease, snapshot),
             DeploymentRun::Failed { snapshot, error } if error.code == ErrorCode::PackageInUse => {
                 let job_id = snapshot.job.job_id.clone();
                 let Some(package_family_name) = snapshot.job.package_family_name.clone() else {
@@ -1055,6 +1054,31 @@ where
     ) -> Result<RunOnceOutcome, WorkerError> {
         let failed = self.append(lease, snapshot, JobEvent::Failed { error })?;
         Ok(processed(failed))
+    }
+
+    fn complete(
+        &self,
+        lease: &WorkerLease,
+        snapshot: JobSnapshot,
+    ) -> Result<RunOnceOutcome, WorkerError> {
+        let completed = self.append(lease, snapshot, JobEvent::Completed)?;
+        if !self.config.keep_installed_payloads {
+            let job_id = completed.job.job_id.clone();
+            let cleanup = CacheManager::new(&self.config.cache_root)
+                .and_then(|cache| cache.remove_verified_for_job(&self.store, &job_id));
+            if cleanup.is_err() {
+                let _ = self.store.record_diagnostic(&DiagnosticEvent {
+                    job_id: Some(job_id),
+                    code: ErrorCode::DownloadIoFailed,
+                    stage: Some(JobStage::Completed),
+                    operation: DiagnosticOperation::Storage,
+                    os_error_code: None,
+                    retryable: true,
+                    occurred_at: self.clock.now(),
+                });
+            }
+        }
+        Ok(processed(completed))
     }
 
     fn append(
@@ -1147,15 +1171,44 @@ where
     let future = deployment.commit(prepared, progress_tx);
     tokio::pin!(future);
     let mut heartbeat = tokio::time::interval(config.heartbeat_interval);
+    let mut progress_flush = tokio::time::interval(config.progress_flush_interval);
+    let mut pending = None;
+    let mut last_recorded = None;
     heartbeat.tick().await;
+    progress_flush.tick().await;
     loop {
         tokio::select! {
             result = &mut future => {
                 while let Ok(percentage) = progress_rx.try_recv() {
-                    match record_deployment_progress(store, clock, snapshot, lease, percentage)? {
-                        Some(next) => snapshot = next,
+                    queue_deployment_progress(&mut pending, last_recorded, percentage);
+                }
+                if pending.is_some() && snapshot.job.stage == JobStage::Preparing {
+                    snapshot = match enter_deploying(store, clock, snapshot, lease)? {
+                        Some(next) => next,
                         None => return Ok(DeploymentRun::LeaseLost),
-                    }
+                    };
+                }
+                if !flush_pending_progress(
+                    store,
+                    clock,
+                    &snapshot,
+                    lease,
+                    &mut pending,
+                    &mut last_recorded,
+                )? {
+                    return Ok(DeploymentRun::LeaseLost);
+                }
+                if last_recorded.is_some() {
+                    snapshot = match finalize_progress(
+                        store,
+                        clock,
+                        snapshot,
+                        lease,
+                        JobProgressPhase::Deploying,
+                    )? {
+                        Some(next) => next,
+                        None => return Ok(DeploymentRun::LeaseLost),
+                    };
                 }
                 return Ok(match result {
                     Ok(()) => DeploymentRun::Completed(snapshot),
@@ -1164,10 +1217,25 @@ where
             }
             progress = progress_rx.recv() => {
                 if let Some(percentage) = progress {
-                    match record_deployment_progress(store, clock, snapshot, lease, percentage)? {
-                        Some(next) => snapshot = next,
-                        None => return Ok(DeploymentRun::LeaseLost),
+                    if snapshot.job.stage == JobStage::Preparing {
+                        snapshot = match enter_deploying(store, clock, snapshot, lease)? {
+                            Some(next) => next,
+                            None => return Ok(DeploymentRun::LeaseLost),
+                        };
                     }
+                    queue_deployment_progress(&mut pending, last_recorded, percentage);
+                }
+            }
+            _ = progress_flush.tick() => {
+                if !flush_pending_progress(
+                    store,
+                    clock,
+                    &snapshot,
+                    lease,
+                    &mut pending,
+                    &mut last_recorded,
+                )? {
+                    return Ok(DeploymentRun::LeaseLost);
                 }
             }
             _ = heartbeat.tick() => {
@@ -1181,39 +1249,93 @@ where
     }
 }
 
-fn record_deployment_progress<C: Clock>(
+fn enter_deploying<C: Clock>(
     store: &Persistence,
     clock: &C,
-    mut snapshot: JobSnapshot,
+    snapshot: JobSnapshot,
     lease: &WorkerLease,
-    percentage: u8,
 ) -> Result<Option<JobSnapshot>, WorkerError> {
     let now = clock.now();
-    if snapshot.job.stage == JobStage::Preparing {
-        snapshot = match store.append_job_event_leased(
-            &snapshot.job.job_id,
-            snapshot.sequence,
-            JobEvent::StageChanged {
-                stage: JobStage::Deploying,
-            },
-            now,
-            lease,
-            now,
-        ) {
-            Ok(next) => next,
-            Err(PersistenceError::LeaseConflict) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-    }
     match store.append_job_event_leased(
         &snapshot.job.job_id,
         snapshot.sequence,
-        JobEvent::DeploymentProgressRecorded { percentage },
+        JobEvent::StageChanged {
+            stage: JobStage::Deploying,
+        },
         now,
         lease,
         now,
     ) {
         Ok(next) => Ok(Some(next)),
+        Err(PersistenceError::LeaseConflict) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn queue_deployment_progress(
+    pending: &mut Option<JobProgressUpdate>,
+    last_recorded: Option<JobProgressUpdate>,
+    percentage: u8,
+) {
+    let before = pending
+        .as_ref()
+        .or(last_recorded.as_ref())
+        .and_then(|update| match update {
+            JobProgressUpdate::Deployment { percentage } => Some(*percentage),
+            JobProgressUpdate::Download { .. } => None,
+        });
+    if before.is_none_or(|before| percentage > before) {
+        *pending = Some(JobProgressUpdate::Deployment { percentage });
+    }
+}
+
+fn flush_pending_progress<C: Clock>(
+    store: &Persistence,
+    clock: &C,
+    snapshot: &JobSnapshot,
+    lease: &WorkerLease,
+    pending: &mut Option<JobProgressUpdate>,
+    last_recorded: &mut Option<JobProgressUpdate>,
+) -> Result<bool, WorkerError> {
+    let Some(update) = pending.take() else {
+        return Ok(true);
+    };
+    let now = clock.now();
+    match store.record_job_progress_leased(
+        &snapshot.job.job_id,
+        snapshot.sequence,
+        update,
+        now,
+        lease,
+        now,
+    ) {
+        Ok(_) => {
+            *last_recorded = Some(update);
+            Ok(true)
+        }
+        Err(PersistenceError::LeaseConflict) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn finalize_progress<C: Clock>(
+    store: &Persistence,
+    clock: &C,
+    snapshot: JobSnapshot,
+    lease: &WorkerLease,
+    phase: JobProgressPhase,
+) -> Result<Option<JobSnapshot>, WorkerError> {
+    let now = clock.now();
+    match store.finalize_job_progress_leased(
+        &snapshot.job.job_id,
+        snapshot.sequence,
+        phase,
+        now,
+        lease,
+        now,
+    ) {
+        Ok(Some(next)) => Ok(Some(next)),
+        Ok(None) => Ok(Some(snapshot)),
         Err(PersistenceError::LeaseConflict) => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -1238,24 +1360,39 @@ where
     tokio::pin!(future);
     let mut heartbeat = tokio::time::interval(config.heartbeat_interval);
     let mut controls = tokio::time::interval(config.heartbeat_interval);
+    let mut progress_flush = tokio::time::interval(config.progress_flush_interval);
+    let mut pending = None;
+    let mut last_recorded = None;
     heartbeat.tick().await;
     controls.tick().await;
+    progress_flush.tick().await;
     loop {
         tokio::select! {
             result = &mut future => {
                 while let Ok(progress) = progress_rx.try_recv() {
-                    let now = clock.now();
-                    snapshot = store.append_job_event_leased(
-                        &snapshot.job.job_id,
-                        snapshot.sequence,
-                        JobEvent::ProgressRecorded {
-                            bytes_done: progress.bytes_done,
-                            bytes_total: Some(progress.bytes_total),
-                        },
-                        now,
+                    queue_download_progress(&mut pending, last_recorded, progress);
+                }
+                if !flush_pending_progress(
+                    store,
+                    clock,
+                    &snapshot,
+                    lease,
+                    &mut pending,
+                    &mut last_recorded,
+                )? {
+                    return Ok(DownloadRun::LeaseLost);
+                }
+                if last_recorded.is_some() {
+                    snapshot = match finalize_progress(
+                        store,
+                        clock,
+                        snapshot,
                         lease,
-                        now,
-                    )?;
+                        JobProgressPhase::Downloading,
+                    )? {
+                        Some(next) => next,
+                        None => return Ok(DownloadRun::LeaseLost),
+                    };
                 }
                 return Ok(match result {
                     Ok(downloads) => DownloadRun::Completed { snapshot, downloads },
@@ -1265,18 +1402,20 @@ where
             }
             progress = progress_rx.recv() => {
                 if let Some(progress) = progress {
-                    let now = clock.now();
-                    snapshot = store.append_job_event_leased(
-                        &snapshot.job.job_id,
-                        snapshot.sequence,
-                        JobEvent::ProgressRecorded {
-                            bytes_done: progress.bytes_done,
-                            bytes_total: Some(progress.bytes_total),
-                        },
-                        now,
-                        lease,
-                        now,
-                    )?;
+                    queue_download_progress(&mut pending, last_recorded, progress);
+                }
+            }
+            _ = progress_flush.tick() => {
+                if !flush_pending_progress(
+                    store,
+                    clock,
+                    &snapshot,
+                    lease,
+                    &mut pending,
+                    &mut last_recorded,
+                )? {
+                    cancellation.cancel();
+                    return Ok(DownloadRun::LeaseLost);
                 }
             }
             _ = controls.tick() => {
@@ -1298,6 +1437,33 @@ where
                 }
             }
         }
+    }
+}
+
+fn queue_download_progress(
+    pending: &mut Option<JobProgressUpdate>,
+    last_recorded: Option<JobProgressUpdate>,
+    progress: DownloadProgress,
+) {
+    let update = JobProgressUpdate::Download {
+        bytes_done: progress.bytes_done,
+        bytes_total: Some(progress.bytes_total),
+    };
+    let before = pending.as_ref().or(last_recorded.as_ref());
+    let advances = match before {
+        Some(JobProgressUpdate::Download {
+            bytes_done,
+            bytes_total,
+        }) => {
+            progress.bytes_done > *bytes_done
+                || (progress.bytes_done == *bytes_done
+                    && Some(progress.bytes_total) != *bytes_total)
+        }
+        Some(JobProgressUpdate::Deployment { .. }) => false,
+        None => true,
+    };
+    if advances {
+        *pending = Some(update);
     }
 }
 

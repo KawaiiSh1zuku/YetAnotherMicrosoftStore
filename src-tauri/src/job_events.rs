@@ -243,6 +243,12 @@ impl JobEvent {
                 let mut next = old.clone();
                 match self {
                     Self::StageChanged { stage } => {
+                        let legacy_direct_deploy = allow_import
+                            && *stage == JobStage::Deploying
+                            && matches!(
+                                old.stage,
+                                JobStage::Verifying | JobStage::AwaitingProcessExit
+                            );
                         if matches!(
                             stage,
                             JobStage::Completed
@@ -250,7 +256,7 @@ impl JobEvent {
                                 | JobStage::Cancelled
                                 | JobStage::Interrupted
                                 | JobStage::NeedsReconciliation
-                        ) || !old.stage.can_transition_to(*stage)
+                        ) || (!old.stage.can_transition_to(*stage) && !legacy_direct_deploy)
                         {
                             return Err(PersistenceError::EventHistoryInvalid);
                         }

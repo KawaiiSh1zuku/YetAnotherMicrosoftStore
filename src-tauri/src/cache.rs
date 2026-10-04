@@ -159,6 +159,24 @@ impl CacheManager {
         Ok(())
     }
 
+    pub fn remove_verified_for_job(
+        &self,
+        persistence: &Persistence,
+        job_id: &str,
+    ) -> Result<usize, CacheError> {
+        let entries = persistence
+            .cache_entries()?
+            .into_iter()
+            .filter(|entry| {
+                entry.state == CacheState::Verified && entry.job_id.as_deref() == Some(job_id)
+            })
+            .collect::<Vec<_>>();
+        for entry in &entries {
+            self.remove_entry(persistence, entry)?;
+        }
+        Ok(entries.len())
+    }
+
     pub async fn reconcile_and_evict(
         &self,
         persistence: &Persistence,

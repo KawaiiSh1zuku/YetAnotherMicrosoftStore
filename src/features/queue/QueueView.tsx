@@ -40,6 +40,24 @@ export function QueueView({ client, seedJobs, onJobsChanged }: QueueViewProps) {
     let active = true;
     let unlisten: (() => void) | undefined;
     let replayChain = Promise.resolve();
+    let polling = false;
+
+    const pollTimer = window.setInterval(() => {
+      if (
+        !active
+        || polling
+        || ![...jobsRef.current.values()].some((job) => !terminalStages.has(job.stage))
+      ) return;
+      polling = true;
+      void client.listJobs()
+        .then((snapshots) => {
+          if (active) replaceJobs(mergeJobSnapshots(jobsRef.current, snapshots));
+        })
+        .catch((value) => {
+          if (active) setError(localizeError(value));
+        })
+        .finally(() => { polling = false; });
+    }, 500);
 
     function enqueueReplay() {
       replayChain = replayChain.then(async () => {
@@ -78,7 +96,7 @@ export function QueueView({ client, seedJobs, onJobsChanged }: QueueViewProps) {
     }
 
     void initialize();
-    return () => { active = false; unlisten?.(); };
+    return () => { active = false; window.clearInterval(pollTimer); unlisten?.(); };
   }, [client]);
 
   const visibleJobs = useMemo(() => [...jobs.values()]

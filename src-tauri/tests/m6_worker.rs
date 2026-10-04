@@ -242,11 +242,13 @@ impl DownloadPort for FakeDownload {
                     .join(format!("{}.msix", artifact.expected_sha256()));
                 fs::create_dir_all(path.parent().expect("verified parent")).expect("cache dir");
                 fs::write(&path, b"x").expect("fake verified file");
-                let _ = progress.send(DownloadProgress {
-                    update_id: artifact.update_id().to_owned(),
-                    bytes_done: artifact.expected_size(),
-                    bytes_total: artifact.expected_size(),
-                });
+                for percentage in 0..=100_u64 {
+                    let _ = progress.send(DownloadProgress {
+                        update_id: artifact.update_id().to_owned(),
+                        bytes_done: artifact.expected_size().saturating_mul(percentage) / 100,
+                        bytes_total: artifact.expected_size(),
+                    });
+                }
                 verified.push(VerifiedDownload {
                     update_id: artifact.update_id().to_owned(),
                     cache_key: artifact.cache_key().to_owned(),
@@ -325,9 +327,10 @@ impl DeploymentPort for FakeDeployment {
         }
         let delay = self.commit_delay;
         Box::pin(async move {
-            let _ = progress.send(35);
+            for percentage in 0..=100 {
+                let _ = progress.send(percentage);
+            }
             tokio::time::sleep(delay).await;
-            let _ = progress.send(100);
             Ok(())
         })
     }
@@ -597,6 +600,8 @@ fn config(owner_id: &str, cache_root: PathBuf) -> WorkerConfig {
         owner_id: owner_id.to_owned(),
         lease_ttl: 60,
         heartbeat_interval: Duration::from_millis(5),
+        progress_flush_interval: Duration::from_millis(10),
+        keep_installed_payloads: false,
         cache_root,
     }
 }
@@ -678,7 +683,7 @@ async fn run_once_fences_duplicate_workers_and_processes_oldest_job() {
 }
 
 #[tokio::test]
-async fn happy_path_freezes_safe_targets_and_persists_deploying_before_commit() {
+async fn progress_callbacks_are_coalesced_to_one_final_event_per_phase() {
     let database = TestDatabase::new();
     let store = Persistence::open(&database.0).expect("store");
     store
@@ -728,10 +733,159 @@ async fn happy_path_freezes_safe_targets_and_persists_deploying_before_commit() 
     assert_eq!(snapshot.job.bytes_done, 1);
     assert_eq!(snapshot.job.bytes_total, Some(1));
     assert_eq!(snapshot.job.deployment_progress, Some(100));
-    assert!(events.iter().any(|stored| matches!(
-        stored.event,
-        JobEvent::DeploymentProgressRecorded { percentage: 35 }
-    )));
+    let download_progress = events
+        .iter()
+        .filter_map(|stored| match stored.event {
+            JobEvent::ProgressRecorded {
+                bytes_done,
+                bytes_total,
+            } => Some((bytes_done, bytes_total)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(download_progress, vec![(1, Some(1))]);
+    let deployment_progress = events
+        .iter()
+        .filter_map(|stored| match stored.event {
+            JobEvent::DeploymentProgressRecorded { percentage } => Some(percentage),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(deployment_progress, vec![100]);
+
+    let connection = rusqlite::Connection::open(&database.0).expect("inspect progress rows");
+    let progress_rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM job_progress", [], |row| row.get(0))
+        .expect("count progress rows");
+    assert_eq!(progress_rows, 0);
+    assert!(store.cache_entries().expect("cache entries").is_empty());
+    assert!(
+        fs::read_dir(database.0.with_extension("cache").join("verified"))
+            .expect("verified cache")
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn installed_payload_retention_setting_preserves_verified_cache() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("store");
+    store
+        .append_job_event(
+            "job-retained-payload",
+            0,
+            JobEvent::Created {
+                job: queued_job("job-retained-payload", 100),
+            },
+            100,
+        )
+        .expect("create");
+    let calls = Arc::new(Mutex::new(DeploymentCalls::default()));
+    let mut retained_config = config("worker", database.0.with_extension("cache"));
+    retained_config.keep_installed_payloads = true;
+    let mut worker = JobWorker::new(
+        Persistence::open(&database.0).expect("worker store"),
+        retained_config,
+        FakeResolver(package_graph()),
+        FakeHost,
+        FakeDownload {
+            delay: Duration::ZERO,
+        },
+        FakeDeployment {
+            calls,
+            reconciliation: ReconciliationOutcome::Converged,
+            prepare_delay: Duration::ZERO,
+            commit_delay: Duration::ZERO,
+            expire_clock_on_prepare: None,
+            expire_clock: None,
+        },
+        TestClock::new(100),
+    );
+
+    assert!(matches!(
+        worker.run_once().await.expect("worker run"),
+        RunOnceOutcome::Processed {
+            stage: JobStage::Completed,
+            ..
+        }
+    ));
+    let entries = store.cache_entries().expect("cache entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].job_id.as_deref(), Some("job-retained-payload"));
+    assert!(PathBuf::from(&entries[0].path).exists());
+}
+
+#[tokio::test]
+async fn progress_projection_is_visible_before_the_final_event() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("store");
+    store
+        .append_job_event(
+            "job-observable-progress",
+            0,
+            JobEvent::Created {
+                job: queued_job("job-observable-progress", 100),
+            },
+            100,
+        )
+        .expect("create");
+    let calls = Arc::new(Mutex::new(DeploymentCalls::default()));
+    let mut worker = JobWorker::new(
+        Persistence::open(&database.0).expect("worker store"),
+        config("worker", database.0.with_extension("cache")),
+        FakeResolver(package_graph()),
+        FakeHost,
+        FakeDownload {
+            delay: Duration::ZERO,
+        },
+        FakeDeployment {
+            calls,
+            reconciliation: ReconciliationOutcome::Converged,
+            prepare_delay: Duration::ZERO,
+            commit_delay: Duration::from_millis(50),
+            expire_clock_on_prepare: None,
+            expire_clock: None,
+        },
+        TestClock::new(100),
+    );
+    let observer = async {
+        loop {
+            let (snapshot, revision) = store
+                .job_snapshot_with_progress("job-observable-progress")
+                .expect("progress projection")
+                .expect("job exists");
+            if snapshot.job.stage == JobStage::Deploying && revision > 0 {
+                assert!(snapshot
+                    .job
+                    .deployment_progress
+                    .is_some_and(|value| value > 0));
+                assert_eq!(
+                    store
+                        .list_job_events(0, 1_000)
+                        .expect("events")
+                        .iter()
+                        .filter(|stored| matches!(
+                            stored.event,
+                            JobEvent::DeploymentProgressRecorded { .. }
+                        ))
+                        .count(),
+                    0
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+
+    let (run, ()) = tokio::join!(worker.run_once(), observer);
+    assert!(matches!(
+        run.expect("worker run"),
+        RunOnceOutcome::Processed {
+            stage: JobStage::Completed,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]

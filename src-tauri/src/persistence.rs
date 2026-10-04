@@ -4,8 +4,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde::{de::DeserializeOwned, Serialize};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     deployment::DeploymentScope,
@@ -24,8 +24,59 @@ use crate::{
     jobs::{Job, JobKind, JobSnapshot, JobStage, RecoveryAction},
 };
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_initial.sql"))];
+const CURRENT_SCHEMA_VERSION: i64 = 2;
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_initial.sql")),
+    (
+        2,
+        include_str!("../migrations/0002_job_progress_and_maintenance.sql"),
+    ),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobProgressPhase {
+    Downloading,
+    Deploying,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobProgressUpdate {
+    Download {
+        bytes_done: u64,
+        bytes_total: Option<u64>,
+    },
+    Deployment {
+        percentage: u8,
+    },
+}
+
+impl JobProgressUpdate {
+    fn phase(self) -> JobProgressPhase {
+        match self {
+            Self::Download { .. } => JobProgressPhase::Downloading,
+            Self::Deployment { .. } => JobProgressPhase::Deploying,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobProgress {
+    pub job_id: String,
+    pub phase: JobProgressPhase,
+    pub revision: u64,
+    pub update: JobProgressUpdate,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseCleanupReport {
+    pub removed_jobs: u64,
+    pub removed_events: u64,
+    pub removed_commands: u64,
+    pub removed_diagnostics: u64,
+    pub removed_progress: u64,
+}
 
 #[derive(Debug)]
 pub enum PersistenceError {
@@ -39,6 +90,7 @@ pub enum PersistenceError {
     UnsafeJobEvent,
     CommandConflict,
     LeaseConflict,
+    MaintenanceBusy,
 }
 
 impl fmt::Display for PersistenceError {
@@ -63,6 +115,7 @@ impl fmt::Display for PersistenceError {
             Self::UnsafeJobEvent => formatter.write_str("job event contains unsafe data"),
             Self::CommandConflict => formatter.write_str("job command conflict"),
             Self::LeaseConflict => formatter.write_str("worker lease conflict"),
+            Self::MaintenanceBusy => formatter.write_str("database maintenance is busy"),
         }
     }
 }
@@ -364,6 +417,41 @@ impl Persistence {
         job_store::list_snapshots(&self.connection)
     }
 
+    pub fn job_snapshot_with_progress(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<(JobSnapshot, u64)>, PersistenceError> {
+        let Some(mut snapshot) = job_store::snapshot(&self.connection, job_id)? else {
+            return Ok(None);
+        };
+        let revision = match load_job_progress(&self.connection, job_id)? {
+            Some(progress) => {
+                apply_job_progress(&mut snapshot, &progress)?;
+                progress.revision
+            }
+            None => 0,
+        };
+        Ok(Some((snapshot, revision)))
+    }
+
+    pub fn list_job_snapshots_with_progress(
+        &self,
+    ) -> Result<Vec<(JobSnapshot, u64)>, PersistenceError> {
+        job_store::list_snapshots(&self.connection)?
+            .into_iter()
+            .map(|mut snapshot| {
+                let revision = match load_job_progress(&self.connection, &snapshot.job.job_id)? {
+                    Some(progress) => {
+                        apply_job_progress(&mut snapshot, &progress)?;
+                        progress.revision
+                    }
+                    None => 0,
+                };
+                Ok((snapshot, revision))
+            })
+            .collect()
+    }
+
     pub fn list_job_events(
         &self,
         after_cursor: u64,
@@ -474,6 +562,100 @@ impl Persistence {
             lease,
             now,
         )
+    }
+
+    pub fn record_job_progress_leased(
+        &self,
+        job_id: &str,
+        expected_sequence: u64,
+        update: JobProgressUpdate,
+        occurred_at: i64,
+        lease: &WorkerLease,
+        now: i64,
+    ) -> Result<JobProgress, PersistenceError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        job_store::validate_lease(&transaction, lease, now)?;
+        let snapshot = job_store::snapshot(&transaction, job_id)?
+            .ok_or(PersistenceError::EventHistoryInvalid)?;
+        if snapshot.sequence != expected_sequence {
+            return Err(PersistenceError::SequenceConflict {
+                expected: expected_sequence,
+                actual: snapshot.sequence,
+            });
+        }
+        validate_progress_update(&snapshot, update)?;
+
+        let existing = load_job_progress(&transaction, job_id)?;
+        if let Some(existing) = &existing {
+            validate_progress_advance(existing, update)?;
+        }
+        let revision = existing.map_or(Ok(1), |progress| {
+            progress
+                .revision
+                .checked_add(1)
+                .ok_or(PersistenceError::IntegerOutOfRange("job_progress.revision"))
+        })?;
+        let progress = JobProgress {
+            job_id: job_id.to_owned(),
+            phase: update.phase(),
+            revision,
+            update,
+            updated_at: occurred_at,
+        };
+        save_job_progress(&transaction, &progress)?;
+        transaction.commit()?;
+        Ok(progress)
+    }
+
+    pub fn finalize_job_progress_leased(
+        &self,
+        job_id: &str,
+        expected_sequence: u64,
+        phase: JobProgressPhase,
+        occurred_at: i64,
+        lease: &WorkerLease,
+        now: i64,
+    ) -> Result<Option<JobSnapshot>, PersistenceError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        job_store::validate_lease(&transaction, lease, now)?;
+        let snapshot = job_store::snapshot(&transaction, job_id)?
+            .ok_or(PersistenceError::EventHistoryInvalid)?;
+        if snapshot.sequence != expected_sequence {
+            return Err(PersistenceError::SequenceConflict {
+                expected: expected_sequence,
+                actual: snapshot.sequence,
+            });
+        }
+        let Some(progress) = load_job_progress(&transaction, job_id)? else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        if progress.phase != phase {
+            return Err(PersistenceError::EventHistoryInvalid);
+        }
+        let event = match progress.update {
+            JobProgressUpdate::Download {
+                bytes_done,
+                bytes_total,
+            } => JobEvent::ProgressRecorded {
+                bytes_done,
+                bytes_total,
+            },
+            JobProgressUpdate::Deployment { percentage } => {
+                JobEvent::DeploymentProgressRecorded { percentage }
+            }
+        };
+        let snapshot = job_store::append_in_transaction(
+            &transaction,
+            job_id,
+            expected_sequence,
+            event,
+            occurred_at,
+            Some((lease, now)),
+        )?;
+        transaction.execute("DELETE FROM job_progress WHERE job_id = ?1", [job_id])?;
+        transaction.commit()?;
+        Ok(Some(snapshot))
     }
 
     pub fn save_deployment_checkpoint_leased(
@@ -906,6 +1088,302 @@ impl Persistence {
         )?;
         from_i64(count, "diagnostics.count")
     }
+
+    pub fn cleanup_database(&self, now: i64) -> Result<DatabaseCleanupReport, PersistenceError> {
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let busy_lease: i64 = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM worker_leases
+                WHERE lease_key = 'worker' AND expires_at > ?1
+            )",
+            [now],
+            |row| row.get(0),
+        )?;
+        let pending_commands: i64 = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM job_commands WHERE processed_at IS NULL)",
+            [],
+            |row| row.get(0),
+        )?;
+        let active_jobs: i64 = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM jobs
+                WHERE stage NOT IN ('completed', 'cancelled', 'failed')
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        if busy_lease == 1 || pending_commands == 1 || active_jobs == 1 {
+            return Err(PersistenceError::MaintenanceBusy);
+        }
+
+        let terminal = "SELECT job_id FROM jobs WHERE stage IN ('completed', 'cancelled')";
+        let removed_jobs: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE stage IN ('completed', 'cancelled')",
+            [],
+            |row| row.get(0),
+        )?;
+        let removed_events: i64 = transaction.query_row(
+            &format!("SELECT COUNT(*) FROM job_events WHERE job_id IN ({terminal})"),
+            [],
+            |row| row.get(0),
+        )?;
+        let removed_commands: i64 = transaction.query_row(
+            &format!("SELECT COUNT(*) FROM job_commands WHERE job_id IN ({terminal})"),
+            [],
+            |row| row.get(0),
+        )?;
+        let removed_diagnostics: i64 = transaction.query_row(
+            &format!("SELECT COUNT(*) FROM diagnostics WHERE job_id IN ({terminal})"),
+            [],
+            |row| row.get(0),
+        )?;
+        let removed_progress: i64 = transaction.query_row(
+            &format!("SELECT COUNT(*) FROM job_progress WHERE job_id IN ({terminal})"),
+            [],
+            |row| row.get(0),
+        )?;
+
+        transaction.execute(
+            &format!("UPDATE cache_entries SET job_id = NULL WHERE job_id IN ({terminal})"),
+            [],
+        )?;
+        for table in [
+            "diagnostics",
+            "job_commands",
+            "job_progress",
+            "deployment_checkpoints",
+            "job_targets",
+            "job_events",
+        ] {
+            transaction.execute(
+                &format!("DELETE FROM {table} WHERE job_id IN ({terminal})"),
+                [],
+            )?;
+        }
+        transaction.execute(
+            "DELETE FROM jobs WHERE stage IN ('completed', 'cancelled')",
+            [],
+        )?;
+        transaction.commit()?;
+
+        self.connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        self.connection.execute_batch("VACUUM")?;
+        Ok(DatabaseCleanupReport {
+            removed_jobs: from_i64(removed_jobs, "cleanup.removed_jobs")?,
+            removed_events: from_i64(removed_events, "cleanup.removed_events")?,
+            removed_commands: from_i64(removed_commands, "cleanup.removed_commands")?,
+            removed_diagnostics: from_i64(removed_diagnostics, "cleanup.removed_diagnostics")?,
+            removed_progress: from_i64(removed_progress, "cleanup.removed_progress")?,
+        })
+    }
+}
+
+fn validate_progress_update(
+    snapshot: &JobSnapshot,
+    update: JobProgressUpdate,
+) -> Result<(), PersistenceError> {
+    match update {
+        JobProgressUpdate::Download {
+            bytes_done,
+            bytes_total,
+        } => {
+            if snapshot.job.stage != JobStage::Downloading
+                || bytes_done < snapshot.job.bytes_done
+                || bytes_total.is_some_and(|total| total < bytes_done)
+                || (snapshot.job.bytes_total.is_some() && bytes_total.is_none())
+                || matches!(
+                    (snapshot.job.bytes_total, bytes_total),
+                    (Some(before), Some(after)) if after < before
+                )
+            {
+                return Err(PersistenceError::EventHistoryInvalid);
+            }
+        }
+        JobProgressUpdate::Deployment { percentage } => {
+            if snapshot.job.stage != JobStage::Deploying
+                || percentage > 100
+                || snapshot
+                    .job
+                    .deployment_progress
+                    .is_some_and(|before| percentage < before)
+            {
+                return Err(PersistenceError::EventHistoryInvalid);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_progress_advance(
+    existing: &JobProgress,
+    update: JobProgressUpdate,
+) -> Result<(), PersistenceError> {
+    match (existing.update, update) {
+        (
+            JobProgressUpdate::Download {
+                bytes_done: before_done,
+                bytes_total: before_total,
+            },
+            JobProgressUpdate::Download {
+                bytes_done,
+                bytes_total,
+            },
+        ) if bytes_done >= before_done
+            && !(before_total.is_some() && bytes_total.is_none())
+            && !matches!((before_total, bytes_total), (Some(before), Some(after)) if after < before)
+            && (bytes_done > before_done || bytes_total != before_total) =>
+        {
+            Ok(())
+        }
+        (
+            JobProgressUpdate::Deployment { percentage: before },
+            JobProgressUpdate::Deployment { percentage },
+        ) if percentage > before => Ok(()),
+        _ => Err(PersistenceError::EventHistoryInvalid),
+    }
+}
+
+fn save_job_progress(
+    connection: &Connection,
+    progress: &JobProgress,
+) -> Result<(), PersistenceError> {
+    let (phase, bytes_done, bytes_total, deployment_progress) = match progress.update {
+        JobProgressUpdate::Download {
+            bytes_done,
+            bytes_total,
+        } => (
+            "downloading",
+            Some(to_i64(bytes_done, "job_progress.bytes_done")?),
+            bytes_total
+                .map(|value| to_i64(value, "job_progress.bytes_total"))
+                .transpose()?,
+            None,
+        ),
+        JobProgressUpdate::Deployment { percentage } => {
+            ("deploying", None, None, Some(i64::from(percentage)))
+        }
+    };
+    connection.execute(
+        "INSERT INTO job_progress (
+            job_id, phase, revision, bytes_done, bytes_total, deployment_progress, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(job_id) DO UPDATE SET
+            phase = excluded.phase,
+            revision = excluded.revision,
+            bytes_done = excluded.bytes_done,
+            bytes_total = excluded.bytes_total,
+            deployment_progress = excluded.deployment_progress,
+            updated_at = excluded.updated_at",
+        params![
+            progress.job_id,
+            phase,
+            to_i64(progress.revision, "job_progress.revision")?,
+            bytes_done,
+            bytes_total,
+            deployment_progress,
+            progress.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_job_progress(
+    connection: &Connection,
+    job_id: &str,
+) -> Result<Option<JobProgress>, PersistenceError> {
+    type Row = (String, i64, Option<i64>, Option<i64>, Option<i64>, i64);
+    let row: Option<Row> = connection
+        .query_row(
+            "SELECT phase, revision, bytes_done, bytes_total, deployment_progress, updated_at
+             FROM job_progress WHERE job_id = ?1",
+            [job_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(
+        |(phase, revision, bytes_done, bytes_total, deployment_progress, updated_at)| {
+            let (phase, update) = match phase.as_str() {
+                "downloading" => {
+                    let bytes_done = bytes_done.ok_or(PersistenceError::InvalidStoredValue(
+                        "job_progress.bytes_done",
+                    ))?;
+                    if deployment_progress.is_some() {
+                        return Err(PersistenceError::InvalidStoredValue("job_progress"));
+                    }
+                    (
+                        JobProgressPhase::Downloading,
+                        JobProgressUpdate::Download {
+                            bytes_done: from_i64(bytes_done, "job_progress.bytes_done")?,
+                            bytes_total: bytes_total
+                                .map(|value| from_i64(value, "job_progress.bytes_total"))
+                                .transpose()?,
+                        },
+                    )
+                }
+                "deploying" => {
+                    if bytes_done.is_some() || bytes_total.is_some() {
+                        return Err(PersistenceError::InvalidStoredValue("job_progress"));
+                    }
+                    let percentage = deployment_progress.ok_or(
+                        PersistenceError::InvalidStoredValue("job_progress.deployment_progress"),
+                    )?;
+                    let percentage = u8::try_from(percentage).map_err(|_| {
+                        PersistenceError::InvalidStoredValue("job_progress.deployment_progress")
+                    })?;
+                    if percentage > 100 {
+                        return Err(PersistenceError::InvalidStoredValue(
+                            "job_progress.deployment_progress",
+                        ));
+                    }
+                    (
+                        JobProgressPhase::Deploying,
+                        JobProgressUpdate::Deployment { percentage },
+                    )
+                }
+                _ => return Err(PersistenceError::InvalidStoredValue("job_progress.phase")),
+            };
+            Ok(JobProgress {
+                job_id: job_id.to_owned(),
+                phase,
+                revision: from_i64(revision, "job_progress.revision")?,
+                update,
+                updated_at,
+            })
+        },
+    )
+    .transpose()
+}
+
+fn apply_job_progress(
+    snapshot: &mut JobSnapshot,
+    progress: &JobProgress,
+) -> Result<(), PersistenceError> {
+    validate_progress_update(snapshot, progress.update)?;
+    match progress.update {
+        JobProgressUpdate::Download {
+            bytes_done,
+            bytes_total,
+        } => {
+            snapshot.job.bytes_done = bytes_done;
+            snapshot.job.bytes_total = bytes_total;
+        }
+        JobProgressUpdate::Deployment { percentage } => {
+            snapshot.job.deployment_progress = Some(percentage);
+        }
+    }
+    snapshot.job.updated_at = progress.updated_at;
+    Ok(())
 }
 
 fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {

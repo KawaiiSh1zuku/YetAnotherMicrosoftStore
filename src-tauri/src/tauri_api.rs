@@ -91,6 +91,16 @@ pub struct ListJobEventsRequest {
     pub limit: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApiDatabaseCleanupReport {
+    pub removed_jobs: u64,
+    pub removed_events: u64,
+    pub removed_commands: u64,
+    pub removed_diagnostics: u64,
+    pub removed_progress: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppDetailsSource {
     pub product: CatalogProduct,
@@ -121,6 +131,7 @@ pub struct LocalProductAction {
 pub struct JobView {
     pub snapshot: JobSnapshot,
     pub title: Option<String>,
+    pub progress_revision: u64,
 }
 
 pub trait ApiBackend: Send + Sync {
@@ -160,6 +171,10 @@ pub trait ApiBackend: Send + Sync {
     fn update_settings(&self, settings: ApiAppSettings) -> ApiFuture<'_, ApiAppSettings>;
 
     fn clear_cache(&self) -> ApiFuture<'_, ()>;
+
+    fn cleanup_database(&self) -> ApiFuture<'_, ApiDatabaseCleanupReport> {
+        Box::pin(async { Err(boundary_error(ErrorCode::DeploymentDenied)) })
+    }
 }
 
 pub struct TauriApi<B> {
@@ -430,6 +445,13 @@ where
 
     pub async fn clear_cache(&self) -> Result<(), AppErrorDto> {
         self.backend.clear_cache().await.map_err(sanitize_error)
+    }
+
+    pub async fn cleanup_database(&self) -> Result<ApiDatabaseCleanupReport, AppErrorDto> {
+        self.backend
+            .cleanup_database()
+            .await
+            .map_err(sanitize_error)
     }
 }
 
@@ -810,6 +832,7 @@ pub struct ApiUpdateScanResult {
 pub struct ApiJobSnapshot {
     pub job_id: String,
     pub sequence: u64,
+    pub progress_revision: u64,
     pub product_id: String,
     pub package_family_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -829,6 +852,14 @@ pub struct ApiJobSnapshot {
 
 impl ApiJobSnapshot {
     pub fn from_domain(snapshot: JobSnapshot, title: Option<String>) -> Result<Self, AppErrorDto> {
+        Self::from_domain_with_progress(snapshot, title, 0)
+    }
+
+    pub fn from_domain_with_progress(
+        snapshot: JobSnapshot,
+        title: Option<String>,
+        progress_revision: u64,
+    ) -> Result<Self, AppErrorDto> {
         let job = snapshot.job;
         if !safe_identifier(&job.job_id)
             || !safe_identifier(&job.product_id)
@@ -851,6 +882,7 @@ impl ApiJobSnapshot {
         Self {
             job_id: job.job_id,
             sequence: snapshot.sequence,
+            progress_revision,
             product_id: job.product_id,
             package_family_name: job.package_family_name,
             title,
@@ -1006,7 +1038,7 @@ fn allowed_controls(stage: JobStage) -> Vec<JobControl> {
 }
 
 fn map_job_view(view: JobView) -> Result<ApiJobSnapshot, AppErrorDto> {
-    ApiJobSnapshot::from_domain(view.snapshot, view.title)
+    ApiJobSnapshot::from_domain_with_progress(view.snapshot, view.title, view.progress_revision)
 }
 
 fn normalize_details_request(request: &mut DetailsRequest) -> Result<(), AppErrorDto> {

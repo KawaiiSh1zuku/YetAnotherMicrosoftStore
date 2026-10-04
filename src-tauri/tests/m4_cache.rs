@@ -364,6 +364,81 @@ async fn evicting_one_cache_key_preserves_a_shared_content_file() {
 }
 
 #[test]
+fn remove_verified_for_job_preserves_partials_other_jobs_and_shared_files() {
+    let directory = TestDirectory::new("remove-job-verified");
+    let database = directory.0.join("state.sqlite3");
+    let cache_root = directory.0.join("cache");
+    let verified_root = cache_root.join("verified");
+    let partial_root = cache_root.join("partial");
+    let store = Persistence::open(&database).expect("open database");
+
+    let own_path = verified_root.join("own.msix");
+    let own = entry(
+        "own",
+        Some("job-complete"),
+        &own_path,
+        b"own",
+        CacheState::Verified,
+        10,
+    );
+    let shared_path = verified_root.join("shared.msix");
+    let shared_own = entry(
+        "shared-own",
+        Some("job-complete"),
+        &shared_path,
+        b"shared",
+        CacheState::Verified,
+        10,
+    );
+    let shared_other = entry(
+        "shared-other",
+        Some("job-other"),
+        &shared_path,
+        b"shared",
+        CacheState::Verified,
+        10,
+    );
+    let partial_path = partial_root.join("partial.part");
+    let partial = entry(
+        "partial",
+        Some("job-complete"),
+        &partial_path,
+        b"partial",
+        CacheState::Partial,
+        10,
+    );
+    write_entry(&store, &own, b"own");
+    write_entry(&store, &shared_own, b"shared");
+    store
+        .upsert_cache_entry(&shared_other)
+        .expect("save shared reference");
+    write_entry(&store, &partial, b"partial");
+
+    let removed = CacheManager::new(&cache_root)
+        .expect("cache manager")
+        .remove_verified_for_job(&store, "job-complete")
+        .expect("remove installed payloads");
+
+    assert_eq!(removed, 2);
+    assert!(store.cache_entry("own").expect("own entry").is_none());
+    assert!(store
+        .cache_entry("shared-own")
+        .expect("shared own entry")
+        .is_none());
+    assert!(store
+        .cache_entry("shared-other")
+        .expect("shared other entry")
+        .is_some());
+    assert!(store
+        .cache_entry("partial")
+        .expect("partial entry")
+        .is_some());
+    assert!(!own_path.exists());
+    assert!(shared_path.exists());
+    assert!(partial_path.exists());
+}
+
+#[test]
 fn verified_download_is_recorded_without_a_remote_url() {
     let directory = TestDirectory::new("record");
     let database = directory.0.join("state.sqlite3");

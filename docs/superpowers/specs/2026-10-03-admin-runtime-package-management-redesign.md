@@ -14,7 +14,7 @@
 - 已安装页默认读取机器范围清单，而不是仅当前用户清单。
 - 更新扫描返回结构化扫描结果，不再只返回一个可能为空且无说明的候选数组。
 - 搜索与已安装 DTO 增加应用名、包名、发布者和图标/包身份字段。
-- 程序尚未发布，本次不提供旧任务数据库或旧前端 DTO 的兼容层。
+- 当时的重构将开发数据库收敛为 schema v1；此后已有开发数据库需要保留，因此后续结构变更只允许追加迁移。
 
 ## 目标与成功标准
 
@@ -139,9 +139,9 @@ Queued -> Resolving -> Selecting -> Downloading -> Verifying -> Preparing -> Dep
 - 从 job、snapshot、事件和 UI DTO 移除 `requires_elevation` / `requiresElevation`。
 - 删除 worker 中为 AllUsers 插入等待提权事件的分支。
 - AllUsers 与 CurrentUser 在验证完成后进入 `Preparing`；只有收到首个原生部署进度时才进入 `Deploying`。
-- 程序尚未发布，不保留旧数据库兼容：删除现有 4 个分段 migration，将其最终结构与本次字段调整合并为唯一的 `0001_initial.sql`。
+- 本次重构将此前 4 个分段 migration 收敛为 `0001_initial.sql`；该文件现为不可改写的兼容基线，后续结构变更使用追加 migration。
 - 合并后的初始 schema 直接删除 `jobs.requires_elevation`，并使用最终领域命名；不得先创建旧字段再用后续 migration 删除。
-- `CURRENT_SCHEMA_VERSION` 重置为 `1`，运行时只注册这一份 migration。旧开发数据库不做升级，开发者需删除后由应用重建。
+- 本次重构完成时 `CURRENT_SCHEMA_VERSION` 为 `1`；当前实现已通过 `0002_job_progress_and_maintenance.sql` 升级到 schema v2，旧开发数据库原位升级。
 - 删除旧版本升级测试，改为验证空数据库一次性建库、重复打开幂等、完整表/索引/约束和 migration 事务回滚。
 
 ## 应用元数据

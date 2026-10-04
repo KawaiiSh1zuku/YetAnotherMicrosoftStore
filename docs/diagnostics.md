@@ -35,6 +35,14 @@ Before native deployment, the worker persists a lease- and sequence-fenced check
 
 The process termination command accepts only the trusted job ID. The backend derives the PFN from that job, re-enumerates matching processes, rechecks the PFN after opening each handle, and returns bounded `matched`, `terminated`, and `remaining` descriptors. The UI displays each remaining executable name and PID. A process name/PID is diagnostic only and is never accepted as a termination target from the frontend.
 
+### Progress and storage maintenance
+
+Intermediate download and deployment callbacks are coalesced into one lease-fenced `job_progress` row per active job. They do not append `job_events` rows or advance the command concurrency sequence. The API exposes a separate `progressRevision`, and the queue polls only while an active job is visible. A normal phase boundary appends at most one final progress event and removes the runtime row.
+
+The settings page can delete Completed and Cancelled task history. Maintenance refuses to run while a worker lease, pending command, or nonterminal job exists. It preserves Failed jobs, settings, catalog and installation associations, detaches retained cache entries from deleted jobs, checkpoints the WAL, and runs `VACUUM`.
+
+When `keep_installed_payloads` is disabled, confirmed deployment or reconciliation success releases that job's verified cache entries. Shared physical files remain until their final cache key is removed. Cleanup errors are recorded as closed Storage diagnostics and do not rewrite a successful Windows installation as failed. These behaviors have E1 coverage; cleanup of a real successful installation remains an E2 check.
+
 These contracts and recovery transitions have E0/E1 coverage. They do not prove a live Windows deployment, process termination, installed-app launch, or restart round trip; those remain controlled Windows E2 checks.
 
 ## Partial scans

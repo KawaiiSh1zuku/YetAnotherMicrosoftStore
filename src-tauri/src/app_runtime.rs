@@ -45,10 +45,11 @@ use crate::{
     resolver::{PackageGraph, PackageResolver, StoreLibResolverAdapter},
     settings::{DefaultProxyProvider, NetworkPolicy, ProxyProvider, MICROSOFT_PACKAGE_HOSTS},
     tauri_api::{
-        ApiAppSettings, ApiBackend, ApiCatalogProduct, ApiDeploymentScope, ApiFuture,
-        ApiUpdateCandidate, ApiUpdateScanResult, ApiUpdateSkipReason, ApiUpdateSkipped,
-        AppDetailsSource, DetailsRequest, JobControlRequest, JobView, ListJobEventsRequest,
-        LocalProductAction, LocalProductActionKind, SearchRequest, StartJobSpec,
+        ApiAppSettings, ApiBackend, ApiCatalogProduct, ApiDatabaseCleanupReport,
+        ApiDeploymentScope, ApiFuture, ApiUpdateCandidate, ApiUpdateScanResult,
+        ApiUpdateSkipReason, ApiUpdateSkipped, AppDetailsSource, DetailsRequest, JobControlRequest,
+        JobView, ListJobEventsRequest, LocalProductAction, LocalProductActionKind, SearchRequest,
+        StartJobSpec,
     },
 };
 
@@ -172,6 +173,8 @@ impl ProductionApiBackend {
             owner_id: format!("runtime-{}", uuid::Uuid::new_v4()),
             lease_ttl: WORKER_LEASE_TTL_SECONDS,
             heartbeat_interval: WORKER_HEARTBEAT_INTERVAL,
+            progress_flush_interval: Duration::from_millis(250),
+            keep_installed_payloads: settings.keep_installed_payloads,
             cache_root: self.paths.cache_root.clone(),
         };
         Ok(JobWorker::new(
@@ -214,11 +217,19 @@ impl ProductionApiBackend {
         persistence: &Persistence,
         snapshot: JobSnapshot,
     ) -> Result<JobView, AppErrorDto> {
+        let (snapshot, progress_revision) = persistence
+            .job_snapshot_with_progress(&snapshot.job.job_id)
+            .map_err(persistence_error)?
+            .ok_or_else(|| runtime_error(ErrorCode::DeploymentFailed, RetryAdvice::Never))?;
         let title = persistence
             .product(&snapshot.job.product_id)
             .map_err(persistence_error)?
             .and_then(|product| product.app_name);
-        Ok(JobView { snapshot, title })
+        Ok(JobView {
+            snapshot,
+            title,
+            progress_revision,
+        })
     }
 
     fn start_job(&self, request: StartJobSpec, kind: JobKind) -> Result<JobView, AppErrorDto> {
@@ -308,6 +319,7 @@ impl ProductionApiBackend {
         Ok(JobView {
             snapshot,
             title: product.app_name,
+            progress_revision: 0,
         })
     }
 }
@@ -778,6 +790,23 @@ impl ApiBackend for ProductionApiBackend {
     fn clear_cache(&self) -> ApiFuture<'_, ()> {
         let backend = self.clone();
         Box::pin(async move { backend.clear_cache_safely() })
+    }
+
+    fn cleanup_database(&self) -> ApiFuture<'_, ApiDatabaseCleanupReport> {
+        let backend = self.clone();
+        Box::pin(async move {
+            let report = backend
+                .open_persistence()?
+                .cleanup_database(unix_now())
+                .map_err(persistence_error)?;
+            Ok(ApiDatabaseCleanupReport {
+                removed_jobs: report.removed_jobs,
+                removed_events: report.removed_events,
+                removed_commands: report.removed_commands,
+                removed_diagnostics: report.removed_diagnostics,
+                removed_progress: report.removed_progress,
+            })
+        })
     }
 }
 
