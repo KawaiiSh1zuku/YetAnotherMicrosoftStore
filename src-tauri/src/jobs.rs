@@ -21,6 +21,7 @@ pub enum JobStage {
     Downloading,
     Paused,
     Verifying,
+    Preparing,
     Deploying,
     AwaitingProcessExit,
     Interrupted,
@@ -111,7 +112,7 @@ impl Job {
             | JobStage::Selecting
             | JobStage::Downloading
             | JobStage::Verifying => (JobStage::Interrupted, RecoveryAction::ReResolve),
-            JobStage::Deploying => (
+            JobStage::Preparing | JobStage::Deploying => (
                 JobStage::NeedsReconciliation,
                 RecoveryAction::ReconcileInventory,
             ),
@@ -144,11 +145,20 @@ impl JobStage {
             }
             Self::Verifying => matches!(
                 next,
-                Self::Deploying
+                Self::Preparing
                     | Self::Completed
                     | Self::Failed
                     | Self::Cancelled
                     | Self::Interrupted
+            ),
+            Self::Preparing => matches!(
+                next,
+                Self::Deploying
+                    | Self::AwaitingProcessExit
+                    | Self::Completed
+                    | Self::Failed
+                    | Self::Cancelled
+                    | Self::NeedsReconciliation
             ),
             Self::Deploying => matches!(
                 next,
@@ -157,7 +167,7 @@ impl JobStage {
                     | Self::Failed
                     | Self::NeedsReconciliation
             ),
-            Self::AwaitingProcessExit => matches!(next, Self::Deploying | Self::Cancelled),
+            Self::AwaitingProcessExit => matches!(next, Self::Preparing | Self::Cancelled),
             Self::NeedsReconciliation => {
                 matches!(next, Self::Completed | Self::Failed | Self::Resolving)
             }

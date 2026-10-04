@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell, type PrimaryView } from "./components/AppShell";
 import { DetailsView } from "./features/details/DetailsView";
-import { InstalledView } from "./features/installed/InstalledView";
+import { InstalledView, initialInstalledState } from "./features/installed/InstalledView";
 import { QueueView } from "./features/queue/QueueView";
 import { SearchView, type SearchState } from "./features/search/SearchView";
 import { SettingsView } from "./features/settings/SettingsView";
@@ -26,6 +26,7 @@ function App({ client = tauriClient }: AppProps) {
   const [selectedProduct, setSelectedProduct] = useState<CatalogProduct | null>(null);
   const [restoreProductId, setRestoreProductId] = useState<string | null>(null);
   const [search, setSearch] = useState(initialSearch);
+  const [installed, setInstalled] = useState(initialInstalledState);
   const [jobs, setJobs] = useState<JobSnapshot[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
@@ -78,7 +79,7 @@ function App({ client = tauriClient }: AppProps) {
       {view === "search" && <SearchView client={client} settings={settings} state={search} setState={setSearch} onOpen={openDetails} restoreProductId={restoreProductId} onFocusRestored={focusRestored} />}
       {view === "details" && selectedProduct && <DetailsView client={client} product={selectedProduct} settings={settings} onBack={backToSearch} onJobStarted={jobStarted} />}
       {view === "queue" && <QueueView client={client} seedJobs={jobs} onJobsChanged={setJobs} />}
-      {view === "installed" && <InstalledView client={client} settings={settings} onJobStarted={jobStarted} />}
+      {view === "installed" && <InstalledView client={client} settings={settings} state={installed} setState={setInstalled} onJobStarted={jobStarted} />}
       {view === "settings" && <SettingsView client={client} settings={settings} loadError={settingsLoadError} onSettingsChanged={setSettings} />}
     </AppShell>
   );

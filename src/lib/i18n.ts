@@ -38,6 +38,7 @@ const stageLabels: Record<JobStage, string> = {
   downloading: "正在下载",
   paused: "已暂停",
   verifying: "正在验证签名",
+  preparing: "正在准备安装",
   deploying: "正在安装",
   awaiting_process_exit: "等待关闭占用进程",
   interrupted: "等待恢复",

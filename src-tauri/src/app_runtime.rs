@@ -233,6 +233,47 @@ impl ProductionApiBackend {
                 RetryAdvice::ReResolve,
             ));
         }
+        match (
+            kind,
+            request.selected_update_id.as_deref(),
+            request.package_family_name.as_deref(),
+        ) {
+            (JobKind::Install, None, None) | (JobKind::Update, None, None) => {}
+            (JobKind::Update, Some(_), Some(package_family_name)) => {
+                let association = persistence
+                    .package_association(package_family_name)
+                    .map_err(persistence_error)?
+                    .ok_or_else(|| {
+                        runtime_error(ErrorCode::SourceIdentityMismatch, RetryAdvice::Never)
+                    })?;
+                let trusted = matches!(
+                    association.confidence,
+                    AssociationConfidence::VerifiedDeployment
+                        | AssociationConfidence::ExactPackageFamilyName
+                        | AssociationConfidence::ExactIdentityPublisher
+                );
+                let product_matches = association
+                    .product_id
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(&request.product_id));
+                let family_matches = product
+                    .package_family_name
+                    .as_deref()
+                    .is_none_or(|value| value.eq_ignore_ascii_case(package_family_name));
+                if !trusted || !product_matches || !family_matches {
+                    return Err(runtime_error(
+                        ErrorCode::SourceIdentityMismatch,
+                        RetryAdvice::Never,
+                    ));
+                }
+            }
+            _ => {
+                return Err(runtime_error(
+                    ErrorCode::SourceIdentityMismatch,
+                    RetryAdvice::Never,
+                ));
+            }
+        }
         let settings = self.load_settings(&persistence)?;
         let now = unix_now();
         let requested_languages = prioritized_languages(&settings);
@@ -244,8 +285,8 @@ impl ProductionApiBackend {
             requested_architectures: settings.preferred_architectures,
             requested_languages,
             deployment_scope: request.scope,
-            selected_update_id: None,
-            package_family_name: None,
+            selected_update_id: request.selected_update_id,
+            package_family_name: request.package_family_name,
             stage: JobStage::Queued,
             bytes_done: 0,
             bytes_total: None,
@@ -1163,6 +1204,7 @@ async fn resolve_update_package(
             package_family_name: job.installed.package_family_name.clone(),
             current_version: installed_version.to_string(),
             available_version: main.version.to_string(),
+            selected_update_id: main.update_id.clone(),
             product_id: Some(job.product_id.clone()),
             deployment_scope,
         },

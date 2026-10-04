@@ -102,9 +102,9 @@ Expected: all selected tests pass with no new warnings.
 
 Add tests where a sequence-8 event arrives before a sequence-7 list result and where an event is emitted during listener registration. Assert sequence 8 remains rendered.
 
-- [x] **Step 2: Write the failing verification-stage UI test**
+- [x] **Step 2: Write the failing verification/preparation-stage UI tests**
 
-Render a `verifying` job with `bytesDone == bytesTotal`. Assert `正在验证签名` is visible and the byte-progress bar/`100%` download label is absent.
+Render a `verifying` job with `bytesDone == bytesTotal`. Assert `正在验证签名` is visible and the byte-progress bar/`100%` download label is absent. Render a `preparing` job and assert `正在准备安装` is visible without an installation percentage.
 
 - [x] **Step 3: Run focused frontend tests and verify RED**
 
@@ -114,7 +114,7 @@ Expected: FAIL from stale snapshot replacement and missing verification presenta
 
 - [x] **Step 4: Implement monotonic synchronization and stage-specific rendering**
 
-Centralize per-job sequence comparison, register the listener before accepting initial snapshots, replay after initial list, and serialize overlapping replay requests. Render download bytes only in Downloading, verification status only in Verifying, and deployment percentage only in Deploying.
+Centralize per-job sequence comparison, register the listener before accepting initial snapshots, replay after initial list, and serialize overlapping replay requests. Render download bytes only in Downloading, verification status only in Verifying, preparation status only in Preparing, and deployment percentage only in Deploying.
 
 - [x] **Step 5: Verify Task 2 GREEN**
 
@@ -186,7 +186,7 @@ Expected: selected tests pass and no test expects proactive process blocking.
 
 - [x] **Step 1: Write failing state-transition and control tests**
 
-Assert Deploying -> AwaitingProcessExit, AwaitingProcessExit -> Deploying only through RetryDeployment, cancellation support, generic Resume rejection, active allowed controls, and restart preservation.
+Assert Preparing -> Deploying on the first native progress event, Preparing/Deploying -> AwaitingProcessExit, AwaitingProcessExit -> Preparing only through RetryDeployment, cancellation support, generic Resume rejection, active allowed controls, and restart preservation.
 
 - [x] **Step 2: Run state/API tests and verify RED**
 
@@ -251,7 +251,7 @@ Build/persist the checkpoint after verified cache recording and before deploymen
 
 - [x] **Step 5: Implement direct retry**
 
-Consume RetryDeployment only in AwaitingProcessExit, reconstruct and reverify the plan, append Deploying, and call the existing progress-aware deployment path. Do not silently fall back to resolver/downloader when checkpoint validation fails.
+Consume RetryDeployment only in AwaitingProcessExit, append Preparing, reconstruct and reverify the plan, and call the existing progress-aware deployment path. Append Deploying only on the first native progress event. Do not silently fall back to resolver/downloader when checkpoint validation fails.
 
 - [x] **Step 6: Verify Task 5 GREEN**
 

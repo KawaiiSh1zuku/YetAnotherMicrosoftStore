@@ -460,6 +460,7 @@ impl ApiBackend for FixtureBackend {
                     package_family_name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned(),
                     current_version: "1.0.0.0".to_owned(),
                     available_version: "1.2.3.4".to_owned(),
+                    selected_update_id: "update-terminal-v2".to_owned(),
                     product_id: Some("9NBLGGH4NNS1".to_owned()),
                     deployment_scope: ApiDeploymentScope::CurrentUser,
                 }],
@@ -608,6 +609,8 @@ fn start_request() -> StartJobRequest {
         market: "US".to_owned(),
         language: "en-US".to_owned(),
         scope: ApiDeploymentScope::CurrentUser,
+        selected_update_id: None,
+        package_family_name: None,
     }
 }
 

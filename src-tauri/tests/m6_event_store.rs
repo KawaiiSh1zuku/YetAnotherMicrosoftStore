@@ -65,6 +65,44 @@ fn created(store: &Persistence, job_id: &str) {
 }
 
 #[test]
+fn queued_update_preserves_the_scanned_package_anchor_while_resolving() {
+    let database = TestDatabase::new();
+    let store = Persistence::open(&database.0).expect("open database");
+    let mut update = job("job-anchored-update");
+    update.kind = JobKind::Update;
+    update.selected_update_id = Some("main-update-v2".to_owned());
+    update.package_family_name = Some("Example.App_abc".to_owned());
+
+    let created = store
+        .append_job_event(
+            "job-anchored-update",
+            0,
+            JobEvent::Created { job: update },
+            100,
+        )
+        .expect("create anchored update");
+    let resolving = store
+        .append_job_event(
+            "job-anchored-update",
+            created.sequence,
+            JobEvent::StageChanged {
+                stage: JobStage::Resolving,
+            },
+            101,
+        )
+        .expect("start anchored update resolution");
+
+    assert_eq!(
+        resolving.job.selected_update_id.as_deref(),
+        Some("main-update-v2")
+    );
+    assert_eq!(
+        resolving.job.package_family_name.as_deref(),
+        Some("Example.App_abc")
+    );
+}
+
+#[test]
 fn append_updates_event_and_projection_together_or_rolls_both_back() {
     let database = TestDatabase::new();
     let store = Persistence::open(&database.0).expect("open database");
@@ -442,7 +480,7 @@ fn semantic_events_reject_illegal_terminal_transition_and_progress_regression() 
 }
 
 #[test]
-fn checkpoint_ready_and_blocked_events_require_a_deploying_job_and_retry_control() {
+fn checkpoint_ready_and_blocked_events_require_a_prepared_job_and_retry_control() {
     let database = TestDatabase::new();
     let store = Persistence::open(&database.0).expect("open database");
     created(&store, "job-checkpoint-events");
@@ -452,6 +490,7 @@ fn checkpoint_ready_and_blocked_events_require_a_deploying_job_and_retry_control
         JobStage::Selecting,
         JobStage::Downloading,
         JobStage::Verifying,
+        JobStage::Preparing,
         JobStage::Deploying,
     ] {
         store
@@ -548,7 +587,8 @@ fn deployment_progress_is_persisted_only_while_deploying_and_never_regresses() {
         (2, JobStage::Selecting),
         (3, JobStage::Downloading),
         (4, JobStage::Verifying),
-        (5, JobStage::Deploying),
+        (5, JobStage::Preparing),
+        (6, JobStage::Deploying),
     ] {
         store
             .append_job_event(
@@ -562,7 +602,7 @@ fn deployment_progress_is_persisted_only_while_deploying_and_never_regresses() {
     let snapshot = store
         .append_job_event(
             "job-deployment-progress",
-            6,
+            7,
             JobEvent::DeploymentProgressRecorded { percentage: 42 },
             300,
         )
@@ -571,7 +611,7 @@ fn deployment_progress_is_persisted_only_while_deploying_and_never_regresses() {
     assert!(matches!(
         store.append_job_event(
             "job-deployment-progress",
-            7,
+            8,
             JobEvent::DeploymentProgressRecorded { percentage: 41 },
             301,
         ),
@@ -580,7 +620,7 @@ fn deployment_progress_is_persisted_only_while_deploying_and_never_regresses() {
     assert!(matches!(
         store.append_job_event(
             "job-deployment-progress",
-            7,
+            8,
             JobEvent::DeploymentProgressRecorded { percentage: 101 },
             302,
         ),
@@ -1085,6 +1125,7 @@ fn leased_restart_recovery_survives_released_lease_row_and_is_idempotent() {
                 JobStage::Selecting,
                 JobStage::Downloading,
                 JobStage::Verifying,
+                JobStage::Preparing,
                 JobStage::Deploying,
             ],
         ),
@@ -1142,7 +1183,7 @@ fn leased_restart_recovery_survives_released_lease_row_and_is_idempotent() {
         .unwrap();
     assert_eq!(
         (deployed.sequence, deployed.job.stage),
-        (7, JobStage::NeedsReconciliation)
+        (8, JobStage::NeedsReconciliation)
     );
     assert_eq!(
         (downloading.sequence, downloading.job.stage),
@@ -1161,7 +1202,7 @@ fn leased_restart_recovery_survives_released_lease_row_and_is_idempotent() {
             .unwrap()
             .unwrap()
             .sequence,
-        7
+        8
     );
     assert_eq!(
         reopened

@@ -114,7 +114,7 @@ UAC 在进程创建前发生。用户取消时没有可用的 Tauri 窗口，因
 | 验证包装 | 只为 Broker 请求形状存在的类型和校验 | `VerifiedPackageSet` 与 deployment plan |
 | 打包 | `externalBin` Broker sidecar | 只打包主 EXE |
 | 脚本 | `build:broker`、`copy-broker.ps1`、Broker PE 检查 | 主 EXE manifest 与 PE 架构检查 |
-| 状态 | `AwaitingElevation`、`requiresElevation` | 验证后直接进入 `Deploying` |
+| 状态 | `AwaitingElevation`、`requiresElevation` | 验证后进入 `Preparing`，收到首个原生进度后进入 `Deploying` |
 
 `DeploymentCoordinator` 继续作为项目级边界，但职责改为：
 
@@ -130,7 +130,7 @@ UAC 在进程创建前发生。用户取消时没有可用的 Tauri 窗口，因
 状态机删除 `AwaitingElevation`。正常部署路径为：
 
 ```text
-Queued -> Resolving -> Selecting -> Downloading -> Verifying -> Deploying -> Completed
+Queued -> Resolving -> Selecting -> Downloading -> Verifying -> Preparing -> Deploying -> Completed
 ```
 
 失败、暂停、取消、崩溃恢复和 `NeedsReconciliation` 保持现有语义。删除规则如下：
@@ -138,7 +138,7 @@ Queued -> Resolving -> Selecting -> Downloading -> Verifying -> Deploying -> Com
 - 从 Rust `JobStage`、Tauri `JobStage` 和前端联合类型移除 `AwaitingElevation`。
 - 从 job、snapshot、事件和 UI DTO 移除 `requires_elevation` / `requiresElevation`。
 - 删除 worker 中为 AllUsers 插入等待提权事件的分支。
-- AllUsers 在验证完成后直接进入 `Deploying`。
+- AllUsers 与 CurrentUser 在验证完成后进入 `Preparing`；只有收到首个原生部署进度时才进入 `Deploying`。
 - 程序尚未发布，不保留旧数据库兼容：删除现有 4 个分段 migration，将其最终结构与本次字段调整合并为唯一的 `0001_initial.sql`。
 - 合并后的初始 schema 直接删除 `jobs.requires_elevation`，并使用最终领域命名；不得先创建旧字段再用后续 migration 删除。
 - `CURRENT_SCHEMA_VERSION` 重置为 `1`，运行时只注册这一份 migration。旧开发数据库不做升级，开发者需删除后由应用重建。
@@ -276,7 +276,7 @@ UpdateScanResult
 
 `skipped` 只包含 PFN、封闭原因码和可本地化消息键，不包含原始服务或 Windows 错误。
 
-候选项包含应用名、包名、发布者、PFN、当前版本、可用版本和建议部署范围。前端据此显示明确摘要，即使候选数为零也显示“扫描完成，未发现更新”。
+候选项包含应用名、包名、发布者、PFN、当前版本、可用版本、选中主包的 `updateId` 和建议部署范围。前端据此显示明确摘要，即使候选数为零也显示“扫描完成，未发现更新”。
 
 ### 产品关联
 
@@ -304,7 +304,7 @@ UpdateScanResult
 | 仅存在于其他用户 | `AllUsers` |
 | 当前用户与机器范围同时存在 | `AllUsers` |
 
-候选创建时冻结范围，启动更新前重新扫描并校验。若范围发生变化，任务返回 `reconcile_inventory`，不得悄悄降级到 CurrentUser。
+候选创建时冻结部署范围、PFN 和选中主包的 `updateId`。从候选启动任务时，后端要求 `updateId` 与 PFN 成对出现，并用可信 PFN/Product ID 关联重新校验产品身份；worker 仍重新解析新鲜包图，但只允许扫描时选中的主包进入严格更新选择。目录已不再包含该主包或身份关联变化时封闭失败并要求重新扫描，不得改选同一产品下的其他系统组件。
 
 ## UI 设计
 
@@ -339,6 +339,7 @@ UpdateScanResult
 - 搜索框同时匹配应用名、包名、PFN 和发布者。
 - 更新扫描按钮在运行期间显示状态；完成后始终显示摘要。
 - 部分清单或部分更新扫描显示非阻塞警告，不隐藏已经成功读取的记录。
+- 已安装清单、筛选词、更新扫描结果和扫描状态由应用层持有；切换到搜索、队列或设置后再返回时继续显示原结果，只有用户显式刷新或重新扫描才替换。
 
 ### 设置
 

@@ -59,6 +59,10 @@ pub struct StartJobRequest {
     pub market: String,
     pub language: String,
     pub scope: ApiDeploymentScope,
+    #[serde(default)]
+    pub selected_update_id: Option<String>,
+    #[serde(default)]
+    pub package_family_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +71,8 @@ pub struct StartJobSpec {
     pub market: String,
     pub language: String,
     pub scope: DeploymentScope,
+    pub selected_update_id: Option<String>,
+    pub package_family_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -748,6 +754,7 @@ pub struct ApiUpdateCandidate {
     pub package_family_name: String,
     pub current_version: String,
     pub available_version: String,
+    pub selected_update_id: String,
     pub product_id: Option<String>,
     pub deployment_scope: ApiDeploymentScope,
 }
@@ -760,6 +767,7 @@ impl ApiUpdateCandidate {
             || !safe_package_identity(&self.package_family_name)
             || !safe_identifier(&self.current_version)
             || !safe_identifier(&self.available_version)
+            || !safe_identifier(&self.selected_update_id)
             || self
                 .product_id
                 .as_deref()
@@ -983,7 +991,11 @@ fn allowed_controls(stage: JobStage) -> Vec<JobControl> {
         JobStage::AwaitingProcessExit => {
             vec![JobControl::RetryDeployment, JobControl::Cancel]
         }
-        JobStage::Queued | JobStage::Resolving | JobStage::Selecting | JobStage::Verifying => {
+        JobStage::Queued
+        | JobStage::Resolving
+        | JobStage::Selecting
+        | JobStage::Verifying
+        | JobStage::Preparing => {
             vec![JobControl::Cancel]
         }
         JobStage::Deploying
@@ -1012,9 +1024,26 @@ fn normalize_details_request(request: &mut DetailsRequest) -> Result<(), AppErro
 fn normalize_start_request(mut request: StartJobRequest) -> Result<StartJobSpec, AppErrorDto> {
     request.product_id = request.product_id.trim().to_owned();
     request.market.make_ascii_uppercase();
+    request.selected_update_id = request
+        .selected_update_id
+        .map(|value| value.trim().to_owned());
+    request.package_family_name = request
+        .package_family_name
+        .map(|value| value.trim().to_owned());
+    let valid_anchor = match (
+        request.selected_update_id.as_deref(),
+        request.package_family_name.as_deref(),
+    ) {
+        (None, None) => true,
+        (Some(update_id), Some(package_family_name)) => {
+            safe_identifier(update_id) && safe_identifier(package_family_name)
+        }
+        _ => false,
+    };
     if !safe_identifier(&request.product_id)
         || !safe_market(&request.market)
         || !safe_language(&request.language)
+        || !valid_anchor
     {
         return Err(boundary_error(ErrorCode::CatalogUnavailable));
     }
@@ -1023,6 +1052,8 @@ fn normalize_start_request(mut request: StartJobRequest) -> Result<StartJobSpec,
         market: request.market,
         language: request.language,
         scope: request.scope.into(),
+        selected_update_id: request.selected_update_id,
+        package_family_name: request.package_family_name,
     })
 }
 

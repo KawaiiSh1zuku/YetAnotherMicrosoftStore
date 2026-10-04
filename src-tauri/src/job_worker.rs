@@ -734,6 +734,10 @@ where
                 return Ok(processed(failed));
             }
         };
+        let graph = match constrain_update_graph(graph, &snapshot.job) {
+            Ok(graph) => graph,
+            Err(error) => return self.fail(snapshot, lease, with_job(error, &job_id)),
+        };
         snapshot = self.append(
             lease,
             snapshot,
@@ -780,10 +784,14 @@ where
             .iter()
             .find(|package| package.package_kind == PackageKind::Main)
             .expect("selection always contains one main package");
-        let package_family_name = self
-            .store
-            .product(&snapshot.job.product_id)?
-            .and_then(|product| product.package_family_name)
+        let package_family_name = snapshot
+            .job
+            .package_family_name
+            .clone()
+            .or(self
+                .store
+                .product(&snapshot.job.product_id)?
+                .and_then(|product| product.package_family_name))
             .unwrap_or_else(|| {
                 main.identity_name
                     .clone()
@@ -893,7 +901,7 @@ where
             lease,
             snapshot,
             JobEvent::StageChanged {
-                stage: JobStage::Deploying,
+                stage: JobStage::Preparing,
             },
         )?;
         let now = self.clock.now();
@@ -1144,21 +1152,9 @@ where
         tokio::select! {
             result = &mut future => {
                 while let Ok(percentage) = progress_rx.try_recv() {
-                    let now = clock.now();
-                    let result = store.append_job_event_leased(
-                        &snapshot.job.job_id,
-                        snapshot.sequence,
-                        JobEvent::DeploymentProgressRecorded { percentage },
-                        now,
-                        lease,
-                        now,
-                    );
-                    match result {
-                        Ok(next) => snapshot = next,
-                        Err(PersistenceError::LeaseConflict) => {
-                            return Ok(DeploymentRun::LeaseLost)
-                        }
-                        Err(error) => return Err(error.into()),
+                    match record_deployment_progress(store, clock, snapshot, lease, percentage)? {
+                        Some(next) => snapshot = next,
+                        None => return Ok(DeploymentRun::LeaseLost),
                     }
                 }
                 return Ok(match result {
@@ -1168,21 +1164,9 @@ where
             }
             progress = progress_rx.recv() => {
                 if let Some(percentage) = progress {
-                    let now = clock.now();
-                    let result = store.append_job_event_leased(
-                        &snapshot.job.job_id,
-                        snapshot.sequence,
-                        JobEvent::DeploymentProgressRecorded { percentage },
-                        now,
-                        lease,
-                        now,
-                    );
-                    match result {
-                        Ok(next) => snapshot = next,
-                        Err(PersistenceError::LeaseConflict) => {
-                            return Ok(DeploymentRun::LeaseLost)
-                        }
-                        Err(error) => return Err(error.into()),
+                    match record_deployment_progress(store, clock, snapshot, lease, percentage)? {
+                        Some(next) => snapshot = next,
+                        None => return Ok(DeploymentRun::LeaseLost),
                     }
                 }
             }
@@ -1194,6 +1178,44 @@ where
                 }
             }
         }
+    }
+}
+
+fn record_deployment_progress<C: Clock>(
+    store: &Persistence,
+    clock: &C,
+    mut snapshot: JobSnapshot,
+    lease: &WorkerLease,
+    percentage: u8,
+) -> Result<Option<JobSnapshot>, WorkerError> {
+    let now = clock.now();
+    if snapshot.job.stage == JobStage::Preparing {
+        snapshot = match store.append_job_event_leased(
+            &snapshot.job.job_id,
+            snapshot.sequence,
+            JobEvent::StageChanged {
+                stage: JobStage::Deploying,
+            },
+            now,
+            lease,
+            now,
+        ) {
+            Ok(next) => next,
+            Err(PersistenceError::LeaseConflict) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+    }
+    match store.append_job_event_leased(
+        &snapshot.job.job_id,
+        snapshot.sequence,
+        JobEvent::DeploymentProgressRecorded { percentage },
+        now,
+        lease,
+        now,
+    ) {
+        Ok(next) => Ok(Some(next)),
+        Err(PersistenceError::LeaseConflict) => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -1319,7 +1341,7 @@ fn process_pending_commands<C: Clock>(
             }
             (JobControl::RetryDeployment, JobStage::AwaitingProcessExit) => {
                 Some(JobEvent::StageChanged {
-                    stage: JobStage::Deploying,
+                    stage: JobStage::Preparing,
                 })
             }
             (
@@ -1330,6 +1352,7 @@ fn process_pending_commands<C: Clock>(
                 | JobStage::Downloading
                 | JobStage::Paused
                 | JobStage::Verifying
+                | JobStage::Preparing
                 | JobStage::Interrupted
                 | JobStage::Failed
                 | JobStage::AwaitingProcessExit,
@@ -1445,6 +1468,28 @@ fn map_artifacts(
     Ok((artifacts, targets))
 }
 
+fn constrain_update_graph(mut graph: PackageGraph, job: &Job) -> Result<PackageGraph, AppErrorDto> {
+    let Some(selected_update_id) = job
+        .selected_update_id
+        .as_deref()
+        .filter(|_| job.kind == JobKind::Update)
+    else {
+        return Ok(graph);
+    };
+    if !graph.packages.iter().any(|package| {
+        package.package_kind == PackageKind::Main && package.update_id == selected_update_id
+    }) {
+        return Err(AppErrorDto::new(
+            ErrorCode::NoCompatiblePackage,
+            RetryAdvice::ReResolve,
+        ));
+    }
+    graph.packages.retain(|package| {
+        package.package_kind != PackageKind::Main || package.update_id == selected_update_id
+    });
+    Ok(graph)
+}
+
 fn mapping_error() -> AppErrorDto {
     AppErrorDto::new(ErrorCode::SourceIdentityMismatch, RetryAdvice::ReResolve)
 }
@@ -1530,5 +1575,71 @@ fn scope_contains(record: &PackageInventoryRecord, scope: DeploymentScope) -> bo
                 || (record.package_kind == crate::inventory::PackageKind::Framework
                     && record.installed_user_count > 0)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{domain::PackageFormat, resolver::ResolvedPackage};
+
+    #[test]
+    fn anchored_update_graph_keeps_only_the_scanned_main_package() {
+        let selected = ResolvedPackage {
+            package_moniker: "Example.App_2.0.0.0_x64__abc".to_owned(),
+            package_type: "msix".to_owned(),
+            package_uri: Some("https://packages.example.test/selected.msix".to_owned()),
+            file_name: Some("selected.msix".to_owned()),
+            file_size: Some(1),
+            sha256: Some("ab".repeat(32)),
+            update_id: "selected-update".to_owned(),
+            identity_name: Some("Example.App".to_owned()),
+            publisher: Some("CN=Example".to_owned()),
+            version: PackageVersion::new(2, 0, 0, 0),
+            architecture: Architecture::X64,
+            resource_id: None,
+            package_kind: PackageKind::Main,
+            minimum_os_version: None,
+            language: None,
+            is_neutral: None,
+            content_id: None,
+            format: PackageFormat::Msix,
+            prerequisites: Vec::new(),
+            bundled_updates: Vec::new(),
+        };
+        let mut competing = selected.clone();
+        competing.update_id = "competing-update".to_owned();
+        competing.version = PackageVersion::new(3, 0, 0, 0);
+        let graph = PackageGraph {
+            packages: vec![competing, selected],
+            ..PackageGraph::default()
+        };
+        let job = Job {
+            job_id: "job-anchor".to_owned(),
+            kind: JobKind::Update,
+            product_id: "product-1".to_owned(),
+            requested_market: "CN".to_owned(),
+            requested_architectures: vec![Architecture::X64],
+            requested_languages: vec!["zh-CN".to_owned()],
+            deployment_scope: DeploymentScope::CurrentUser,
+            selected_update_id: Some("selected-update".to_owned()),
+            package_family_name: Some("Example.App_abc".to_owned()),
+            stage: JobStage::Resolving,
+            bytes_done: 0,
+            bytes_total: None,
+            deployment_progress: None,
+            version: None,
+            architecture: None,
+            language: None,
+            error: None,
+            blocked_processes: Vec::new(),
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let constrained = constrain_update_graph(graph, &job).expect("anchor should exist");
+
+        assert_eq!(constrained.packages.len(), 1);
+        assert_eq!(constrained.packages[0].update_id, "selected-update");
     }
 }

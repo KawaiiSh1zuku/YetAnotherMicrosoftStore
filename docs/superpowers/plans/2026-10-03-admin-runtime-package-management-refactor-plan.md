@@ -63,7 +63,7 @@
 ### 1.1 先写失败测试
 
 - 删除测试 fixture 中的 `requires_elevation` 后，新增断言：序列化的 job、snapshot、event 和 Tauri DTO 不含 `requiresElevation`。
-- 新增状态机测试：`Verifying -> Deploying` 合法，`AwaitingElevation` 不再可解析或恢复。
+- 新增状态机测试：`Verifying -> Preparing -> Deploying` 合法，`Preparing` 在首次原生部署进度前不携带百分比，`AwaitingElevation` 不再可解析或恢复。
 - 新增持久化测试：空数据库一次性创建最终 schema，schema version 为 1；重复打开不重复执行 DDL；migration 失败时 schema 和 `user_version` 原子回滚。
 - 新增 schema 断言：包含现有产品、包、关联、任务、事件、命令、租约、缓存、设置、观察和诊断表及索引，但 `jobs` 不含 `requires_elevation`。
 - 删除旧版本升级测试和直接 include 旧 migration 的 fixture；所有持久化测试从唯一初始 migration 或 `Persistence::open` 建库。
@@ -122,7 +122,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m0_validation --test m2_d
 ### 2.1 先写失败测试
 
 - 将 coordinator 路由测试改为 `CurrentUserDirect` 与 `AllUsersDirect`，并断言两个范围都调用 `WindowsDeploymentBackend`/`WindowsInventory`。
-- 将 worker 测试改为验证 AllUsers 从 `Verifying` 直接进入 `Deploying`。
+- 将 worker 测试改为验证 AllUsers 从 `Verifying` 进入 `Preparing`，并在首次原生部署进度时进入 `Deploying`。
 - 将 release 测试改为断言：主 manifest 包含 `requireAdministrator`，Tauri 配置无 `externalBin`，package scripts 无 `build:broker`，发布脚本无 Broker 路径。
 - Windows-only PE 资源测试从 debug/release 主 EXE 读取 execution level；非 Windows 单元测试只验证 manifest 注入配置，不冒充 PE 验收。
 
@@ -265,14 +265,14 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m0_inventory --test m0_co
 - 已有可信 Product ID 关联优先复用；缺失关联时按 PFN 调用 DCAT。
 - PFN 查询结果必须同时匹配 identity name、publisher 和 PFN，任何不一致都进入封闭 `skipped` 原因且不持久化。
 - 单包目录/FE3/选择失败不取消其他包；结果 `complete = false`。
-- candidate 冻结 `deployment_scope`；创建任务前重扫范围变化时返回 `reconcile_inventory`。
+- candidate 冻结 `deployment_scope`、PFN 和选中主包 `updateId`；创建任务时重新校验可信 PFN/Product ID 关联，fresh resolve 后只允许该主包进入选择。
 
 ### 6.2 实现扫描流水线
 
 - 对机器范围主包按 PFN 去重，使用设置市场/语言和有界并发补齐关联。
 - PFN 关联和 FE3 解析分为两个有界网络阶段，共用 `maxConcurrentUpdateScans`（1–64，默认 16）；数据库写入不进入并发 future。
 - 只保存经过 identity/publisher/PFN 三重核验的关联。
-- 对每个已关联包运行统一 PackageSelectionService；候选包含 appName、packageName、publisher、PFN、当前/可用版本和建议 scope。
+- 对每个已关联包运行统一 PackageSelectionService；候选包含 appName、packageName、publisher、PFN、当前/可用版本、选中主包 `updateId` 和建议 scope。
 - 若存在更新版本但严格选择失败，记录 `selection_rejected`，不得静默返回“无更新”。
 - `skipped` 仅包含 PFN、封闭原因码和消息键，不包含原始响应、HRESULT、SID 或路径。
 - Tauri API 和错误映射返回结构化摘要，不再把空数组作为唯一反馈。
@@ -308,6 +308,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m2_persistence --test m6_
 - 详情显示 appName/packageName/PFN/publisher/format/selection preview；无可用 preview 时按钮禁用并显示具体原因。
 - 已安装页默认调用机器范围扫描，搜索覆盖四类名称字段，主列三行显示应用名/包名或 PFN/发布者。
 - 更新按钮运行中有状态；零候选显示“扫描完成，未发现更新”；partial 显示非阻塞警告与计数。
+- 在页面间切换后返回已安装页时，清单、筛选词、更新扫描结果和运行状态保持不变。
 - 来源 badge 不折行，窄窗口无横向不可达内容；Playwright 在桌面和窄视口做可访问性与溢出断言。
 - queue UI 不再识别 `awaiting_elevation` 或显示二次 UAC 文案。
 - 设置页语言改为最多 32 项的预设优先级列表，覆盖添加、排序、删除、去重、空列表和窄视口溢出；不提供自由文本输入。
@@ -318,7 +319,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --test m2_persistence --test m6_
 - 搜索/详情共享稳定图标和文本行布局，长值使用 ellipsis 加原生 title。
 - 安装范围改为“当前管理员账户 / 所有用户”的分段控件文案。
 - 已安装页使用内容驱动的范围列和 `white-space: nowrap` badge；窄视口改为稳定键值 grid。
-- 所有异步状态保留显式 loading/success/partial/error，禁止扫描完成后无反馈。
+- 所有异步状态保留显式 loading/success/partial/error；已安装页状态提升到应用层，禁止切换页面后丢失扫描结果或扫描完成后无反馈。
 - 语言预设使用稳定 BCP-47 标签；后端仍保留合法旧标签，搜索和详情使用第一优先语言，空列表回退 `en-US`。
 
 ### 7.3 验证
@@ -404,6 +405,7 @@ refactor: replace broker deployment with an elevated app runtime
 - 主 EXE 静态资源确认 `requireAdministrator`，bundle 不含 Broker sidecar。
 - 搜索与详情显示应用名、包名、PFN、发布者、图标、格式和统一选择预览。
 - 已安装页显示机器范围主包、应用名/包名/发布者，来源 badge 不折行。
-- 更新扫描始终返回可解释摘要，缺失关联时按 PFN 查询并严格核验，候选范围匹配现有安装状态。
+- 更新扫描始终返回可解释摘要，缺失关联时按 PFN 查询并严格核验；启动候选时保留并校验扫描选中的 PFN、主包 `updateId` 和部署范围。
+- 已安装页状态在应用会话内跨页面保留；任务将部署准备与带原生百分比的安装阶段分开显示。
 - 所有 E1 质量门通过；E2/E3 结论与实际证据一致。
 - 范围内文件已暂存，用户原有 `README.md` 改动被保留，没有创建提交。

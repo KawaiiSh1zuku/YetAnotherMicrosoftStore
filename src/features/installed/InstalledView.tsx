@@ -1,5 +1,5 @@
 import { RefreshCw, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -10,36 +10,56 @@ import type { AppSettings, InventorySnapshot, JobSnapshot, UpdateCandidate, Upda
 interface InstalledViewProps {
   client: StoreClient;
   settings: AppSettings | null;
+  state: InstalledState;
+  setState: Dispatch<SetStateAction<InstalledState>>;
   onJobStarted: (job: JobSnapshot) => void;
 }
 
-export function InstalledView({ client, settings, onJobStarted }: InstalledViewProps) {
-  const [snapshot, setSnapshot] = useState<InventorySnapshot | null>(null);
-  const [updateResult, setUpdateResult] = useState<UpdateScanResult | null>(null);
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [scanning, setScanning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export interface InstalledState {
+  snapshot: InventorySnapshot | null;
+  updateResult: UpdateScanResult | null;
+  query: string;
+  status: "idle" | "loading" | "ready" | "error";
+  scanning: boolean;
+  error: string | null;
+}
+
+export const initialInstalledState: InstalledState = {
+  snapshot: null,
+  updateResult: null,
+  query: "",
+  status: "idle",
+  scanning: false,
+  error: null,
+};
+
+export function InstalledView({ client, settings, state, setState, onJobStarted }: InstalledViewProps) {
+  const { snapshot, updateResult, query, status, scanning, error } = state;
 
   async function loadInventory() {
-    setStatus("loading");
+    setState((current) => ({ ...current, status: "loading", error: null }));
     try {
-      setSnapshot(await client.scanInstalledPackages("all_users"));
-      setStatus("ready");
+      const nextSnapshot = await client.scanInstalledPackages("all_users");
+      setState((current) => ({ ...current, snapshot: nextSnapshot, status: "ready" }));
     } catch (value) {
-      setError(localizeError(value));
-      setStatus("error");
+      setState((current) => ({ ...current, error: localizeError(value), status: "error" }));
     }
   }
 
-  useEffect(() => { void loadInventory(); }, [client]);
+  useEffect(() => {
+    if (state.status === "idle") void loadInventory();
+  }, [client]);
 
   async function scanUpdates() {
-    setScanning(true);
-    setError(null);
-    try { setUpdateResult(await client.scanUpdates()); }
-    catch (value) { setError(localizeError(value)); }
-    finally { setScanning(false); }
+    setState((current) => ({ ...current, scanning: true, error: null }));
+    try {
+      const nextResult = await client.scanUpdates();
+      setState((current) => ({ ...current, updateResult: nextResult }));
+    } catch (value) {
+      setState((current) => ({ ...current, error: localizeError(value) }));
+    } finally {
+      setState((current) => ({ ...current, scanning: false }));
+    }
   }
 
   async function update(candidate: UpdateCandidate) {
@@ -50,9 +70,13 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
         market: settings?.market ?? "US",
         language: settings?.preferredLanguages[0] ?? "en-US",
         scope: candidate.deploymentScope,
+        selectedUpdateId: candidate.selectedUpdateId,
+        packageFamilyName: candidate.packageFamilyName,
       });
       onJobStarted(job);
-    } catch (value) { setError(localizeError(value)); }
+    } catch (value) {
+      setState((current) => ({ ...current, error: localizeError(value) }));
+    }
   }
 
   const candidatesByPackage = useMemo(() => new Map(
@@ -86,7 +110,7 @@ export function InstalledView({ client, settings, onJobStarted }: InstalledViewP
         {updateResult.candidates.length ? `发现 ${updateResult.candidates.length} 个更新。` : "未发现更新。"}
         {!updateResult.complete && ` ${updateResult.skipped.length} 个包被跳过。`}
       </div>}
-      <label className="table-search"><span className="sr-only">筛选已安装应用</span><Search aria-hidden="true" size={17} /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选名称或发布者" /></label>
+      <label className="table-search"><span className="sr-only">筛选已安装应用</span><Search aria-hidden="true" size={17} /><Input value={query} onChange={(event) => setState((current) => ({ ...current, query: event.target.value }))} placeholder="筛选名称或发布者" /></label>
       {error && <div className="inline-alert" role="alert">{error}</div>}
       {status === "loading" && <div role="status">正在读取本机包清单...</div>}
       {status !== "loading" && records.length === 0 && <div className="empty-state"><strong>{query ? "没有匹配的已安装应用" : "未发现已安装应用"}</strong></div>}

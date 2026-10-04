@@ -58,7 +58,7 @@ The frontend consumes this result and does not independently infer versions or i
 
 Queue startup must establish the event listener before accepting an initial list snapshot. Every merge is sequence-monotonic per job: an older snapshot may never overwrite a newer one. After the listener is active, perform an event replay to close the registration/list gap and advance a single cursor.
 
-Only Downloading renders byte progress. Verifying renders the `verifying` stage label and a non-byte verification status; it does not keep a 100% download bar on screen. Deploying renders deployment percentage when available.
+Only Downloading renders byte progress. Verifying renders the `verifying` stage label and a non-byte verification status; it does not keep a 100% download bar on screen. Preparing renders `正在准备安装` while the worker persists or rebuilds the trusted deployment checkpoint and while deployment has not emitted native progress. The first native progress event transitions the job to Deploying, which alone renders deployment percentage.
 
 ### 3. Windows-Authoritative Package-In-Use Detection
 
@@ -104,15 +104,23 @@ PID reuse, access denial, timeout, PFN mismatch after handle acquisition, or ter
 ## State Transitions
 
 ```text
-verifying -> deploying
+verifying -> preparing
+preparing -> deploying             (first native deployment progress)
+preparing -> completed             (inventory already converged)
+preparing -> awaiting_process_exit (Windows reports package in use before progress)
+preparing -> failed
+preparing -> cancelled
+preparing -> needs_reconciliation  (restart or lease loss)
+
 deploying -> completed
 deploying -> awaiting_process_exit   (Windows reports package in use)
 deploying -> failed                  (other deployment failure)
 
-awaiting_process_exit -> deploying  (RetryDeployment from valid checkpoint)
+awaiting_process_exit -> preparing  (RetryDeployment revalidates the checkpoint)
 awaiting_process_exit -> cancelled
 
 restart(awaiting_process_exit) -> awaiting_process_exit
+restart(preparing | deploying) -> needs_reconciliation
 ```
 
 Generic Resume remains for Paused, Interrupted, and retryable Failed jobs. It must not be offered for `awaiting_process_exit`.
@@ -137,6 +145,7 @@ Checkpoint writes occur under the worker lease and in the same transactional bou
 - Open: package is installed with no applicable newer version.
 - Open unavailable: installed package has no launchable application entry; show a disabled Open button and concise status.
 - Verifying: show `正在验证签名` without a download percentage.
+- Preparing: show `正在准备安装` without an installation percentage; high CPU usage here belongs to checkpoint revalidation and deployment preparation, before native deployment progress exists.
 - Package in use: keep the task under `进行中` and open the destructive confirmation dialog once per blocked event sequence.
 - Termination partial failure: show every sanitized remaining `name (PID)` inside the dialog.
 - Retry deployment: show deployment progress and do not show resolving or downloading unless the checkpoint fails validation and the user explicitly chooses a full retry.
@@ -172,6 +181,7 @@ Checkpoint writes occur under the worker lease and in the same transactional bou
 - Frontend tests cover the three primary actions and disabled Open behavior.
 - Queue tests reproduce the list/subscription race and prove sequence-monotonic convergence.
 - Queue tests prove Verifying does not render the download progress bar.
+- State/event/worker tests prove Preparing is distinct from Deploying, starts with no percentage, and changes to Deploying on the first native progress event.
 - State/event/persistence tests cover blocked transitions, checkpoint atomicity, restart preservation, and invalid transitions.
 - Worker tests prove RetryDeployment calls neither resolver nor downloader and revalidates the checkpoint.
 - Process tests cover bounded names, current-PID exclusion, PFN recheck, partial termination, and remaining descriptor serialization.

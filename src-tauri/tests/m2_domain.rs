@@ -284,14 +284,16 @@ fn active_download_becomes_interrupted_and_requires_re_resolution_after_restart(
 }
 
 #[test]
-fn deploying_job_requires_inventory_reconciliation_after_restart() {
-    let mut job = downloading_job();
-    job.stage = JobStage::Deploying;
+fn preparing_or_deploying_job_requires_inventory_reconciliation_after_restart() {
+    for stage in [JobStage::Preparing, JobStage::Deploying] {
+        let mut job = downloading_job();
+        job.stage = stage;
 
-    let recovery = job.recover_after_restart(300);
+        let recovery = job.recover_after_restart(300);
 
-    assert_eq!(recovery, RecoveryAction::ReconcileInventory);
-    assert_eq!(job.stage, JobStage::NeedsReconciliation);
+        assert_eq!(recovery, RecoveryAction::ReconcileInventory);
+        assert_eq!(job.stage, JobStage::NeedsReconciliation);
+    }
 }
 
 #[test]

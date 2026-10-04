@@ -11,6 +11,7 @@ use yet_another_microsoft_store_lib::{
         ProductRecord, ProxyCredentialPolicy, ProxyMode, ThemeMode,
     },
     error::ErrorCode,
+    identity::{AssociationConfidence, PackageAssociation},
     job_events::{JobControl, JobEvent},
     persistence::Persistence,
     resolver::{PackageGraph, ResolvedPackage},
@@ -99,6 +100,8 @@ fn start_spec() -> StartJobSpec {
         market: "US".to_owned(),
         language: "en-US".to_owned(),
         scope: DeploymentScope::CurrentUser,
+        selected_update_id: None,
+        package_family_name: None,
     }
 }
 
@@ -168,6 +171,42 @@ async fn start_list_and_event_replay_use_the_persisted_product_title() {
     assert_eq!(events.len(), 1);
     assert!(matches!(events[0].event, JobEvent::Created { .. }));
     assert_eq!(events[0].snapshot.sequence, 1);
+}
+
+#[tokio::test]
+async fn anchored_update_requires_and_preserves_a_trusted_package_association() {
+    let fixture = RuntimeFixture::new();
+    fixture.seed_product();
+    fixture
+        .persistence()
+        .upsert_package_association(&PackageAssociation {
+            package_family_name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned(),
+            product_id: Some("9NBLGGH4NNS1".to_owned()),
+            content_id: None,
+            identity_name: "Microsoft.WindowsTerminal".to_owned(),
+            publisher: "CN=Microsoft Corporation".to_owned(),
+            confidence: AssociationConfidence::ExactPackageFamilyName,
+            observed_at: 10,
+        })
+        .expect("seed trusted association");
+    let backend = fixture.backend();
+    let mut request = start_spec();
+    request.selected_update_id = Some("terminal-update-v2".to_owned());
+    request.package_family_name = Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_owned());
+
+    let started = backend
+        .start_update(request)
+        .await
+        .expect("trusted anchored update should enqueue");
+
+    assert_eq!(
+        started.snapshot.job.selected_update_id.as_deref(),
+        Some("terminal-update-v2")
+    );
+    assert_eq!(
+        started.snapshot.job.package_family_name.as_deref(),
+        Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe")
+    );
 }
 
 #[tokio::test]

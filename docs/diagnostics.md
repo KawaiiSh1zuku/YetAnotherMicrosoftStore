@@ -23,6 +23,10 @@ The application owns a per-session Windows mutex and a clean-shutdown marker. Th
 
 The main executable is already elevated before Tauri starts. There is no Broker lifecycle, IPC event, `AwaitingElevation` stage, or task-level UAC cancellation event to diagnose. UAC cancellation happens before the application process exists.
 
+### Preparation versus deployment
+
+After package verification and before native progress exists, the worker uses `preparing`. This stage covers the durable deployment checkpoint and backend preparation work; the UI labels it `正在准备安装` and shows no percentage. The first native progress callback changes the job to `deploying`, where the percentage is meaningful. A restart from either stage requires inventory reconciliation because native deployment may have started without a durable progress event.
+
 ### Package-in-use recovery
 
 Windows deployment is authoritative for package-in-use detection. HRESULT `0x80073D02` is mapped to the closed `package_in_use` error only after the native deployment call returns it; process enumeration is diagnostic and never predicts whether deployment is allowed.
@@ -37,9 +41,11 @@ These contracts and recovery transitions have E0/E1 coverage. They do not prove 
 
 - Inventory results set `complete = false` when machine enumeration, user registration, or provisioned-package queries are incomplete.
 - Update scans return scanned and associated counts, candidates, skipped PFNs with closed reason codes, and `complete`.
+- Every candidate carries the selected main package update ID and PFN. Starting that candidate validates its trusted PFN/Product ID association, and the worker limits the freshly resolved graph to that exact main package instead of selecting a different component from the same product.
 - Association lookup and FE3 resolution use the independent `maxConcurrentUpdateScans` setting (1-64, default 16); persistence remains serialized after each bounded network phase.
 - A newer compatible main package that fails strict update selection is reported as `selection_rejected`; it is not silently treated as up to date.
 - Partial results remain displayable and do not expose underlying raw errors.
+- The frontend retains the installed inventory, filter text, scan result, and in-flight state for the application session when the user changes pages.
 
 ## Network audit
 

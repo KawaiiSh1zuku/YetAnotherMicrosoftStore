@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     domain::{Architecture, PackageFormat, PackageKind, PackageVersion},
     error::{AppErrorDto, ErrorCode, RetryAdvice},
-    jobs::{Job, JobSnapshot, JobStage, RecoveryAction},
+    jobs::{Job, JobKind, JobSnapshot, JobStage, RecoveryAction},
     package_process::ProcessDescriptor,
     persistence::PersistenceError,
 };
@@ -206,8 +206,17 @@ impl JobEvent {
                 if job.stage == JobStage::Queued
                     && job.created_at == occurred_at
                     && job.updated_at == occurred_at
-                    && job.selected_update_id.is_none()
-                    && job.package_family_name.is_none()
+                    && match (
+                        job.kind,
+                        job.selected_update_id.as_deref(),
+                        job.package_family_name.as_deref(),
+                    ) {
+                        (JobKind::Install, None, None) | (JobKind::Update, None, None) => true,
+                        (JobKind::Update, Some(update_id), Some(package_family_name)) => {
+                            safe_identifier(update_id) && safe_identifier(package_family_name)
+                        }
+                        _ => false,
+                    }
                     && job.bytes_done == 0
                     && job.bytes_total.is_none()
                     && job.deployment_progress.is_none()
@@ -247,13 +256,19 @@ impl JobEvent {
                         }
                         next.stage = *stage;
                         if *stage == JobStage::Resolving {
-                            next.selected_update_id = None;
-                            next.package_family_name = None;
+                            if old.kind == JobKind::Install {
+                                next.selected_update_id = None;
+                                next.package_family_name = None;
+                            }
                             next.version = None;
                             next.architecture = None;
                             next.language = None;
                             next.error = None;
                             next.deployment_progress = None;
+                            next.blocked_processes.clear();
+                        } else if *stage == JobStage::Preparing {
+                            next.deployment_progress = None;
+                            next.error = None;
                             next.blocked_processes.clear();
                         } else if *stage == JobStage::Deploying {
                             next.deployment_progress = Some(0);
@@ -288,12 +303,12 @@ impl JobEvent {
                         next.deployment_progress = Some(*percentage);
                     }
                     Self::DeploymentCheckpointReady => {
-                        if old.stage != JobStage::Deploying {
+                        if !matches!(old.stage, JobStage::Preparing | JobStage::Deploying) {
                             return Err(PersistenceError::EventHistoryInvalid);
                         }
                     }
                     Self::DeploymentBlocked { processes } => {
-                        if old.stage != JobStage::Deploying
+                        if !matches!(old.stage, JobStage::Preparing | JobStage::Deploying)
                             || processes.len() > 128
                             || processes.iter().any(|process| !process.is_safe())
                         {
@@ -314,7 +329,16 @@ impl JobEvent {
                         language,
                         targets,
                     } => {
-                        if old.stage != JobStage::Selecting || old.selected_update_id.is_some() {
+                        if old.stage != JobStage::Selecting
+                            || old
+                                .selected_update_id
+                                .as_ref()
+                                .is_some_and(|value| value != selected_update_id)
+                            || old
+                                .package_family_name
+                                .as_ref()
+                                .is_some_and(|value| value != package_family_name)
+                        {
                             return Err(PersistenceError::EventHistoryInvalid);
                         }
                         if !safe_identifier(selected_update_id)

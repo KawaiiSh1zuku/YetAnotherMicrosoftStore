@@ -10,6 +10,7 @@ export type JobStage =
   | "downloading"
   | "paused"
   | "verifying"
+  | "preparing"
   | "deploying"
   | "awaiting_process_exit"
   | "interrupted"
@@ -192,6 +193,7 @@ export interface UpdateCandidate {
   packageFamilyName: string;
   currentVersion: string;
   availableVersion: string;
+  selectedUpdateId: string;
   productId: string | null;
   deploymentScope: DeploymentScope;
 }

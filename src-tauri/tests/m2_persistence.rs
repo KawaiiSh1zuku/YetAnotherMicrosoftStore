@@ -183,6 +183,7 @@ fn deploying(store: &Persistence, job_id: &str) -> u64 {
             JobStage::Selecting,
             JobStage::Downloading,
             JobStage::Verifying,
+            JobStage::Preparing,
             JobStage::Deploying,
         ],
     );
@@ -517,6 +518,7 @@ fn restart_recovery_is_persisted_before_jobs_are_returned() {
             JobStage::Selecting,
             JobStage::Downloading,
             JobStage::Verifying,
+            JobStage::Preparing,
             JobStage::Deploying,
         ],
     );

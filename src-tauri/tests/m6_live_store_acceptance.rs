@@ -206,6 +206,8 @@ async fn run_acceptance(
             market: market.to_owned(),
             language: language.to_owned(),
             scope: ApiDeploymentScope::CurrentUser,
+            selected_update_id: None,
+            package_family_name: None,
         })
         .await
         .map_err(|error| safe_api_error("production install enqueue failed", &error))?;

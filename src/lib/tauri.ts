@@ -29,6 +29,8 @@ export interface DetailsRequest {
 
 export interface StartJobRequest extends DetailsRequest {
   scope: DeploymentScope;
+  selectedUpdateId?: string;
+  packageFamilyName?: string;
 }
 
 export interface JobControlRequest {

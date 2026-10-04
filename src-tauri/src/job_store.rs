@@ -596,7 +596,7 @@ pub(crate) fn apply_command(
             | (
                 JobControl::RetryDeployment,
                 JobEvent::StageChanged {
-                    stage: JobStage::Deploying
+                    stage: JobStage::Preparing
                 }
             )
     );

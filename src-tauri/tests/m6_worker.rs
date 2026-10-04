@@ -511,6 +511,7 @@ fn seed_deploying_job(store: &Persistence, job_id: &str) {
         &[
             JobStage::Downloading,
             JobStage::Verifying,
+            JobStage::Preparing,
             JobStage::Deploying,
         ],
     );
@@ -710,6 +711,7 @@ async fn happy_path_freezes_safe_targets_and_persists_deploying_before_commit() 
             JobStage::Selecting,
             JobStage::Downloading,
             JobStage::Verifying,
+            JobStage::Preparing,
             JobStage::Deploying,
             JobStage::Completed,
         ]
@@ -871,7 +873,7 @@ async fn retry_deployment_fails_closed_when_checkpoint_cache_is_missing() {
 }
 
 #[tokio::test]
-async fn all_users_moves_directly_from_verifying_to_deploying() {
+async fn all_users_reports_preparation_before_windows_deployment_progress() {
     let database = TestDatabase::new();
     let store = Persistence::open(&database.0).expect("store");
     let mut job = queued_job("job-all-users", 100);
@@ -901,6 +903,7 @@ async fn all_users_moves_directly_from_verifying_to_deploying() {
             JobStage::Selecting,
             JobStage::Downloading,
             JobStage::Verifying,
+            JobStage::Preparing,
             JobStage::Deploying,
             JobStage::Completed,
         ]
@@ -1139,7 +1142,7 @@ async fn lease_loss_during_blocking_commit_never_writes_terminal_state() {
     );
     assert_eq!(
         store.job("job-lease-loss").expect("job").unwrap().stage,
-        JobStage::Deploying
+        JobStage::Preparing
     );
     assert!(!store
         .list_job_events(0, 100)

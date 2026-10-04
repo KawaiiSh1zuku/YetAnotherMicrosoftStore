@@ -175,6 +175,7 @@ describe("M6 desktop workbench", () => {
           packageName: "Has.Update",
           publisher: "Example",
           packageFamilyName: "Has.Update_example",
+          selectedUpdateId: "has-update-v2",
           currentVersion: "1.0.0.0",
           availableVersion: "2.0.0.0",
           productId: "9UPDATE",
@@ -194,6 +195,23 @@ describe("M6 desktop workbench", () => {
     const rows = within(screen.getByRole("table")).getAllByRole("row").slice(1);
     expect(within(rows[0]).getByText("Has Update")).toBeVisible();
     expect(within(rows[1]).getByText("No Update")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("heading", { name: "设置" });
+    await user.click(screen.getByRole("button", { name: "已安装" }));
+    expect(await screen.findByText(/发现 1 个更新/)).toBeVisible();
+    expect(client.scanInstalledPackages).toHaveBeenCalledOnce();
+    expect(client.scanUpdates).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "更新至 2.0.0.0" }));
+    expect(client.startUpdate).toHaveBeenCalledWith({
+      productId: "9UPDATE",
+      market: "US",
+      language: "en-US",
+      scope: "current_user",
+      selectedUpdateId: "has-update-v2",
+      packageFamilyName: "Has.Update_example",
+    });
   });
 
   it("shows deployment progress while an installation is running", async () => {
@@ -211,6 +229,24 @@ describe("M6 desktop workbench", () => {
 
     expect(await screen.findByRole("progressbar", { name: "Windows Terminal 安装进度" })).toHaveAttribute("aria-valuenow", "42");
     expect(screen.getByText("42%")).toBeVisible();
+  });
+
+  it("shows CPU-heavy package preparation separately from Windows deployment", async () => {
+    const client = createClient({
+      listJobs: vi.fn().mockResolvedValue([{
+        ...job,
+        stage: "preparing",
+        deploymentProgress: null,
+        allowedControls: ["cancel"],
+      }]),
+    });
+    render(<App client={client} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "队列" }));
+
+    expect(await screen.findByText("正在准备安装")).toBeVisible();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
   });
 
   it("keeps an event snapshot that arrives while the queue listener is registering", async () => {
